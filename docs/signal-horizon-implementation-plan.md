@@ -1,9 +1,11 @@
 # SIGNAL HORIZON — Implementation Plan & Ticket Backlog
-### v0.2 · companion to GDD v0.7
+### v0.2.1 · companion to GDD v0.8
 
 > Engineering plan, priorities, and sequencing. This is the *how/when*; the GDD is the *what/why*. Where they disagree, the GDD wins on design and this doc wins on sequencing.
 >
 > **v0.2 supersedes v0.1.** v0.1 was written for a Godot/GDScript build, pre-spike, with everything ahead of it. Since then: the project **moved to TypeScript + Three.js + Vite, browser-native** (GDD §6), a spike proved the full M0 visual/UX scope, and **Phase 0 + M0 are substantially done**. The live frontier is **M1 — the fun-gate.** This plan reflects that reality and the current ticket backlog.
+>
+> **v0.2.1 reconciles M1 with GDD v0.8.** GDD §3a/§3b/§4.12 changed what M1 must *contain*: not one relay you babysit, but **several simultaneous feeds past the hand-management strain threshold**, a **prefetch-*policy* tame-it lever** (the strain→relief arc, new ticket M1-06b), a **truthful event-log from day one** (the parse seed, new ticket M1-10b), and a **sharpened gate** ("does the tester finish wanting to do it *better*?"). §6 below is rewritten accordingly.
 
 ---
 
@@ -91,29 +93,40 @@
 
 ## 6. Milestone 1 — THE FUN GATE (= build phase PD; the live work)
 
-*The spike has no economy. Everything here is greenfield TS, built on the proven sim/orrery/WM. Build order: 01+02 → 03 → 04→05→06 (the core; prototype 05's visible pending-wait first) → 07 → 08/09/10 → 11 → 12 + telemetry. Land P0-05/06 first so the economy is born deterministic.*
+*The spike has no economy. Everything here is greenfield TS, built on the proven sim/orrery/WM. Land P0-05/06 first so the economy is born deterministic.*
 
-**Minimal demand & serve-or-starve**
-- [ ] **M1-01** One demand source w/ freshness requirement — *S* · piecewise 3-band price (fresh/stale/miss).
-- [ ] **M1-02** Feasible-path check — *S* · single Earth↔Mars LoS check; NO routing solver yet.
-- [ ] **M1-03** Serve / miss / stale resolution — *M* · fresh/stale/miss/blackout-miss; primary telemetry tap.
+**What changed in this milestone (GDD §3a/§3b reconciliation).** M1 is no longer "one relay, one caching decision." The fun (GDD §3a) is *taming a sprawl* then *optimising against a record* — and you cannot tame one server. So M1 must be **just past the threshold where hand-management strains**: enough simultaneous feeds that the player feels it getting away from them, a *lever that tames it* (prefetch *policy*, not just manual one-shot prefetch), and a **truthful event-log from day one** (the M1-era seed of the parse, GDD §4.12) so the gate can ask its sharpest question. The unit of fun M1 must contain is one full **strain → relief** arc.
+
+*Build order: 01+02 → 03 → 04→05→06 (the core; prototype 05's visible pending-wait first) → 06b (the tame-it lever) → 07 → 08/09/10 → 10b (the log seed) → 11 → 12 + telemetry.*
+
+**Minimal demand & serve-or-starve — now plural**
+- [ ] **M1-01** Demand sources w/ freshness requirements — *M* (was S) · **several simultaneous feeds** (≈4–6), each a piecewise 3-band price (fresh/stale/miss), decaying on independent clocks. *The plurality is the point — it's what creates the strain that the tame-it lever (M1-06b) relieves. One feed is a toy; the threshold where you can't hand-manage all of them is the floor of the fun.*
+- [ ] **M1-02** Feasible-path check — *S* · per-feed Earth↔Mars LoS check; NO routing solver yet.
+- [ ] **M1-03** Serve / miss / stale resolution — *M* · fresh/stale/miss/blackout-miss per feed; **every outcome written to the event log (M1-10b)** — this is the primary telemetry tap *and* the parse's raw data.
 
 **Caching / prefetch loop (the actual core)**
-- [ ] **M1-04** Cache node placement — *M* · cache @ Mars; one slot, no eviction.
+- [ ] **M1-04** Cache node placement — *M* · cache(s) @ Mars; a small number of slots, simple eviction (enough that *which* dataset to hold is a choice).
 - [ ] **M1-05** Cache hit / miss logic — *M* · miss = a *visible pending wait* (the crawling packet) + countdown. *(Prototype this visible-wait first; it's the heart of whether the loop reads as fun.)*
-- [ ] **M1-06** Predictive prefetch action — *M* · manual prefetch = what fills the wait (the §3 "waiting is gameplay" beat).
+- [ ] **M1-06** Predictive prefetch action (manual) — *M* · hand-fire a prefetch to pre-position a dataset; this is the *floor* verb and the §3 "waiting is gameplay" beat. **Doing it by hand for several feeds is the strain.**
+- [ ] **M1-06b** Prefetch *policy* — the tame-it lever — *M* · **NEW.** A standing rule that prefetches automatically (e.g. "keep these feeds above X freshness," "pre-stage before a forecast blackout"). *This is the relief in the strain→relief arc and the first rung of the leverage curve (GDD §4.11): the player goes from hand-cranking N feeds to declaring intent and watching the system keep up. Without this, M1 is whack-a-mole (the boring-ops failure mode, GDD §3b); with it, M1 contains a full taming arc.*
 - [ ] **M1-07** Coherence level (simplified) — *S* · two levels, distinct €/latency profile.
 
-**Minimal economy + one dashboard + one map**
+**Minimal economy + dashboards + map + the log**
 - [ ] **M1-08** Cash, simple revenue & opex — *S* · bankruptcy on `balance < 0`.
-- [ ] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE; this is the M1 "one excellent dashboard."
-- [ ] **M1-10** Glanceable map readout — *S* · Mars freshness drain + fetch packet/countdown + blackout on the orrery (the Mini-Metro at-a-glance test).
-- [ ] **M1-11** Cache-hit audio cue — *S* · first audio via Web Audio API; healthy vs staling network *sounds* different.
-- [ ] **M1-12** 30-minute scenario script — *S* · scripted conjunction (predictable, not random); pre-position-to-survive.
-- [ ] **M1-GATE** Playtest instrumentation — *S–M* · telemetry action log + event stream + gate metrics.
+- [ ] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE.
+- [ ] **M1-10** Glanceable map readout — *S* · per-feed Mars freshness drain + fetch packets/countdowns + blackout on the orrery (the Mini-Metro at-a-glance test, now reading *several* feeds at once).
+- [ ] **M1-10b** Truthful event log (the parse seed) — the floor/ceiling hinge — *M* · **NEW.** Every serve/miss/stale, cache hit/miss, prefetch (timely/wasted), blackout — timestamped and honest, surfaced as the SYSTEM.LOG stream and retained for the run. *The full post-run parse with achievable-optimum is M2+ (needs the solver), but the log must be truthful and complete from day one (GDD §4.12) so (a) the data exists to build the parse on later and (b) the gate can ask "do it better?" The live freshness-as-saturation cue (§8) is the floor's hint; this log is the ceiling's raw material.*
+- [ ] **M1-11** Cache-hit / staleness audio cue — *S* · Web Audio API; a network keeping up *sounds* different from one falling behind (the strain made audible).
+- [ ] **M1-12** 30-minute scenario script — *M* (was S) · tuned to the **strain threshold**: enough feeds + a scripted, *predictable* conjunction (geometry-forecast, not random) that the player must pre-stage against. The arc the scenario must produce: *overwhelmed hand-managing feeds → discover prefetch policy → in control → blackout tests the policy.*
+- [ ] **M1-GATE** Playtest instrumentation — *S–M* · telemetry action log + event stream + gate metrics, including the post-run prompt that measures the sharpened gate (below).
 
-### The gate (unchanged from v0.1)
-≥5 testers cold. **PASS** = unprompted cache/prefetch tuning in response to delay + tension around the conjunction blackout + can articulate *why it was interesting*. **FAIL** = wait-and-click / ignore the delay / "a spreadsheet" → iterate **visualization + core only** (GDD Risk 2), re-run; 3 failed iterations ⇒ rethink the premise. **Do not start M2 until PASS.**
+### The gate (sharpened per GDD §3a/§9)
+≥5 testers cold. The old PASS (unprompted cache/prefetch tuning + blackout tension + can articulate why interesting) is necessary but **no longer sufficient** — that proves *liveness*, not the taming-then-optimising fun. The sharpened bar:
+
+- **The strain→relief arc fires:** the tester visibly struggles to hand-manage the feeds, *discovers* the prefetch policy (ideally unprompted), and feels the relief of the system keeping up. (Tames to *functional*.)
+- **The optimiser hook fires — the decisive signal:** the tester finishes the run **wanting to look at what happened and do it *better*** — they immediately want another run to fix the thing they now see they did wrong. A tester who finishes *satisfied-and-done* built a toy; a tester who wants the re-run has felt the §3a optimisation pull, and *that* is the fun confirmed.
+
+**FAIL** = wait-and-click / ignore the delay / "a spreadsheet" / finishes-and-shrugs → iterate **visualization + core + the strain-threshold tuning** only (GDD Risk 2), re-run; 3 failed iterations ⇒ rethink the premise. **Do not start M2 until PASS.**
 
 ---
 
@@ -144,8 +157,8 @@
 
 1. **Land the deterministic save/replay backbone (P0-05, P0-06)** before the economy makes the sim complex. The replay golden-master is the highest-leverage test in the project; the M1 economy should be born deterministic, not retrofitted.
 2. **Stand up CI** (P0-02 finish): `npm test` on push + Playwright screenshot capture, so the money-shot and (soon) the M1 loop are regression-guarded visually.
-3. **Build the M1 caching loop core (M1-04→06), prototyping the *visible pending wait* (M1-05) first** — that single beat (miss → watch the packet crawl → relief) is the clearest read on whether the light-delay loop is fun, and it's cheap to stand up on the existing orrery/packet code.
-4. **Wire the minimal economy + finance panel + glanceable map (M1-08→10)**, then the scenario (M1-12) and telemetry (M1-GATE).
+3. **Build the M1 caching loop core (M1-04→06), prototyping the *visible pending wait* (M1-05) first** — that single beat (miss → watch the packet crawl → relief) is the clearest read on whether the light-delay loop is fun, and it's cheap to stand up on the existing orrery/packet code. **Then build to the strain threshold:** several simultaneous feeds (M1-01) and the prefetch-*policy* lever (M1-06b) — the strain→relief arc is the unit of fun the gate tests, and it doesn't exist with one feed.
+4. **Wire the minimal economy + finance panel + glanceable map + the truthful event-log (M1-08→10b)** — the log seed (M1-10b) must be honest and complete from the start so the parse (GDD §4.12) has real data later and the gate can ask "do it better?" Then the strain-tuned scenario (M1-12) and telemetry (M1-GATE).
 5. **Run the gate.** Everything upstream exists to reach this question honestly.
 
 ---
@@ -161,4 +174,4 @@
 
 ---
 
-*v0.2. Detailed through M1/PD, deliberately light past M4, mirroring GDD §9–§10. The project's hard technical bets (f64 orbital truth, the legible 3D orrery, the sim/render split, determinism) are proven; the make-or-break design bet (is the light-delay loop fun?) is the next thing built and is the gate. Re-detail M2+ after the M1 gate passes.*
+*v0.2.1. Detailed through M1/PD, deliberately light past M4, mirroring GDD §9–§10. The project's hard technical bets (f64 orbital truth, the legible 3D orrery, the sim/render split, determinism) are proven; the make-or-break design bet — is the *taming-then-optimising* light-delay loop fun (GDD §3a)? — is the next thing built and is the gate. v0.2.1 reconciled M1 with GDD v0.8: the slice is now built to the hand-management strain threshold (several feeds + a prefetch-policy tame-it lever + a truthful parse-seed log), and the gate is sharpened to "does the tester finish wanting to do it better?" Re-detail M2+ after the M1 gate passes.*
