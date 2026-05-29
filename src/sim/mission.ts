@@ -15,6 +15,7 @@
  */
 import type { Ephemeris } from "./ephemeris";
 import type { LogEntry, PacketState, Severity } from "../types";
+import type { MissionSnapshot } from "./save";
 import { oneWaySeconds, freshness } from "./delay";
 import { earthMarsLos } from "./links";
 import { fmtDuration, fmtLightSeconds } from "../format";
@@ -116,5 +117,30 @@ export class Mission {
     }
 
     return out;
+  }
+
+  /**
+   * Capture the mutable mission state for a fast-load snapshot (P0-05 / B2).
+   * The packet is copied by value so the snapshot never aliases live state.
+   */
+  snapshot(): MissionSnapshot {
+    return {
+      nextId: this.nextId,
+      occulted: this.occulted,
+      scriptIdx: this.scriptIdx,
+      nextScriptT: this.nextScriptT,
+      booted: this.booted,
+      packet: this.packet == null ? null : { ...this.packet },
+    };
+  }
+
+  /** Restore mutable mission state from a snapshot (the ephemeris is unchanged). */
+  restore(s: MissionSnapshot): void {
+    this.nextId = s.nextId;
+    this.occulted = s.occulted;
+    this.scriptIdx = s.scriptIdx;
+    this.nextScriptT = s.nextScriptT;
+    this.booted = s.booted;
+    this.packet = s.packet == null ? null : { ...s.packet };
   }
 }

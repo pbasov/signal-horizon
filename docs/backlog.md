@@ -50,8 +50,8 @@
 **Deterministic core backbone**
 - [x] **P0-03** Authoritative sim-clock + fixed-step tick — *M* · Integer fixed-step clock implemented in `src/sim/clock.ts`. Tick accumulator, `scheduleWall()`/`nextTick()` drain pattern, `DT = 1/60` s. Death-spiral clamp. `setTick()` for save/load. 12 Vitest tests green.
 - [x] **P0-04** Seeded RNG abstraction — *S* · Splitmix64 ported to TS via `bigint` in `src/sim/rng.ts`. Golden values cross-verified bit-identical against C# `SimRng`. 11 Vitest tests green. No `Math.random()` in `src/sim/`. D4 resolved → bigint for spec-defined portability.
-- [ ] **P0-05** Action-log + state-snapshot save format — *M* · JSON, versioned; port the C# `SaveGame` shape. Pure `src/sim/`, no DOM state.
-- [ ] **P0-06** Determinism / replay golden-master test — *M* · Vitest harness that replays a recorded action log and asserts state hash. **Most valuable test — write before M1 sim gets complex.**
+- [~] **P0-05** Action-log + state-snapshot save format — *M* · JSON, versioned; port the C# `SaveGame` shape. Pure `src/sim/`, no DOM state. **B2 done:** `src/sim/save.ts` (SaveGame, lossless `dt_bits`, bigint-as-string) + `src/sim/action.ts` (SimAction: noop/set_time_scale) + snapshot shape {tick, rngState, mission}; round-trip-pinned in `save.test.ts`. **Owed:** wire action-log recording at `src/main.ts` (lands with E3) and add clock scale/pause to the snapshot.
+- [~] **P0-06** Determinism / replay golden-master test — *M* · Vitest harness that replays a recorded action log and asserts state hash. **Most valuable test — write before M1 sim gets complex.** **B1 done:** `src/sim/state-hash.ts` (canonical hash port) + TS-native golden pin (`state-hash.test.ts`); the C# hash is not bit-portable cross-runtime (SD-15). **Owed (B3):** unclamped scheduler kernel + replay harness folding action-driven mutable state.
 
 **Rendering & styling backbone**
 - [x] **P0-07** Floating-origin scene manager — done in `src/orrery/orrery.ts` (f64 subtract → f32 cast; per-preset log-compression; constant-screen-size billboards).
