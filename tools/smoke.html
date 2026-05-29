@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>smoke</title></head>
+  <body style="margin:0;background:#0B0B12;color:#fff;font-family:monospace">
+    <canvas id="c" width="320" height="120"></canvas>
+    <div id="out" style="padding:8px;font-size:20px">…</div>
+    <script>
+      const gl = document.getElementById("c").getContext("webgl2");
+      const out = document.getElementById("out");
+      if (gl) {
+        gl.clearColor(0.27, 0.84, 0.79, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        const r = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "n/a";
+        out.textContent = "WEBGL2 OK · " + r;
+        console.log("WEBGL2_OK " + r);
+      } else {
+        out.textContent = "WEBGL2 FAIL";
+        console.log("WEBGL2_FAIL");
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+# deps & build
+node_modules/
+dist/
+
+# C# golden-master tool build artifacts (the emitted golden-output.json is kept)
+tools/golden/bin/
+tools/golden/obj/
+
+# logs & os cruft
+*.log
+.DS_Store
