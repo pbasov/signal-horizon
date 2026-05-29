@@ -39,8 +39,8 @@
 ### SD-6 — Presets are data; WM is a constrained zone-grid (DD-10), Swap + Resize wired
 **Status: ACCEPTED.** `zonegrid.ts` implements the DD-10 model. Title-bar drag → Swap and edge-resize are wired. Tab/Split/Close exist in the data shape but are not gesture-wired.
 
-### SD-7 — Sim clock is an f64 accumulator (no fixed-tick determinism in the spike)
-**Status: ACCEPTED (spike-only).** The spike has no determinism requirement. The clock accumulates f64 sim-seconds directly. **Production must replace this** with an integer fixed-step clock for bit-deterministic save/replay.
+### SD-7 — Sim clock is an f64 accumulator (replaced by fixed-tick clock)
+**Status: SUPERSEDED by P0-03.** The spike used an f64 accumulator (non-deterministic). Production now uses an integer fixed-step clock: `SimClock` holds an integer `tick`, each tick is exactly `DT = 1/60` sim-seconds. `seconds` is derived as `tick * DT`. The `TickScheduler` pattern (`scheduleWall()` → drain `nextTick()`) ensures time-acceleration scales tick count, never DT. Same tick count = same sim state.
 
 ### SD-8 — SYSTEM.LOG: real packet events + a scripted severity feed
 **Status: ACCEPTED.** Packet launch/arrival and genuine LoS occult are real. Solar conjunction is rare, so the log is also fed a deterministic sim-time-paced flavour stream.
@@ -75,8 +75,8 @@ The app runs in the browser. No Tauri gate — see SD-2. The remaining engineeri
 | D1 | **Pin stack versions** | PROPOSED | Node 26 + Three.js 0.184.x + Vite 8.x. Pin in README + CI. |
 | D2 | **Sim-core language** | ACCEPTED | TypeScript (SD-3). Pure `src/sim/` with zero DOM/Three.js imports. Bit-identical to C#. |
 | D3 | **Test framework** | ACCEPTED | Vitest for pure sim; Playwright for headful screenshot CI. |
-| D4 | **RNG portability** | OPEN | Splitmix64 needs TS port. If golden hashes must survive across JS engines, verify `bigint`/paired-`uint32` semantics. **Must decide before P0-06.** |
-| D5 | **Fixed sim `DT`** | OPEN (provisional) | Start ~1/60 s; finalize empirically. Time-accel scales *how many fixed steps run*, never `DT`. |
+| D4 | **RNG portability** | ACCEPTED | bigint splitmix64 in `src/sim/rng.ts` (P0-04). Golden values cross-verified bit-identical against C# `SimRng`. bigint arithmetic is spec-defined, portable across all JS engines. |
+| D5 | **Fixed sim `DT`** | ACCEPTED | `DT = 1/60` s. Time-accel scales *how many fixed steps run*, never `DT`. Integer tick accumulator (P0-03). |
 | D6 | **Project rename** | SUPERSEDED | Was `GalaxyLink` → `SignalHorizon`. Done in the Godot repo; the TS repo starts as Signal Horizon. |
 | D7 | **Epoch / reference frame** | PROPOSED | **J2000 + ecliptic-of-J2000.** Convert any equatorial-sourced data on load. |
 

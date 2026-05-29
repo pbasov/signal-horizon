@@ -119,14 +119,18 @@ window.addEventListener("keydown", (e) => {
 let last = performance.now();
 
 function frame(now: number): void {
-  const dt = (now - last) / 1000;
+  const wallDt = (now - last) / 1000;
   last = now;
+  // Fixed-tick drain: schedule wall time, then run all owed sim ticks.
+  clock.scheduleWall(wallDt);
+  while (clock.nextTick() !== null) {
+    for (const e of mission.update(clock.seconds)) log.append(e);
+  }
 
-  clock.advance(dt);
+  // Render at the latest sim time (interpolation deferred — analytic Kepler
+  // means position(t) is exact for any t, so no visual error from using the
+  // last tick boundary).
   const t = clock.seconds;
-
-  for (const e of mission.update(t)) log.append(e);
-
   const dist = eph.distanceBetween("earth", "mars", t);
   const ow = oneWaySeconds(dist);
   const los = earthMarsLos(eph, t);
@@ -148,7 +152,7 @@ function frame(now: number): void {
 
   telemetry.update(fs);
   status.update(fs);
-  orrery.update(dt);
+  orrery.update(wallDt);
   shell.tickChrome();
 
   requestAnimationFrame(frame);

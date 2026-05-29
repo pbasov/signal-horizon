@@ -11,7 +11,7 @@
 
 > The project runs in the browser (SD-2). The spike (see `FINDINGS.md`) proved the UX builds at least as naturally in the web stack with no fidelity loss and dramatically faster iteration. The C# Godot project's design docs (GDD, tiling-WM spec, UI critique) remain the design authority; this backlog reflects the *current* TS stack.
 >
-> **Key status:** the spike demonstrated the full M0 visual/UX scope. Phase 0 foundations and M0 are "done in spike" — but the deterministic backbone (fixed-tick clock, save/replay) still needs production implementation. WebKitGTK validation is no longer a gate (SD-2).
+> **Key status:** the spike demonstrated the full M0 visual/UX scope. Phase 0 foundations and M0 are "done in spike" — save/replay (P0-05/06) still needs production implementation. WebKitGTK validation is no longer a gate (SD-2).
 
 **Build phases (live status):**
 - [x] **PA — pure sim (TypeScript port)** — `src/sim/ephemeris.ts` (8-iter Newton → perifocal → 3-1-3 → recursive parent); bit-identical to the C# golden master. Light delay, freshness, LoS occlusion all ported. **Vitest pin + 13 structural assertions green.**
@@ -20,7 +20,7 @@
 - [x] **PB.2r — orrery in 3D + camera-only views** — body-anchored orbit camera + 4 animated presets (CISLUNAR / ORBITS / SYSTEM / TOP-DOWN). LEO inclined + GEO equatorial planes read in 3D. Dashed rings, dithered Bayer 4×4 billboards, freshness-as-saturation.
 - [x] **PB.3 — tiling WM shell + 1-bit chrome** — DD-10 zone-grid in the DOM (1–3 cols × 1–3 rows, relative weights, always-tiled invariant). Title-bar drag → zone swap, edge-resize, 5 presets (OVERVIEW / OPS / TRACK / STREAM / SPLIT) switched by keys 1–5. Runtime Bayer dither via CSS custom properties. Monospace placeholder font.
 - [x] **PB.4 — panels** — SYSTEM.LOG (severity syntax highlighting + glyphs, scrollable, ring-buffer), telemetry readout, status strip (sim time, time scale, light-delay, focus, presets, occult).
-- [ ] **PC — deterministic backbone (TS)** — fixed-tick integer clock, seeded splitmix64 RNG, action-log save format, golden-master replay test in Vitest. The spike's f64 accumulator is non-deterministic; this replaces it.
+- [x] **PC — deterministic backbone (TS)** — fixed-tick integer clock ✅ (P0-03), seeded RNG ✅ (P0-04), action-log pending (P0-05/06).
 - [ ] **PD — M1 economy integration** — demand, caching, prefetch, economy, finance panel. Wire to the fixed-tick sim clock. The M1 fun-gate playtest.
 - [ ] **CI** — GitHub Actions: `npm test` (vitest) + Playwright screenshot CI.
 
@@ -30,13 +30,13 @@
 
 - [x] **GIT-00** Init git repo + commit current tree as baseline
 - [x] **DEC-00** Confirm decisions D1–D3, D7; establish the sim/ purity rule
-- [x] **SD-1..10** Spike decisions recorded (see `decisions.md`)
+- [x] **SD-1..11** Spike decisions recorded (see `decisions.md`)
 
 ---
 
 ## Phase 0 — Foundations
 
-> **Status: substantially done in spike scope, but two critical items need production-grade implementation: deterministic clock (P0-03) and save/replay (P0-05/06).**
+> **Status: substantially done. Deterministic clock (P0-03) and seeded RNG (P0-04) are done; save/replay (P0-05/06) remains.**
 
 **Spikes**
 - [x] **P0-S1** Pin stack versions (Node + Three.js + Vite) — *SPIKE S*
@@ -48,8 +48,8 @@
 - [x] **P0-02** CI — vitest green; Playwright screenshot CI pending setup
 
 **Deterministic core backbone**
-- [~] **P0-03** Authoritative sim-clock + fixed-step tick — *M* · Spike uses f64 accumulator (non-deterministic); needs integer fixed-step implementation in TS.
-- [ ] **P0-04** Seeded RNG abstraction — *S* · Splitmix64 ported to TS (`ulong` → `bigint` or paired `uint32`); requires golden-hash pin for cross-platform.
+- [x] **P0-03** Authoritative sim-clock + fixed-step tick — *M* · Integer fixed-step clock implemented in `src/sim/clock.ts`. Tick accumulator, `scheduleWall()`/`nextTick()` drain pattern, `DT = 1/60` s. Death-spiral clamp. `setTick()` for save/load. 12 Vitest tests green.
+- [x] **P0-04** Seeded RNG abstraction — *S* · Splitmix64 ported to TS via `bigint` in `src/sim/rng.ts`. Golden values cross-verified bit-identical against C# `SimRng`. 11 Vitest tests green. No `Math.random()` in `src/sim/`. D4 resolved → bigint for spec-defined portability.
 - [ ] **P0-05** Action-log + state-snapshot save format — *M* · JSON, versioned; port the C# `SaveGame` shape. Pure `src/sim/`, no DOM state.
 - [ ] **P0-06** Determinism / replay golden-master test — *M* · Vitest harness that replays a recorded action log and asserts state hash. **Most valuable test — write before M1 sim gets complex.**
 
@@ -125,7 +125,7 @@
 
 ## Cross-cutting (continuous from P0)
 
-- [ ] **X-01** Determinism & replay — fixed-tick clock in TS; golden-master green every milestone; +1 replay fixture per milestone.
+- [x] **X-01** Determinism & replay — fixed-tick clock ✅ (P0-03), seeded RNG ✅ (P0-04); golden-master green every milestone; +1 replay fixture per milestone.
 - [ ] **X-02** Performance budget — GC allocation pools in Three.js (scratch vectors + direct Float32Array writes — proven in spike review); event-driven route re-solve; headless perf benchmark M2–M3; budget real before M4.
 - [ ] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
@@ -153,7 +153,7 @@ All 7 findings fixed:
 - ⬜ Wire Tab/Split/Close gestures in the WM
 - ⬜ Port the WmModel unit tests to Vitest
 - ⬜ Pool the ephemeris `Vec3` array returns (truth-layer still allocates small arrays)
-- ⬜ Fixed-tick clock + deterministic backbone (P0-03..06)
+- ⬜ Save/replay backbone (P0-05/06)
 
 ---
 
