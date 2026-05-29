@@ -1,5 +1,5 @@
 # SIGNAL HORIZON — Ticket Backlog (trackable)
-### Companion to implementation-plan-v0.1 + scoping-v0.1
+### Companion to implementation-plan (v0.2) + scoping (historical)
 
 > The plan is the *prose spec*; this is the *checklist*. Tickets are paste-ready for GitHub Issues / Linear. Tick `[x]` when the "Done when" (in the plan) is met. Sizes: `S`≈≤1d · `M`≈2–4d · `L`≈1–2wk · `XL`≈multi-week · `SPIKE`=time-boxed, produces a written conclusion. Scoping notes (`▸`) flag where scoping refined the plan.
 
@@ -87,7 +87,7 @@
 
 ## Milestone 1 — THE FUN GATE (kill-gate)
 
-> Build order: 01+02 → 03+08 → 04→05→06 → 07 → 09/10/11 → 12 + telemetry.
+> Build order: 01+02 → 03 → 04→05→06 → 07 → 08/09/10 → 11 → 12 + telemetry.
 > **All M1 tickets NEED-PORT** from C#; the spike has no economy layer.
 
 **Minimal demand & serve-or-starve**

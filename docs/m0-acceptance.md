@@ -1,11 +1,13 @@
 # M0 Acceptance — the "money shot" rubric
 
+> **HISTORICAL — M0 is complete (see screenshots/ + FINDINGS.md).** Kept as the M0 acceptance record.
+
 > The bar M0 must clear before it's called done. Headless smoke (no script errors) is necessary but **not** sufficient — M0 is fundamentally *visual*, so the real gate is a screenshot of the running Ops Console judged against this rubric. This is the checklist I run after the integration workflow (`wd2b092ff`) lands: launch the project, capture `screenshots/latest.png`, and verify each line.
 
 ## A. Headless (automated, gate-blocking)
 - [ ] `./tools/check_sim_purity.sh` still OK (integration didn't pollute `sim/`).
 - [ ] `godot --headless --import` clean (no parse/shader/resource errors).
-- [ ] All foundation suites still green (`dotnet test SignalHorizon.Sim.Tests`) — integration didn't regress the truth layer or determinism golden-master.
+- [ ] All foundation suites still green — integration didn't regress the truth layer or determinism golden-master. *(HISTORICAL: the original `dotnet test SignalHorizon.Sim.Tests` Godot/C# suite is not in this repo; the TS equivalent is `npm test` (Vitest).)*
 - [ ] `scenes/ops_console.tscn` loads and runs headless with no SCRIPT ERROR.
 
 ## B. Visual (screenshot, the actual money shot)

@@ -69,6 +69,22 @@ The app runs in the browser. No Tauri gate — see SD-2. The remaining engineeri
 ### SD-11 — No UI framework; imperative DOM and Three.js only
 **Status: ACCEPTED.** No React, Vue, Svelte, or any reactive/reconciliation layer. The frame loop is `requestAnimationFrame → sim.tick() → orrery.update(state) → renderer.render()` — no diffing, no virtual DOM, no scheduling, no effect lifecycle. Three reasons: (1) The orrery renders to a WebGL canvas — a framework can't schedule or diff GPU draw calls; a React-Three-Fiber wrapper adds JS overhead before the same GL calls. (2) A real-time sim updates every frame — position, packets, freshness all change every tick. Reactive frameworks optimise for skipping unchanged subtrees, but there's nothing to skip; the reconciliation cost is pure overhead. (3) GC pressure: each framework render cycle allocates vdom nodes, memo objects, and effect cleanup closures. At 60fps (~16ms/frame) this competes with the sim and orrery for the frame budget. The adversarial review caught ~960 `Vector3`/frame in Three.js — a framework's allocation pattern would compound this. Panels use `element.textContent = newValue` in the frame loop. If panel complexity grows later, the answer is writing that component imperatively, not introducing a framework.
 
+### SD-13 — GDD bumped v0.5 → v0.7 (Pillar 7 + network topology)
+**Status: ACCEPTED.** Source GDD. Two design additions land in the design doc: (1) **Pillar 7 "Leverage compounds"** (§4.11) — capability is discovered through operation, not bought; there is no research building and no tech-point currency. The unit of command rises over a run: asset → fleet → declared intent. The concrete tech tree is **DEFERRED post-M1** (the M1 fun-gate does not depend on it). (2) **§4.3a network topology** — forgiving RF access links (easy, lossy, ubiquitous) versus a scarce point-to-point laser backbone; terminals are finite and exist on backbone nodes only. Governance splits into a Level-1 policy floor and a Level-2 construction ceiling. The trace-view is an "mtr" for the link graph. Records the version bump only — the GDD itself is the authority; this log does not restate it.
+
+### SD-14 — Implementation plan v0.1 → v0.2 (supersedes; v0.1 deleted)
+**Status: ACCEPTED.** Source PLAN. The old `docs/signal-horizon-implementation-plan-v0.1.md` was the pre-spike Godot/GDScript plan and is **deleted**. The live plan is `docs/signal-horizon-implementation-plan.md` (this is v0.2), which reflects the TS/Three.js move (SD-10), the M0 spike done, and **M1 as the live fun-gate frontier** (DD-7). v0.2 supersedes v0.1; all references re-point to the live filename.
+
+### SD-15 — Port the save/replay backbone + M1 economy from the tested C# reference
+**Status: ACCEPTED.** Source PLAN/SPIKE. The save/replay backbone (P0-05/06) and the M1 economy are **not greenfield** — they are ported from the complete, tested C# reference at `/home/basov/Games/Godot/galaxy-link/SignalHorizon.Sim/` (`SaveGame`/`SimAction`/`StateHash`/`SimScheduler` + `M1/{Cache,Coherence,Demand,Resolver,M1Economy}` + `Tests/{SaveReplayTests,M1ModelTests}.cs`).
+
+**Finding from B1 — the C# golden state-hash is NOT bit-portable to TS.** `StateHash` was ported byte-for-byte to `src/sim/state-hash.ts` (verified: identical fold constants `Mult=1000003`/`Seed=1469598103934665603`, little-endian IEEE-754 byte order, sort order, hashed quantities, unsigned-u64 fold). Yet `canonicalHash` over the golden ticks `{0,3600,86400,2592000}` at `dt=1/60` yields **12899997400407946598** in TS vs **15552073864691245897** (unsigned u64) in C#. Cause: of the 96 folded position doubles, two differ in their lowest 1–2 mantissa bits (`sat_meo_inc.z@t0`, `mars.y@t3600`) — V8-vs-.NET `Math.sin/atan2/sqrt` rounding, the same sub-ULP divergence `ephemeris.test.ts` already tolerates at `REL_TOL=1e-9`. A raw-bit hash has full avalanche, so 1 ULP scrambles the result; matching C# would need an fdlibm-identical trig port (out of scope). **Resolution:** pin the TS-native value as the determinism guard, record the C# baseline as provenance. P0-06 is therefore an *intra-runtime* TS determinism proof (replay → identical TS state), not a cross-runtime C# equivalence proof; the **replay golden (B3) should fold the action-driven mutable state** (clock tick, RNG state, economy integers — all exactly representable), not the transcendental ephemeris positions. The TS pin is stable for a fixed V8/Node (D1 pins Node 26).
+
+Two C# porting traps still hold for SaveGame/replay: (1) `dt = 1/60` is stored as exact IEEE-754 bits and **does not survive JSON** — preserve the bit pattern, do not round-trip through a decimal string; (2) replay must use the **unclamped scheduler kernel** (`SimScheduler`), because the live `SimClock` drops steps under fast-forward and would diverge.
+
+### SD-16 — Defer a single SimState/World consolidation (conscious deferral)
+**Status: ACCEPTED (conscious deferral).** Source PLAN. Sim mutable state is small and well-defined — the clock tick, the RNG state, and a few `Mission` fields — so P0-05 serialises it directly rather than introducing a god-object `SimState`/`World`. No consolidation refactor before the economy lands. Revisit only if M1 state sprawls.
+
 ---
 
 ## Resolved engineering decisions (from scoping)
@@ -114,7 +130,6 @@ The app runs in the browser. No Tauri gate — see SD-2. The remaining engineeri
 
 ## Decisions still owed
 
-- **Before P0-06 (determinism test):** D4 (RNG portability in TS).
 - **At M0-02:** Kepler accuracy tolerance target — add as **D8 when reached**.
 - **M3–M4:** default "hardcore" level — is the player's *own* network awareness delayed, or only in-fiction data products?
 - **Before M6:** does the optional currency flip read as climax or confusion?

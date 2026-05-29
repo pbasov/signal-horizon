@@ -9,7 +9,7 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - The **GDD** (`docs/signal-horizon-gdd.md`) is the design authority. Every feature, behavior, and naming convention traces back to it.
 - The **sim↔render contract** (`docs/sim-render-contract.md`) is the single boundary that keeps the truth layer pure and the render layer honest. Read it before touching anything in `src/sim/` or `src/orrery/`.
 - The **backlog** (`docs/backlog.md`) tracks what's done and what's next. The **decisions log** (`docs/decisions.md`) records why. Read both before starting any ticket.
-- The **implementation plan** (`docs/signal-horizon-implementation-plan-v0.1.md`) and **scoping doc** (`docs/signal-horizon-scoping-v0.1.md`) define milestones and acceptance criteria.
+- The **implementation plan** (`docs/signal-horizon-implementation-plan.md`) is the sequencing authority and defines milestones and acceptance criteria. Where the backlog and plan disagree on build order, the plan wins. The **scoping doc** (`docs/signal-horizon-scoping-v0.1.md`) is historical context, superseded by the implementation plan.
 - **Never invent requirements.** If the GDD doesn't call for it, don't build it. If you're unsure, say so and ask.
 - **Never modify the GDD without explicit user instruction.** The game design document is the user's domain. Autonomous agents may propose changes (suggest, don't edit) but must not alter GDD content unless the user explicitly approves each change.
 

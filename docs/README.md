@@ -3,20 +3,20 @@
 A satellite & information-network tycoon sim. Working title **Signal Horizon**.
 The product you sell is *knowledge moved across distance*; the speed of light is the hardest constraint.
 
-**Stack:** Tauri 2.x + TypeScript + Three.js + Vite. Migrated from Godot 4.6 C# — see `FINDINGS.md` for the spike verdict and `decisions.md` (SD-10) for the migration decision.
+**Stack:** TypeScript + Three.js (WebGL2) + Vite, browser-native (Chromium). Migrated from Godot 4.6 C# — see `FINDINGS.md` for the spike verdict and `decisions.md` (SD-10) for the migration decision.
 
 ## Read in this order
 
 | # | Doc | What it is | Status |
 |---|---|---|---|
 | 1 | [signal-horizon-gdd.md](signal-horizon-gdd.md) | **Game Design Document** — the *what/why*. Vision, pillars, systems, art direction. | Living |
-| 2 | [signal-horizon-implementation-plan-v0.1.md](signal-horizon-implementation-plan-v0.1.md) | **Implementation Plan** — the *how/when*. Phases, milestones, prose ticket spec. Adapted for TS/Three.js/Tauri stack. | Current (v0.1, stack-adapted) |
-| 3 | [signal-horizon-scoping-v0.1.md](signal-horizon-scoping-v0.1.md) | **Engineering Scoping** — gap analysis against the plan, first-work order. Adapted for TS/Three.js/Tauri stack. | Current (v0.1, stack-adapted) |
+| 2 | [signal-horizon-implementation-plan.md](signal-horizon-implementation-plan.md) | **Implementation Plan** — the *how/when*. Phases, milestones, prose ticket spec. Adapted for TS/Three.js stack. | Current (v0.2) |
+| 3 | [signal-horizon-scoping-v0.1.md](signal-horizon-scoping-v0.1.md) | **Engineering Scoping** — gap analysis against the plan, first-work order. Adapted for TS/Three.js stack. | Historical (superseded by plan v0.2) |
 | 4 | [backlog.md](backlog.md) | **Ticket Backlog** — trackable checklist (P0/M0 detailed, M1–M6 headlines). Merged spike + Godot status. | Living |
 | 5 | [decisions.md](decisions.md) | **Decision Log** — design + engineering decisions, status, rationale. Merged spike (SD-N) + design (DD-N). | Living |
-| 6 | [sim-render-contract.md](sim-render-contract.md) | **Sim ↔ Render Contract** — the f64-truth / f32-render boundary. Stack-agnostic interface spec. | v0 |
+| 6 | [sim-render-contract.md](sim-render-contract.md) | **Sim ↔ Render Contract** — the f64-truth / f32-render boundary. Stack-agnostic interface spec. | v1 |
 | 7 | [tiling-wm-spec.md](tiling-wm-spec.md) | **Tiling WM Spec (DD-10)** — zone-grid + mouse zone-snapping + presets. | ACCEPTED |
-| 8 | [m0-acceptance.md](m0-acceptance.md) · [ui-exploration-v2.md](ui-exploration-v2.md) · [ui-critique-punchlist.md](ui-critique-punchlist.md) | **M0 rubric** + **UI exploration** (phased, not a spec) + **critique punch-list** (ordered fixes). | living |
+| 8 | [m0-acceptance.md](m0-acceptance.md) · [ui-critique-punchlist.md](ui-critique-punchlist.md) | **M0 rubric** + **critique punch-list** (ordered fixes). | living |
 
 ## Reference
 
@@ -34,4 +34,4 @@ GDD wins on design; the implementation plan wins on sequencing; scoping/backlog/
 
 ## Current state (2026-05-29)
 
-Pre-production, migrated to Tauri + TS + Three.js. The spike proved M0's full visual scope works in the web stack with bit-identical Kepler truth. **Next:** P0-GATE — wrap in Tauri and validate under WebKitGTK — then port the deterministic fixed-tick + save/replay backbone. See [backlog.md](backlog.md).
+Pre-production, browser-native TS/Three.js/Vite. The M0 spike proved M0's full visual scope works in the web stack with bit-identical Kepler truth. **Next:** port the deterministic save/replay backbone (P0-05/06, ported from the C# reference) — then the M1 fun-gate. See [backlog.md](backlog.md).

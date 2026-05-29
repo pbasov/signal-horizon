@@ -1,6 +1,8 @@
 # SIGNAL HORIZON — Engineering Scoping
 ### v0.1 (TS/Three.js) · companion to implementation-plan-v0.1 / GDD v0.5
 
+> **HISTORICAL — superseded by docs/signal-horizon-implementation-plan.md (v0.2).** Kept for the original scoping/first-work-order record.
+
 > Output of a 5-way scoping pass (P0 foundations · M0 sim core · M0 render/signal · M1 fun-gate · cross-cutting/spikes) against the live codebase, then **updated** to reflect the TypeScript + Three.js spike results. The spike proved the UX builds at least as naturally on the web stack (see `FINDINGS.md`); the app runs in the browser (SD-2). Scope only — game design is unchanged.
 
 ---
