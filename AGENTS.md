@@ -1,0 +1,63 @@
+# AGENTS.md — Rules for Automated Contributors
+
+These rules are **mandatory** for every change to this codebase, whether by a human or an AI agent. Violating any rule is a bug.
+
+---
+
+## 1. Ground yourself in the design document
+
+- The **GDD** (`docs/signal-horizon-gdd-v0.5.md`) is the design authority. Every feature, behavior, and naming convention traces back to it.
+- The **sim↔render contract** (`docs/sim-render-contract.md`) is the single boundary that keeps the truth layer pure and the render layer honest. Read it before touching anything in `src/sim/` or `src/orrery/`.
+- The **backlog** (`docs/backlog.md`) tracks what's done and what's next. The **decisions log** (`docs/decisions.md`) records why. Read both before starting any ticket.
+- The **implementation plan** (`docs/signal-horizon-implementation-plan-v0.1.md`) and **scoping doc** (`docs/signal-horizon-scoping-v0.1.md`) define milestones and acceptance criteria.
+- **Never invent requirements.** If the GDD doesn't call for it, don't build it. If you're unsure, say so and ask.
+
+---
+
+## 2. Always write tests
+
+- Every new module in `src/sim/` **must** have a corresponding Vitest test file. Pure sim code is engine-agnostic and must be unit-tested in isolation.
+- Every bugfix **must** include a test that fails without the fix and passes with it.
+- Golden-master pins (e.g. `ephemeris.test.ts`, `rng.test.ts`) are non-negotiable — they prove bit-identity against the C# reference implementation.
+- Test behavior, not implementation. Assert invariants and outputs, not internal state.
+- Run `npm test` before declaring any change done. All existing tests must pass.
+
+---
+
+## 3. Use Playwright for frontend changes
+
+- Any change to `src/orrery/`, `src/wm/`, `src/panels/`, `src/style.css`, or `index.html` is a **frontend change**.
+- Frontend changes **must** be verified with a Playwright screenshot using `tools/shoot.mjs` or a headful test. "It compiles" is not sufficient.
+- Visual regressions are bugs. Compare screenshots before and after when changing rendering, layout, or styling.
+- The app runs at `http://localhost:5173` via `npm run dev`. Start it before shooting.
+- For complex UI changes, write a Playwright test script, not just a one-off screenshot.
+
+---
+
+## 4. UX is paramount
+
+- Signal Horizon is a **desktop-only** experience. No mobile layouts, no responsive breakpoints.
+- The 1-bit chrome aesthetic is intentional. Chrome uses dither for tonal variation, never colour. Signal uses colour with redundant shape/dither encoding (CVD-safe).
+- The tiling WM shell means **every pixel is occupied**. No dead space, no collapsing panels. Always-tiled invariant.
+- Keyboard-first interaction (preset keys 1–5, camera keys C/O/S/T, time controls Space/,/. ). Mouse is secondary.
+- The speed of light is the central constraint. Any display of light-delay, freshness, or packet progress **must** be physically honest — no faked animations.
+- Before changing any visual or interaction, re-read the GDD §8 (styling), the tiling-WM spec (`docs/tiling-wm-spec.md`), and the UI critique (`docs/ui-critique-punchlist.md`).
+- **CVD safety:** every colour encoding must have a redundant channel (shape, dither density, or glyph). "Colour-off fully playable" is a per-milestone exit check.
+
+---
+
+## 5. Architecture rules
+
+- `src/sim/` is **pure TypeScript** with zero DOM or Three.js imports. The sim never returns a `Vector3` (that's 32-bit). It returns `number[]` or plain `double`.
+- `src/orrery/` owns the **only** f64→f32 crossing (floating-origin rebase). Nowhere else converts.
+- `src/wm/` owns the tiling window manager. Panels are DOM; the orrery is Three.js canvas. They share the zone grid, not the rendering.
+- Deterministic code uses `SimClock` (integer tick × DT) and `SimRng` (splitmix64 bigint). Never `Date.now()` or `Math.random()` in `src/sim/`.
+- No premature abstraction. Delete code that isn't pulling its weight.
+
+---
+
+## 6. Commit discipline
+
+- One logical change per commit. Don't bundle unrelated refactors with feature work.
+- Commit messages must reference the ticket (e.g. `P0-05: Add action-log save format`).
+- Run `npm test && npx tsc --noEmit && npm run build` before every push.
