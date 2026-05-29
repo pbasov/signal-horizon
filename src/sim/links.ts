@@ -32,6 +32,35 @@ export function segmentSphere(
   return { distance, t, blocked };
 }
 
+/**
+ * Clear line of sight from `a` to `b` at time t, given candidate occluders.
+ * Faithful port of SignalLink.LineOfSight: returns false if ANY occluder body's
+ * sphere blocks the segment. The endpoints themselves (a/b) are skipped so a
+ * body never occludes its own link, as are unknown bodies and zero-radius
+ * bodies. "Blocked" uses the same {@link segmentSphere} test: the occluder's
+ * closest-approach parameter must lie STRICTLY in (0,1) AND the perpendicular
+ * distance must be < its radius.
+ */
+export function lineOfSight(
+  eph: Ephemeris,
+  a: string,
+  b: string,
+  t: number,
+  occluders: string[],
+): boolean {
+  const pa = eph.position(a, t);
+  const pb = eph.position(b, t);
+  for (const occ of occluders) {
+    if (occ === a || occ === b) continue;
+    if (!eph.hasBody(occ)) continue;
+    const r = eph.radiusMeters(occ);
+    if (r <= 0.0) continue;
+    const center = eph.position(occ, t);
+    if (segmentSphere(pa, pb, center, r).blocked) return false;
+  }
+  return true;
+}
+
 export interface LosState {
   /** perpendicular miss distance of the Sun centre to the Earth→Mars segment (m) */
   missDistance: number;
