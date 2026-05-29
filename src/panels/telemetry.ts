@@ -5,6 +5,12 @@
  * amber light-delay values, severity-coloured LOS, and a 16-segment dithered
  * freshness gauge that drains warn→crit as the packet ages.
  *
+ * M1-05 adds a DEMAND group — the live standing-request readout: the current
+ * resolve outcome (FRESH/STALE/MISS·fetching NNs/BLACKOUT), the in-flight fetch
+ * countdown, and the Mars cache freshness %. This is the cache-miss→fetch→
+ * arrive→hit loop made legible in text (the crawling packet is the same wait in
+ * the orrery); the full glanceable map is E5.
+ *
  * The DOM is built ONCE in the constructor; update(state) only mutates text
  * and class names in place — no per-frame innerHTML rebuilds.
  */
@@ -17,6 +23,7 @@ import {
   fmtLightSeconds,
   fmtPct,
 } from "../format";
+import type { DemandReadout } from "../types";
 
 const GAUGE_SEGS = 16;
 
@@ -38,6 +45,11 @@ export class Telemetry implements PanelHandle {
   private vProgress: HTMLElement;
   private vFreshness: HTMLElement;
   private segs: HTMLElement[] = [];
+
+  // --- DEMAND (M1-05 standing-request loop) ---
+  private vServe: HTMLElement;
+  private vWait: HTMLElement;
+  private vCache: HTMLElement;
 
   /** mirrors the last-seen occultation state for status(). */
   private occulted = false;
@@ -70,7 +82,13 @@ export class Telemetry implements PanelHandle {
     }
     pkt.appendChild(gauge);
 
-    this.content.append(clock, link, pkt);
+    // GROUP: DEMAND — the live standing-request loop (mars_imagery).
+    const demand = group("DEMAND · MARS_IMAGERY");
+    this.vServe = valueOf(row(demand, "SERVE"));
+    this.vWait = valueOf(row(demand, "WAIT", "amber"));
+    this.vCache = valueOf(row(demand, "CACHE"));
+
+    this.content.append(clock, link, pkt, demand);
   }
 
   update(state: FrameState): void {
@@ -107,6 +125,48 @@ export class Telemetry implements PanelHandle {
       setText(this.vFreshness, "—");
       this.paintGauge(0);
     }
+
+    // --- DEMAND ---
+    this.paintDemand(state.demand);
+  }
+
+  /**
+   * Paint the standing-demand readout: the SERVE outcome (coloured signal), the
+   * fetch WAIT countdown (amber while crawling, "—" when idle), and the Mars
+   * CACHE freshness % (green fresh / amber stale / red unusable).
+   */
+  private paintDemand(d: DemandReadout): void {
+    // SERVE outcome — coloured per the styling split (green hit / amber wait /
+    // red blackout). MISS shows the live countdown so the wait reads as gameplay.
+    if (d.blackout) {
+      setText(this.vServe, "BLACKOUT");
+      setValueClass(this.vServe, "red");
+    } else if (d.outcome === "fresh") {
+      setText(this.vServe, d.viaCache ? "FRESH · cache" : "FRESH");
+      setValueClass(this.vServe, "green");
+    } else if (d.outcome === "stale") {
+      setText(this.vServe, "STALE · cache");
+      setValueClass(this.vServe, "amber");
+    } else {
+      // miss — fetching across the gap
+      const c = d.fetchCountdownSeconds;
+      setText(this.vServe, c != null ? `MISS · fetching ${fmtDuration(c)}` : "MISS · fetching");
+      setValueClass(this.vServe, "amber");
+    }
+
+    // WAIT — the in-flight fetch ETA, the same number the crawling packet shows.
+    if (d.fetchInFlight && d.fetchCountdownSeconds != null) {
+      setText(this.vWait, `${fmtDuration(d.fetchCountdownSeconds)} · ETA`);
+    } else {
+      setText(this.vWait, "—");
+    }
+
+    // CACHE — Mars-relay freshness of the held copy.
+    setText(this.vCache, fmtPct(d.cacheFreshness));
+    setValueClass(
+      this.vCache,
+      d.cacheFreshness >= 0.9 ? "green" : d.cacheFreshness >= 0.5 ? "amber" : "red",
+    );
   }
 
   status(): "ok" | "crit" {

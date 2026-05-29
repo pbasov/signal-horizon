@@ -12,6 +12,7 @@ import { SimClock } from "./sim/clock";
 import { oneWaySeconds } from "./sim/delay";
 import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
+import { M1Session, type SessionRenderState } from "./sim/m1/session";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
 import { Orrery } from "./orrery/orrery";
@@ -45,6 +46,32 @@ app.append(topbar, wmCanvas, status.element);
 const eph = loadEphemeris();
 const clock = new SimClock();
 const mission = new Mission(eph);
+// The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
+// loop. When it starts a fetch, we launch the Mission packet to render the wait.
+const session = new M1Session();
+// Latest render-facing resolve state; refreshed by tickSim() each fixed tick.
+let demand: SessionRenderState = {
+  outcome: "miss",
+  viaCache: false,
+  cacheFreshness: 0,
+  fetchInFlight: false,
+  fetchCountdownSeconds: null,
+  blackout: false,
+};
+
+/**
+ * One fixed sim tick at time t: drive the Mission (packet crawl + log), then the
+ * standing demand (the cache loop). When the demand STARTS a fetch (a miss) and
+ * no packet is in flight, launch the Mission packet so its crawl IS the visible
+ * wait. Mission and session share the same one-way ETA, so they stay in lockstep.
+ */
+function tickSim(t: number): void {
+  for (const e of mission.update(t)) log.append(e);
+  demand = session.step(eph, t);
+  if (demand.fetchInFlight && mission.packet === null) {
+    for (const e of mission.launch(t)) log.append(e);
+  }
+}
 
 // --- orrery + panels --------------------------------------------------------
 const orrery = new Orrery({
@@ -92,8 +119,8 @@ function setWmPreset(i: number): void {
 status.setPresetTabs(presets.map((p) => p.name));
 setWmPreset(0); // OVERVIEW
 
-// initial boot log
-for (const e of mission.update(clock.seconds)) log.append(e);
+// initial boot: mission boot triplet + first demand evaluation (may launch a packet)
+tickSim(clock.seconds);
 
 // --- keyboard ---------------------------------------------------------------
 window.addEventListener("keydown", (e) => {
@@ -124,7 +151,7 @@ function frame(now: number): void {
   // Fixed-tick drain: schedule wall time, then run all owed sim ticks.
   clock.scheduleWall(wallDt);
   while (clock.nextTick() !== null) {
-    for (const e of mission.update(clock.seconds)) log.append(e);
+    tickSim(clock.seconds);
   }
 
   // Render at the latest sim time (interpolation deferred — analytic Kepler
@@ -148,6 +175,14 @@ function frame(now: number): void {
     losMarginSolarRadii: los.marginSolarRadii,
     losOcculted: los.occulted,
     packet: mission.packet,
+    demand: {
+      outcome: demand.outcome,
+      viaCache: demand.viaCache,
+      cacheFreshness: demand.cacheFreshness,
+      fetchInFlight: demand.fetchInFlight,
+      fetchCountdownSeconds: demand.fetchCountdownSeconds,
+      blackout: demand.blackout,
+    },
   };
 
   telemetry.update(fs);

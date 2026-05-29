@@ -8,12 +8,18 @@ import { earthMarsLos } from "./links";
  * BEHAVIOUR pin for the mission director — the Earth→Mars packet lifecycle and
  * the SYSTEM.LOG feed, driven purely by SIM time.
  *
- * Everything here is a pure function of the explicit t handed to update(): no
- * wall-clock, no RNG. The ephemeris is the real (deterministic) Kepler truth, so
- * we DERIVE the expected numbers (one-way light delay, freshness) from the same
- * pure helpers the module uses rather than hardcoding magic constants. At the
- * J2000 epoch (t=0) Earth↔Mars is wide open (≈156 solar radii of margin), so no
- * solar-occult event fires and the packet/script behaviour is isolated.
+ * M1-05: the packet is now LAUNCH-ON-DEMAND. boot() no longer auto-launches and
+ * arrival no longer auto-relaunches; the orchestrator calls launch(t) when the
+ * M1Session starts a fetch, and the packet CLEARS itself on arrival. These tests
+ * are updated from the old auto-relaunch pins to the new gated behaviour.
+ *
+ * Everything here is a pure function of the explicit t handed to update()/
+ * launch(): no wall-clock, no RNG. The ephemeris is the real (deterministic)
+ * Kepler truth, so we DERIVE the expected numbers (one-way light delay,
+ * freshness) from the same pure helpers the module uses rather than hardcoding
+ * magic constants. At the J2000 epoch (t=0) Earth↔Mars is wide open (≈156 solar
+ * radii of margin), so no solar-occult event fires and the packet/script
+ * behaviour is isolated.
  */
 
 const eph = loadEphemeris();
@@ -25,30 +31,35 @@ function expectedOneWay(t: number): number {
 
 const SCRIPT_INTERVAL = 540; // sim-seconds between flavour lines (mirrors mission.ts)
 
-describe("Mission — boot sequence", () => {
-  it("a fresh mission emits nothing about a packet until update() runs", () => {
+describe("Mission — boot sequence (M1-05: gated, no auto-launch)", () => {
+  it("a fresh mission has no packet until launch() is called", () => {
     const m = new Mission(eph);
     expect(m.packet).toBeNull();
   });
 
-  it("the first update() boots: orrery-online + link-open + a packet launch", () => {
+  it("the first update() boots with orrery-online + link-open and NO packet launch", () => {
     const m = new Mission(eph);
     const log = m.update(0);
 
-    // The boot triplet, in order.
-    expect(log).toHaveLength(3);
+    // The boot pair, in order — the packet now appears on demand, not at boot.
+    expect(log).toHaveLength(2);
     expect(log[0]).toMatchObject({ tSim: 0, sev: "info", entity: "ORRERY" });
     expect(log[1]).toMatchObject({ tSim: 0, sev: "info", entity: "EARTH→MARS" });
-    expect(log[2]).toMatchObject({ tSim: 0, sev: "info", entity: "PKT-0001" });
-    expect(log[2].msg).toContain("launched");
-    expect(log[2].msg).toContain("EARTH→MARS");
+    // No PKT line at boot, and no packet in flight.
+    expect(log.some((e) => e.entity?.startsWith("PKT-"))).toBe(false);
+    expect(m.packet).toBeNull();
   });
 
-  it("the launched packet is Earth→Mars, id 1, fresh, at progress 0 with frozen one-way delay", () => {
+  it("launch() starts an Earth→Mars packet: id 1, fresh, progress 0, frozen one-way delay", () => {
     const m = new Mission(eph);
     m.update(0);
+    const log = m.launch(0);
 
-    expect(m.packet).not.toBeNull();
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ tSim: 0, sev: "info", entity: "PKT-0001" });
+    expect(log[0].msg).toContain("launched");
+    expect(log[0].msg).toContain("EARTH→MARS");
+
     expect(m.packet).toMatchObject({
       id: 1,
       fromId: "earth",
@@ -61,19 +72,18 @@ describe("Mission — boot sequence", () => {
     expect(m.packet!.oneWay).toBeCloseTo(expectedOneWay(0), 9);
   });
 
-  it("boots only once — a second update() does not re-emit the boot triplet", () => {
+  it("boots only once — a second update() does not re-emit the boot pair", () => {
     const m = new Mission(eph);
     m.update(0);
-    const again = m.update(1); // 1s later, well before any script line or arrival
+    const again = m.update(1); // 1s later, well before any script line
     expect(again.some((e) => e.entity === "ORRERY")).toBe(false);
     expect(again.some((e) => e.msg.includes("link open"))).toBe(false);
-    // Still the same in-flight packet (no relaunch).
-    expect(m.packet!.id).toBe(1);
   });
 
-  it("boots relative to whatever t it is first ticked at (not assuming t=0)", () => {
+  it("launch() freezes one-way delay at whatever t it is launched at (not assuming t=0)", () => {
     const m = new Mission(eph);
-    const log = m.update(10_000);
+    m.update(10_000);
+    const log = m.launch(10_000);
     expect(log[0].tSim).toBe(10_000);
     expect(m.packet!.launchT).toBe(10_000);
     expect(m.packet!.oneWay).toBeCloseTo(expectedOneWay(10_000), 9);
@@ -81,9 +91,16 @@ describe("Mission — boot sequence", () => {
 });
 
 describe("Mission — honest packet crawl (progress/freshness derive from t)", () => {
-  it("progress is 0 at launch and 1 exactly at launchT + oneWay", () => {
+  /** Boot + launch a packet at t=0, returning the mission. */
+  function booted(): Mission {
     const m = new Mission(eph);
     m.update(0);
+    m.launch(0);
+    return m;
+  }
+
+  it("progress is 0 at launch and clears exactly at launchT + oneWay (no relaunch)", () => {
+    const m = booted();
     const ow = m.packet!.oneWay;
 
     expect(m.packet!.progress).toBe(0);
@@ -91,32 +108,24 @@ describe("Mission — honest packet crawl (progress/freshness derive from t)", (
     m.update(ow / 2);
     expect(m.packet!.progress).toBeCloseTo(0.5, 12);
 
-    // Drive a fresh mission straight to arrival so we read progress AT t=ow
-    // before the relaunch resets it.
-    const arrival = new Mission(eph);
-    arrival.update(0);
-    const owA = arrival.packet!.oneWay;
-    // Capture the packet object identity to confirm we crossed the finish line.
-    const launched = arrival.packet!;
-    arrival.update(owA);
-    // launched packet reached progress 1 (it has since been replaced, but the
-    // arrival log proves the finish; identity changed on relaunch).
-    expect(arrival.packet).not.toBe(launched);
+    // Drive straight to arrival: the packet hits progress 1 and CLEARS itself.
+    m.update(ow);
+    expect(m.packet).toBeNull();
   });
 
-  it("progress clamps to [0,1] and never overshoots past the light-time", () => {
-    // A single mission ticked WAY past one one-way: the in-flight packet is the
-    // relaunched one, whose progress is again within [0,1].
-    const m = new Mission(eph);
-    m.update(0);
-    m.update(m.packet!.oneWay * 1.5);
+  it("progress clamps to [0,1] before arrival and the packet clears past one-way", () => {
+    const m = booted();
+    const ow = m.packet!.oneWay;
+    m.update(ow * 0.5);
     expect(m.packet!.progress).toBeGreaterThanOrEqual(0);
     expect(m.packet!.progress).toBeLessThanOrEqual(1);
+    // Ticked past one one-way: the packet has arrived and cleared — no relaunch.
+    m.update(ow * 1.5);
+    expect(m.packet).toBeNull();
   });
 
-  it("freshness equals the module's 2^(-age/oneWay) decay law", () => {
-    const m = new Mission(eph);
-    m.update(0);
+  it("freshness equals the module's 2^(-age/oneWay) decay law (before arrival)", () => {
+    const m = booted();
     const ow = m.packet!.oneWay;
 
     for (const age of [0, ow * 0.25, ow * 0.5, ow * 0.75]) {
@@ -125,9 +134,8 @@ describe("Mission — honest packet crawl (progress/freshness derive from t)", (
     }
   });
 
-  it("freshness decays monotonically as sim time advances", () => {
-    const m = new Mission(eph);
-    m.update(0);
+  it("freshness decays monotonically as sim time advances (before arrival)", () => {
+    const m = booted();
     const ow = m.packet!.oneWay;
 
     let prev = m.packet!.freshness; // 1 at launch
@@ -139,12 +147,10 @@ describe("Mission — honest packet crawl (progress/freshness derive from t)", (
   });
 
   it("packet state is a pure function of the final t (path-independent)", () => {
-    const a = new Mission(eph);
-    a.update(0);
+    const a = booted();
     a.update(200);
 
-    const b = new Mission(eph);
-    b.update(0);
+    const b = booted();
     b.update(50);
     b.update(120);
     b.update(200);
@@ -155,38 +161,43 @@ describe("Mission — honest packet crawl (progress/freshness derive from t)", (
   });
 });
 
-describe("Mission — packet arrival and relaunch", () => {
-  it("on arrival emits a stored/arrived line then relaunches the next packet", () => {
+describe("Mission — packet arrival and clear (M1-05: no relaunch)", () => {
+  it("on arrival emits a stored/arrived line and clears the packet — no relaunch", () => {
     const m = new Mission(eph);
     m.update(0);
+    m.launch(0);
     const ow = m.packet!.oneWay;
     const log = m.update(ow);
 
     const arrived = log.find((e) => e.entity === "PKT-0001");
-    const relaunched = log.find((e) => e.entity === "PKT-0002");
     expect(arrived).toBeDefined();
     expect(arrived!.msg).toContain("arrived at MARS");
-    expect(relaunched).toBeDefined();
-    expect(relaunched!.msg).toContain("launched");
 
-    // The new in-flight packet is id 2, freshly launched at the arrival instant.
+    // No PKT-0002 relaunch line, and the slot is empty until the next launch().
+    expect(log.some((e) => e.entity === "PKT-0002")).toBe(false);
+    expect(m.packet).toBeNull();
+  });
+
+  it("a subsequent launch() at the arrival instant re-samples distance and gets the next id", () => {
+    const m = new Mission(eph);
+    m.update(0);
+    m.launch(0);
+    const ow = m.packet!.oneWay;
+    m.update(ow); // arrives + clears
+    m.launch(ow); // orchestrator launches the next fetch on the next miss
+
     expect(m.packet!.id).toBe(2);
     expect(m.packet!.launchT).toBe(ow);
     expect(m.packet!.progress).toBe(0);
     expect(m.packet!.freshness).toBe(1);
-  });
-
-  it("re-samples the (changing) distance at relaunch — the new oneWay is the t=arrival light-time", () => {
-    const m = new Mission(eph);
-    m.update(0);
-    const ow = m.packet!.oneWay;
-    m.update(ow);
+    // Re-sampled the (changing) distance: the new oneWay is the t=arrival light-time.
     expect(m.packet!.oneWay).toBeCloseTo(expectedOneWay(ow), 9);
   });
 
   it("a packet arriving exactly at one one-way carries ~0.5 freshness in its arrival line", () => {
     const m = new Mission(eph);
     m.update(0);
+    m.launch(0);
     const ow = m.packet!.oneWay;
     const log = m.update(ow);
     const arrived = log.find((e) => e.entity === "PKT-0001")!;
@@ -270,6 +281,7 @@ describe("Mission — snapshot()/restore() round-trip", () => {
   it("snapshot captures the live mutable state including the in-flight packet", () => {
     const m = new Mission(eph);
     m.update(0);
+    m.launch(0); // demand started a fetch
     m.update(300);
 
     const snap = m.snapshot();
@@ -282,6 +294,7 @@ describe("Mission — snapshot()/restore() round-trip", () => {
   it("the snapshot packet is copied by value, NOT aliased to live state", () => {
     const m = new Mission(eph);
     m.update(0);
+    m.launch(0);
     const snap = m.snapshot();
     const capturedProgress = snap.packet!.progress;
 
@@ -295,6 +308,7 @@ describe("Mission — snapshot()/restore() round-trip", () => {
   it("restore() reproduces a state whose own snapshot equals the original", () => {
     const original = new Mission(eph);
     original.update(0);
+    original.launch(0); // an in-flight packet to exercise the copy-by-value path
     original.update(SCRIPT_INTERVAL); // fire a script line so scriptIdx/nextScriptT advance
     const snap = original.snapshot();
 

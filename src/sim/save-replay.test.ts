@@ -154,8 +154,14 @@ function scaleIndepSave() {
 // the replay once and reading the actual value; pinned HERE as the TS-native
 // determinism guard (mirrors state-hash.test.ts's TS_GOLDEN_PIN). Any change to
 // the RNG, the Mission director, the scheduler, or the fold moves this value.
+//
+// M1-05 re-pin: the Mission is now LAUNCH-ON-DEMAND, so a bare update()-driven
+// replay (which never calls launch()) leaves packet == null and nextId == 1 the
+// whole way through — the folded mutable state legitimately shifted. The
+// determinism PROPERTY this guards (scale/frame independence, seed sensitivity)
+// is unchanged; only the absolute bootstrapped value moved with the director.
 // ---------------------------------------------------------------------------
-const REPLAY_GOLDEN = 14568270565844115836n;
+const REPLAY_GOLDEN = 1753412885867183030n;
 
 describe("save-replay golden-master — action-driven mutable state (B3)", () => {
   it("pins the TS replay state hash for the golden SaveGame (regression guard)", () => {

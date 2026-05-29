@@ -96,8 +96,8 @@
 - [~] **M1-03** Serve / miss / stale resolution — *M* · fresh/stale/miss/blackout-miss. **E1:** `src/sim/m1/resolver.ts` — pure `resolve()` → `ResolveResult` (the primary telemetry tap), pinned. Live wiring/telemetry at E2/E3/E6.
 
 **Caching / prefetch loop (the actual core)**
-- [~] **M1-04** Cache node placement — *M* · cache @ Mars; one slot, no eviction. **E1:** `src/sim/m1/cache.ts` — one-slot store, `holds()` gated on `age>=0` (prefetch-arrival pivot), pinned. Live wiring at E2/E3.
-- [ ] **M1-05** Cache hit / miss logic — *M* · miss = visible pending wait + countdown _(E2 — render the Resolver MISS as the crawling packet)_
+- [x] **M1-04** Cache node placement — *M* · cache @ Mars; one slot, no eviction. **E1:** `src/sim/m1/cache.ts` (pinned). **E2:** wired live — `M1Session` holds `Cache(mars)`, stores the fetched sample on arrival, serves hits.
+- [x] **M1-05** Cache hit / miss logic — *M* · miss = visible pending wait + countdown. **E2:** `src/sim/m1/session.ts` (pure, deterministic) drives demand→resolve each tick; a MISS gates the crawling Earth→Mars packet (auto-relaunch removed); on arrival the sample stores → fresh hit → decays → next miss (the loop breathes). Telemetry SERVE shows `MISS · fetching NNmNNs` (live countdown) / `FRESH|STALE · cache` / `BLACKOUT`; PACKET progress matches the on-orrery crawl. **Screenshot-verified** (mid-crawl: PKT-0001 58% · MISS fetching 6m32s). _Minor: telemetry WAIT/CACHE rows clip below SERVE in OVERVIEW — countdown still on SERVE; full readout polish at E5/M1-10._
 - [ ] **M1-06** Predictive prefetch action — *M* · manual prefetch = what fills the wait _(E3 — first logged player action)_
 - [~] **M1-07** Coherence level — *S* · ~~two levels~~ **three** (SD-17: GDD §4.4 names strong/eventual/best-effort; GDD outranks the plan). **E1+conformance:** `src/sim/m1/coherence.ts` — `EVENTUAL < BEST_EFFORT < STRONG` ladder (floor 0.5/0.9/0.98, cadence 7200/1800/600s, cost 1/3/6×), pinned. Live wiring at E3.
 

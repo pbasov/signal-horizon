@@ -5,8 +5,15 @@
  * The packet is HONEST: its one-way delay is frozen at launch from the real
  * Ephemeris Earth↔Mars distance (delay = d / c), so its crawl reaches progress
  * 1.0 exactly when (now − launchT) == oneWay — identical to the number the
- * status strip prints. On arrival it relaunches, re-sampling the (changing)
- * distance. Freshness drains as 2^(-age/oneWay).
+ * status strip prints. Freshness drains as 2^(-age/oneWay).
+ *
+ * M1-05 — LAUNCH-ON-DEMAND. The packet no longer auto-launches on boot or
+ * auto-relaunches on arrival; it now represents the {@link M1Session}'s in-flight
+ * fetch. The orchestrator calls {@link Mission.launch} when the session STARTS a
+ * data-leg fetch (a cache miss), and the packet crawls Earth→Mars at honest light
+ * speed; on arrival it emits a "stored" line and CLEARS itself (no relaunch). The
+ * NEXT packet appears only when the session's cache decays into another miss — so
+ * the on-screen crawl IS the visible pending wait, and the loop breathes.
  *
  * Real solar conjunction is far rarer than a play session, so the log is also
  * fed a deterministic, sim-time-paced flavour stream (the brief explicitly asks
@@ -57,7 +64,15 @@ export class Mission {
 
   constructor(private eph: Ephemeris) {}
 
-  private launch(t: number, out: LogEntry[]): void {
+  /**
+   * Launch a data-leg packet at sim-time t (called by the orchestrator when the
+   * session STARTS a fetch on a cache miss). Replaces whatever was in flight and
+   * returns the launch log entry. The packet's one-way delay is frozen from the
+   * real Earth↔Mars distance at t, so its crawl + ETA match the session's
+   * fetchArrivalT exactly.
+   */
+  launch(t: number): LogEntry[] {
+    const out: LogEntry[] = [];
     const d = this.eph.distanceBetween("earth", "mars", t);
     const ow = oneWaySeconds(d);
     this.packet = { id: this.nextId++, fromId: "earth", toId: "mars", launchT: t, oneWay: ow, progress: 0, freshness: 1 };
@@ -68,6 +83,7 @@ export class Mission {
       value: fmtLightSeconds(ow),
       msg: `launched · EARTH→MARS · ETA ${fmtDuration(ow)}`,
     });
+    return out;
   }
 
   /** Advance mission state to sim-time t; returns any new log entries. */
@@ -78,11 +94,12 @@ export class Mission {
       this.booted = true;
       this.nextScriptT = t + SCRIPT_INTERVAL;
       out.push({ tSim: t, sev: "info", entity: "ORRERY", msg: "truth layer online · analytic Kepler · J2000" });
-      out.push({ tSim: t, sev: "info", entity: "EARTH→MARS", msg: "link open · monitoring light delay" });
-      this.launch(t, out);
+      out.push({ tSim: t, sev: "info", entity: "EARTH→MARS", msg: "link open · awaiting demand" });
+      // M1-05: no boot launch — the packet appears on the first cache miss.
     }
 
-    // Honest packet crawl.
+    // Honest packet crawl. On arrival the packet CLEARS (no relaunch); the next
+    // one is launched on demand by the session's next miss.
     if (this.packet) {
       const age = t - this.packet.launchT;
       this.packet.progress = Math.max(0, Math.min(1, age / this.packet.oneWay));
@@ -95,7 +112,7 @@ export class Mission {
           value: this.packet.freshness.toFixed(2),
           msg: `arrived at MARS · freshness ${this.packet.freshness.toFixed(2)} · stored`,
         });
-        this.launch(t, out);
+        this.packet = null;
       }
     }
 

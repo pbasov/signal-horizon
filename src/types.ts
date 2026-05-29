@@ -33,6 +33,26 @@ export interface PacketState {
   freshness: number;
 }
 
+/**
+ * M1-05 — the standing-demand resolve state the panels + orrery surface. A pure
+ * projection of M1Session.step(), kept dependency-free so views can read it
+ * without importing the sim layer.
+ */
+export interface DemandReadout {
+  /** Latest resolve outcome: "fresh" | "stale" | "miss" | "blackout_miss". */
+  outcome: "fresh" | "stale" | "miss" | "blackout_miss";
+  /** Whether the serve came from the local Mars cache (a hit). */
+  viaCache: boolean;
+  /** Current Mars cache freshness in [0,1] (0 = no usable copy held). */
+  cacheFreshness: number;
+  /** True while a data-leg fetch is crawling Earth→Mars. */
+  fetchInFlight: boolean;
+  /** Seconds until the in-flight fetch arrives, or null when none is in flight. */
+  fetchCountdownSeconds: number | null;
+  /** True when the link is down AND there is no usable cache (blackout miss). */
+  blackout: boolean;
+}
+
 /** Per-frame snapshot the panels render from. */
 export interface FrameState {
   simSeconds: number;
@@ -50,4 +70,6 @@ export interface FrameState {
   /** true when the solar disk intersects the Earth→Mars line of sight */
   losOcculted: boolean;
   packet: PacketState | null;
+  /** M1-05 standing-demand resolve readout (the live cache loop). */
+  demand: DemandReadout;
 }
