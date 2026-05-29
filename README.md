@@ -36,12 +36,6 @@ node tools/shoot.mjs http://localhost:5173 shot.png 3000 "o"     # press O → O
 
 Headful by default (real GPU); `HEADLESS=1` forces the software path for CI.
 
-### Regenerate the C# golden master
-
-```bash
-cd tools/golden && dotnet run -c Release    # compiles the REAL Ephemeris.cs/OrbitalBody.cs
-```
-
 ---
 
 ## Controls

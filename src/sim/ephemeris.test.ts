@@ -9,8 +9,9 @@ import { loadEphemeris, SYSTEM } from "./system-data";
  * and magnitude sanity — "NEVER external JPL state vectors". So there is no
  * hardcoded vector to copy. Instead these values were emitted by compiling the
  * UNMODIFIED Ephemeris.cs/OrbitalBody.cs sources against the same data/system.json
- * (see tools/golden/) and printing G17 round-trip doubles. They ARE the C#
- * implementation's bit-level output — the truth this port must reproduce.
+ * (via a one-off C# emitter, since retired) and printing G17 round-trip doubles.
+ * They ARE the C# implementation's bit-level output — the truth this port must
+ * reproduce.
  *
  * J2000 epoch == t=0 in this sim: epoch_seconds defaults to 0 and m0 mean
  * anomalies are defined at t=0 (system.json _comment).
