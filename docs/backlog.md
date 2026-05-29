@@ -67,7 +67,7 @@
 - [x] **M0-01** f64 Keplerian element model — done (`src/sim/ephemeris.ts`, parent hierarchy)
 - [x] **M0-02** Analytic Kepler propagation `position(body,t)` — done (8-iter Newton, 3-1-3, recursive parent; bit-identical to C#)
 - [x] **M0-03** Earth-orbit satellite propagation — done (LEO 53° + GEO equatorial in `data/system.json`)
-- [x] **M0-04** Solar system dataset — done (Sun/Earth/Moon/Mars + sats; symlink to Godot project's file — SD-4)
+- [x] **M0-04** Solar system dataset — done (Sun/Earth/Moon/Mars + sats; vendored as a real file in `data/system.json` — SD-12, was a symlink under SD-4)
 
 **Render layer (orrery)**
 - [x] **M0-05** Orrery: bodies + orbits (1-bit field, coloured signal) — done (Bayer 4×4 billboards, dashed rings, sim-driven via floating origin)

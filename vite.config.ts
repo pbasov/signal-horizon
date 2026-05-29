@@ -1,21 +1,16 @@
 import { defineConfig } from "vitest/config";
 
-const PROTO_ROOT = "/home/basov/Games/Tauri/SignalHorizon.tauri/prototype-tauri";
-// The canonical body dataset lives in the Godot tree; data/system.json here is a
-// symlink to it (no copy). Vite resolves the symlink to its real path, so the
-// dev server + test transform must be allowed to read outside the project root.
-const GODOT_DATA = "/home/basov/Games/Godot/galaxy-link/data";
-
+// Root is left implicit so it defaults to the cwd — i.e. this directory, since
+// `npm run {dev,build,preview}` always run from the package root. This keeps the
+// config portable: no absolute paths, works wherever the repo is cloned. The
+// body dataset (data/system.json) is a real file inside the root, so no
+// cross-tree `server.fs.allow` widening is needed.
 export default defineConfig({
-  root: PROTO_ROOT,
   // Tauri expects a fixed dev port and quiet screen.
   clearScreen: false,
   server: {
     port: 5173,
     strictPort: true,
-    fs: {
-      allow: [PROTO_ROOT, GODOT_DATA],
-    },
   },
   build: {
     target: "es2022",

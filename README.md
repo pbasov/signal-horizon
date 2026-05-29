@@ -72,7 +72,7 @@ src/
     links.ts            line-of-sight / solar-occult geometry
     clock.ts            sim clock (sim-seconds, time scale, pause)
     mission.ts          Earth→Mars packet lifecycle + SYSTEM.LOG feed
-    system-data.ts      loads data/system.json (symlink to the Godot dataset)
+    system-data.ts      loads data/system.json (the canonical body/orbit dataset)
   wm/           DD-10 zone-grid tiling WM
     zonegrid.ts         model + always-tiled invariant + swap/resize + layout solver
     presets.ts          preset layouts as data
@@ -91,10 +91,11 @@ src/
 tools/
   golden/               throwaway C# tool that emits the golden master from the real sources
   shoot.mjs             Playwright (ungoogled-chromium) screenshot driver
-data/system.json        → symlink to ../../../../Godot/galaxy-link/data/system.json
+data/system.json        canonical body/orbit dataset (real file, vendored from the Godot project)
 docs/                   backlog / decisions / GDD / specs / mockups / screenshots / progress
 ```
 
-> Note: `data/system.json` is a symlink into the Godot tree. This project depends on that
-> project being present at its path. That is intentional — the brief asked to use the
-> *same* dataset, no copy.
+> Note: `data/system.json` is a vendored copy of the Godot project's canonical dataset, kept
+> as a real file so this repo is self-contained and clones anywhere with no external
+> dependency. It started life as a symlink into the Godot tree; if that upstream dataset
+> changes, re-copy the file here to keep the two in sync.

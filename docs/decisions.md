@@ -31,7 +31,7 @@
 **Status: ACCEPTED.** `Ephemeris.cs`/`OrbitalBody.cs` ported verbatim to `src/sim/ephemeris.ts`. TS `number` is f64 natively. Bit-identical to the C# golden master. Vitest pin holds `1e-9` tolerance for cross-machine libm robustness.
 
 ### SD-4 — Reuse the canonical dataset by symlink (no copy)
-**Status: ACCEPTED.** `data/system.json` is a relative symlink to the Godot project's file. Vite `server.fs.allow` widened.
+**Status: SUPERSEDED by SD-12.** `data/system.json` was a relative symlink to the Godot project's file, with Vite `server.fs.allow` widened to read across trees. Replaced by an in-repo vendored copy so the project clones and runs with no external dependency.
 
 ### SD-5 — Floating origin + per-preset log-compression in the orrery
 **Status: ACCEPTED.** Mirrors `render/FloatingOrigin.cs`. f64 subtract → f32 cast. Per-preset radial log-fold. The fold is a visual lie only — it never feeds distance/light-delay math. Constant-screen-size dithered billboards.
@@ -62,6 +62,9 @@
 The app runs in the browser. No Tauri gate — see SD-2. The remaining engineering work is the deterministic fixed-tick + save/replay in TS (bounded, low-risk; the pure layer is already bit-identical).
 
 **Supersedes DD-11** (C# on Godot .NET). Design decisions DD-1 through DD-7 and the full GDD remain the design authority; only the *engineering stack* changed.
+
+### SD-12 — Vendor the canonical dataset as a real file (supersedes SD-4)
+**Status: ACCEPTED.** `data/system.json` is now a real, committed file in this repo — a vendored copy of the Godot project's canonical dataset (byte-identical at vendoring time, sha256 `d2bee65a…`). Replaces the SD-4 symlink so the repo is self-contained and clones/runs anywhere with no external Godot tree present. Consequences: (1) `vite.config.ts` no longer hardcodes absolute machine paths and the `server.fs.allow` cross-tree widening is removed (root defaults to cwd — the package dir under `npm run {dev,build,preview}`); (2) the two datasets are now decoupled — if the Godot `system.json` changes, re-copy it here to resync (noted in `README.md` and `src/sim/system-data.ts`). Verified: `tsc --noEmit`, `vite build`, dev server, and 37/37 Vitest all green.
 
 ### SD-11 — No UI framework; imperative DOM and Three.js only
 **Status: ACCEPTED.** No React, Vue, Svelte, or any reactive/reconciliation layer. The frame loop is `requestAnimationFrame → sim.tick() → orrery.update(state) → renderer.render()` — no diffing, no virtual DOM, no scheduling, no effect lifecycle. Three reasons: (1) The orrery renders to a WebGL canvas — a framework can't schedule or diff GPU draw calls; a React-Three-Fiber wrapper adds JS overhead before the same GL calls. (2) A real-time sim updates every frame — position, packets, freshness all change every tick. Reactive frameworks optimise for skipping unchanged subtrees, but there's nothing to skip; the reconciliation cost is pure overhead. (3) GC pressure: each framework render cycle allocates vdom nodes, memo objects, and effect cleanup closures. At 60fps (~16ms/frame) this competes with the sim and orrery for the frame budget. The adversarial review caught ~960 `Vector3`/frame in Three.js — a framework's allocation pattern would compound this. Panels use `element.textContent = newValue` in the frame loop. If panel complexity grows later, the answer is writing that component imperatively, not introducing a framework.
@@ -127,6 +130,7 @@ The app runs in the browser. No Tauri gate — see SD-2. The remaining engineeri
 | DD-13 | Develop on `main`, auto-push | **Retained** | Same policy, new repo. |
 | DD-14 | Build C# frontend fresh from v3 mockups | **SD-10** | Frontend is now TypeScript/DOM, built fresh from the spike + v3 mockups. Design target unchanged. |
 | (old) SD-2 | Defer the Tauri native shell | **SD-2** (no Tauri; browser is the platform) | Owner decision: skip Tauri, keep it in the browser. Removes WebKitGTK gate. |
+| SD-4 | Canonical dataset by symlink (Vite `fs.allow` widened) | **SD-12** (vendored real file in-repo) | Symlink + absolute `server.fs.allow` paths broke cloning/running on other machines; vendoring makes the repo self-contained. |
 
 ---
 

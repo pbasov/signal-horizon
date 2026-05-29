@@ -1,1 +1,97 @@
-../../../../Godot/galaxy-link/data/system.json
+{
+  "epoch_jd": 2451545.0,
+  "frame": "ecliptic_j2000",
+  "_comment": "Mean classical Keplerian elements at the J2000 epoch (JD 2451545.0). Angles in degrees, distances in AU (a_au) or km (a_km), GM (mu) in m^3/s^2, radii in km. Converted to SI/radians on load by Ephemeris. epoch_jd is informational only: the sim's absolute time t is sim-seconds and the m0 mean anomalies are taken AT t=0. Elements are mean (osculating-ignored) and deliberately approximate; tests assert self-consistency + magnitude sanity, never external JPL state vectors. inc/raan/argp for Earth left near-zero because ecliptic-J2000 is defined by Earth's orbit plane.",
+  "bodies": {
+	"sun": {
+	  "parent": null,
+	  "mu": 1.32712440018e20,
+	  "radius_km": 696340.0,
+	  "a_au": 0.0,
+	  "e": 0.0,
+	  "inc_deg": 0.0,
+	  "raan_deg": 0.0,
+	  "argp_deg": 0.0,
+	  "m0_deg": 0.0
+	},
+	"earth": {
+	  "parent": "sun",
+	  "mu": 3.986004418e14,
+	  "radius_km": 6371.0,
+	  "a_au": 1.00000011,
+	  "e": 0.01671,
+	  "inc_deg": 0.00005,
+	  "raan_deg": -11.26064,
+	  "argp_deg": 114.20783,
+	  "m0_deg": 357.51716
+	},
+	"mars": {
+	  "parent": "sun",
+	  "mu": 4.282837e13,
+	  "radius_km": 3389.5,
+	  "a_au": 1.5237,
+	  "e": 0.0934,
+	  "inc_deg": 1.85,
+	  "raan_deg": 49.58,
+	  "argp_deg": 286.46,
+	  "m0_deg": 19.39
+	},
+	"moon": {
+	  "parent": "earth",
+	  "mu": 4.9048695e12,
+	  "radius_km": 1737.4,
+	  "a_km": 384400.0,
+	  "e": 0.0549,
+	  "inc_deg": 5.145,
+	  "raan_deg": 125.08,
+	  "argp_deg": 318.15,
+	  "m0_deg": 135.27
+	}
+  },
+  "satellites": {
+	"sat_leo": {
+	  "parent": "earth",
+	  "mu": 0.0,
+	  "radius_km": 0.005,
+	  "a_km": 6771.0,
+	  "e": 0.0,
+	  "inc_deg": 53.0,
+	  "raan_deg": 0.0,
+	  "argp_deg": 0.0,
+	  "m0_deg": 0.0
+	},
+	"sat_geo": {
+	  "parent": "earth",
+	  "mu": 0.0,
+	  "radius_km": 0.005,
+	  "a_km": 42164.0,
+	  "e": 0.0,
+	  "inc_deg": 0.0,
+	  "raan_deg": 0.0,
+	  "argp_deg": 0.0,
+	  "m0_deg": 0.0
+	},
+	"sat_meo_inc": {
+	  "parent": "earth",
+	  "mu": 0.0,
+	  "radius_km": 0.005,
+	  "a_km": 26560.0,
+	  "e": 0.0,
+	  "inc_deg": 63.4,
+	  "raan_deg": 100.0,
+	  "argp_deg": 0.0,
+	  "m0_deg": 200.0
+	},
+	"sat_meo_polar": {
+	  "parent": "earth",
+	  "mu": 0.0,
+	  "radius_km": 0.005,
+	  "a_km": 26560.0,
+	  "e": 0.0,
+	  "inc_deg": 90.0,
+	  "raan_deg": 30.0,
+	  "argp_deg": 0.0,
+	  "m0_deg": 40.0
+	}
+  }
+}
