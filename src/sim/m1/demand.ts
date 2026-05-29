@@ -1,17 +1,31 @@
 /**
  * M1-01 — Demand: a Mars customer's standing request for a dataset.
  *
- * Faithful TypeScript port of SignalHorizon.Sim/M1/Demand.cs. PURE data +
- * functions (no three/DOM/wall-clock/RNG): plain number/string.
+ * Diverges from the faithful C# port per GDD v0.7 §4.4: a cache hit carries "a
+ * freshness penalty if the contract demands currency" — a penalty that SCALES
+ * with staleness. The stale band's price is therefore selectable via
+ * {@link Demand.priceCurve}:
+ *   "step" — the old/faithful flat basePrice*stalePriceFactor (A/B comparison).
+ *   "ramp" — the new DEFAULT: a continuous LERP across the stale band.
  *
- * The 3-band STEP price curve ({@link Demand.price}) is the whole economic
- * signal of M1 — the resolver reads it directly to label a serve
- * fresh/stale/below-min. The bands are a step curve, NOT a ramp, and the floors
- * are INCLUSIVE (freshness == 0.5 lands in the stale band).
+ * PURE data + functions (no three/DOM/wall-clock/RNG): plain number/string.
+ *
+ * The price curve ({@link Demand.price}) is the whole economic signal of M1 —
+ * the resolver reads it directly to label a serve fresh/stale/below-min. In
+ * BOTH modes the hard cliff (f < min -> 0) and the fresh cap (f >= fresh ->
+ * basePrice) hold; only the [min, fresh) band differs. Floors are INCLUSIVE
+ * (freshness == 0.5 lands in the stale band).
  */
 
 /** Which band label a freshness lands in. Mirrors the C# Band() string. */
 export type Band = "fresh" | "stale" | "unusable";
+
+/**
+ * How the stale band [minAcceptableFreshness, freshFreshness) is priced:
+ *   "step" — flat basePrice*stalePriceFactor (old/faithful, for A/B).
+ *   "ramp" — continuous LERP from basePrice*stalePriceFactor up to basePrice.
+ */
+export type PriceCurve = "step" | "ramp";
 
 export class Demand {
   /** Stable identity (telemetry keys / action targeting). */
@@ -47,6 +61,12 @@ export class Demand {
   /** At/above this freshness the customer pays FULL basePrice (the "fresh" band). */
   freshFreshness = 0.9;
 
+  /**
+   * How the stale band is priced. DEFAULT "ramp" (price scales with staleness,
+   * GDD v0.7 §4.4). "step" keeps the old flat behaviour for A/B comparison.
+   */
+  priceCurve: PriceCurve = "ramp";
+
   constructor(
     id = "mars_imagery",
     datasetId = "earth_imagery",
@@ -60,16 +80,30 @@ export class Demand {
   }
 
   /**
-   * PIECEWISE 3-band price curve (M1-01). A step curve, not a ramp:
-   *   freshness >= freshFreshness          -> basePrice           (FRESH)
-   *   minAcceptableFreshness <= f < fresh   -> basePrice * factor  (STALE)
-   *   freshness <  minAcceptableFreshness   -> 0                   (BELOW-MIN)
+   * PIECEWISE price curve (M1-01). The cliff and fresh cap are identical in both
+   * modes; only the stale band [minAcceptableFreshness, freshFreshness) differs.
+   *   freshness >= freshFreshness          -> basePrice           (FRESH cap)
+   *   minAcceptableFreshness <= f < fresh   -> stale band (see priceCurve)
+   *   freshness <  minAcceptableFreshness   -> 0                   (BELOW-MIN cliff)
    * Floors are inclusive (0.5 -> stale).
+   *
+   * Stale band, by priceCurve:
+   *   "step" — flat basePrice * stalePriceFactor (= 400 at defaults).
+   *   "ramp" — continuous LERP from basePrice*stalePriceFactor at
+   *            f=minAcceptableFreshness UP to basePrice as f -> freshFreshness:
+   *              base*factor + (base - base*factor) * (f - min) / (fresh - min)
+   *            This is continuous with both endpoints (ramp(min)=base*factor,
+   *            ramp(fresh^-)->base) and strictly increasing across the band.
    */
   price(freshness: number): number {
     if (freshness >= this.freshFreshness) return this.basePrice;
     if (freshness >= this.minAcceptableFreshness) {
-      return this.basePrice * this.stalePriceFactor;
+      const stalePrice = this.basePrice * this.stalePriceFactor;
+      if (this.priceCurve === "step") return stalePrice;
+      // "ramp": LERP stalePrice -> basePrice across [min, fresh).
+      const span = this.freshFreshness - this.minAcceptableFreshness;
+      const tBand = (freshness - this.minAcceptableFreshness) / span;
+      return stalePrice + (this.basePrice - stalePrice) * tBand;
     }
     return 0.0;
   }

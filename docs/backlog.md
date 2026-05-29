@@ -91,7 +91,7 @@
 > **All M1 tickets NEED-PORT** from C#; the spike has no economy layer.
 
 **Minimal demand & serve-or-starve**
-- [~] **M1-01** One demand source w/ freshness requirement — *S* · piecewise 3-band price. **E1:** `src/sim/m1/demand.ts` (3-band step price + `band()`), pinned. Live wiring at E2/E3.
+- [~] **M1-01** One demand source w/ freshness requirement — *S* · piecewise 3-band price. **E1:** `src/sim/m1/demand.ts` (`band()` + price), pinned. **E1-conformance (SD-17):** stale band is now a continuous **slope** (`priceCurve` default `"ramp"`, €400→€1000; `"step"` kept for A/B) so fine-tuning freshness is rewarded. Live wiring at E2/E3.
 - [~] **M1-02** Feasible-path check — *S* · single Earth↔Mars LoS check. **E1:** generalized `lineOfSight(eph,a,b,t,occluders)` in `links.ts` + `resolver.feasible()` (default occluder `sun`), pinned. Live wiring at E2/E3.
 - [~] **M1-03** Serve / miss / stale resolution — *M* · fresh/stale/miss/blackout-miss. **E1:** `src/sim/m1/resolver.ts` — pure `resolve()` → `ResolveResult` (the primary telemetry tap), pinned. Live wiring/telemetry at E2/E3/E6.
 
@@ -99,7 +99,7 @@
 - [~] **M1-04** Cache node placement — *M* · cache @ Mars; one slot, no eviction. **E1:** `src/sim/m1/cache.ts` — one-slot store, `holds()` gated on `age>=0` (prefetch-arrival pivot), pinned. Live wiring at E2/E3.
 - [ ] **M1-05** Cache hit / miss logic — *M* · miss = visible pending wait + countdown _(E2 — render the Resolver MISS as the crawling packet)_
 - [ ] **M1-06** Predictive prefetch action — *M* · manual prefetch = what fills the wait _(E3 — first logged player action)_
-- [~] **M1-07** Coherence level (simplified) — *S* · two levels. **E1:** `src/sim/m1/coherence.ts` — Eventual/BestEffort with distinct cadence/cost/freshness-floor, pinned. Live wiring at E3.
+- [~] **M1-07** Coherence level — *S* · ~~two levels~~ **three** (SD-17: GDD §4.4 names strong/eventual/best-effort; GDD outranks the plan). **E1+conformance:** `src/sim/m1/coherence.ts` — `EVENTUAL < BEST_EFFORT < STRONG` ladder (floor 0.5/0.9/0.98, cadence 7200/1800/600s, cost 1/3/6×), pinned. Live wiring at E3.
 
 **Minimal economy + one dashboard + one map**
 - [ ] **M1-08** Cash, simple revenue & opex — *S* · bankruptcy on `balance<0`

@@ -34,18 +34,54 @@ function makeDemand(): Demand {
   return d;
 }
 
-// --- M1-01: piecewise 3-band price curve ----------------------------------
-describe("M1-01 — price bands (3-step curve)", () => {
-  it("PriceBands_ThreeStepCurve", () => {
+// --- M1-01: piecewise price curve, step + ramp stale-band modes ------------
+describe("M1-01 — price bands", () => {
+  // "step" mode (old/faithful): flat basePrice*stalePriceFactor across stale.
+  it("PriceBands_StepMode_FlatStaleBand", () => {
     const d = makeDemand();
+    d.priceCurve = "step";
     expect(d.price(1.0)).toBeCloseTo(1000.0, 9); // fresh: full base_price
     expect(d.price(0.95)).toBeCloseTo(1000.0, 9); // >=0.9 still fresh band
-    expect(d.price(0.7)).toBeCloseTo(400.0, 9); // mid -> base*0.4 (stale)
+    expect(d.price(0.7)).toBeCloseTo(400.0, 9); // mid -> flat base*0.4 (stale)
     expect(d.price(0.5)).toBeCloseTo(400.0, 9); // at min floor -> stale (inclusive)
     expect(d.price(0.3)).toBeCloseTo(0.0, 9); // below min -> 0 (unusable)
   });
 
+  // "ramp" mode (new DEFAULT, GDD v0.7 §4.4): price scales with staleness.
+  // Cliff + fresh cap unchanged; the [min, fresh) band LERPs 400 -> 1000.
+  it("PriceBands_RampMode_SlopedStaleBand", () => {
+    const d = makeDemand();
+    expect(d.priceCurve).toBe("ramp"); // ramp is the default
+
+    // Cliff + fresh cap identical to step mode.
+    expect(d.price(1.0)).toBeCloseTo(1000.0, 9); // fresh cap: full base_price
+    expect(d.price(0.95)).toBeCloseTo(1000.0, 9); // >=0.9 still fresh cap
+    expect(d.price(0.3)).toBeCloseTo(0.0, 9); // below min -> hard cliff to 0
+
+    // Slope across the stale band.
+    expect(d.price(0.5)).toBeCloseTo(400.0, 9); // ramp(min) = base*factor = 400
+    // Verified by computation: 400 + 600*(0.7-0.5)/(0.9-0.5) = 700.
+    expect(d.price(0.7)).toBeCloseTo(700.0, 9);
+    // Just below the fresh threshold approaches (but stays under) the cap.
+    expect(d.price(0.89)).toBeCloseTo(400.0 + 600.0 * (0.89 - 0.5) / (0.9 - 0.5), 9);
+    expect(d.price(0.89)).toBeLessThan(1000.0);
+    expect(d.price(0.89)).toBeGreaterThan(975.0); // = 985, just under the cap
+
+    // Continuity: ramp(min) meets the step value; ramp approaching fresh meets
+    // the cap. The slope is (1000-400)/0.4 = 1500/unit, so at f = 0.9 - 1e-9 the
+    // value is 1000 - 1500e-9 ~= 999.9999985 (continuous into the fresh cap).
+    expect(d.price(0.5)).toBeCloseTo(400.0, 9);
+    expect(d.price(0.9 - 1e-9)).toBeCloseTo(1000.0, 4);
+
+    // Strictly increasing across the band.
+    expect(d.price(0.6)).toBeGreaterThan(d.price(0.5));
+    expect(d.price(0.7)).toBeGreaterThan(d.price(0.6));
+    expect(d.price(0.8)).toBeGreaterThan(d.price(0.7));
+    expect(d.price(0.89)).toBeGreaterThan(d.price(0.8));
+  });
+
   it("Band_LabelsMatchThreeBands", () => {
+    // band() labels are UNCHANGED by priceCurve — only the stale price moved.
     const d = makeDemand();
     expect(d.band(0.95)).toBe("fresh");
     expect(d.band(0.7)).toBe("stale");
@@ -83,6 +119,9 @@ describe("M1-03 — cache stale hit", () => {
     const r = resolve(Eph, t, d, cache, true);
 
     expect(r.outcome).toBe("stale");
+    // f == 0.5 sits exactly at minAcceptableFreshness, where ramp(min) == the
+    // flat step value (400). So the pinned 400 holds under the DEFAULT ramp
+    // curve too — no priceCurve override needed to keep this test's intent.
     expect(r.payout).toBeCloseTo(400.0, 9); // stale hit pays reduced (base*0.4)
     expect(r.viaCache).toBe(true); // stale serve is still local (via cache)
     expect(r.payout).toBeLessThan(1000.0);
@@ -200,11 +239,41 @@ describe("M1-02 — feasibility is one LoS check", () => {
 // --- M1-07: coherence levels yield measurably different cost/freshness ----
 describe("M1-07 — coherence levels differ", () => {
   it("Coherence_LevelsDiffer", () => {
+    // GDD v0.7 §4.4: cheap -> mid -> premium ladder. STRICTLY MONOTONIC across
+    // rising level: cost UP, freshnessFloor UP, refreshCadenceS DOWN.
     const ev = Coherence.Level.Eventual;
     const be = Coherence.Level.BestEffort;
+    const st = Coherence.Level.Strong;
+
+    // cost strictly increasing: Eventual < BestEffort < Strong.
     expect(Coherence.costMultiplier(be)).toBeGreaterThan(Coherence.costMultiplier(ev));
+    expect(Coherence.costMultiplier(st)).toBeGreaterThan(Coherence.costMultiplier(be));
+
+    // freshnessFloor strictly increasing.
     expect(Coherence.freshnessFloor(be)).toBeGreaterThan(Coherence.freshnessFloor(ev));
+    expect(Coherence.freshnessFloor(st)).toBeGreaterThan(Coherence.freshnessFloor(be));
+
+    // refreshCadenceS strictly decreasing (more aggressive sync as level rises).
     expect(Coherence.refreshCadenceS(be)).toBeLessThan(Coherence.refreshCadenceS(ev));
+    expect(Coherence.refreshCadenceS(st)).toBeLessThan(Coherence.refreshCadenceS(be));
+
+    // Pin the exact ladder values.
+    expect(Coherence.costMultiplier(ev)).toBeCloseTo(1.0, 9);
+    expect(Coherence.costMultiplier(be)).toBeCloseTo(3.0, 9);
+    expect(Coherence.costMultiplier(st)).toBeCloseTo(6.0, 9);
+    expect(Coherence.freshnessFloor(ev)).toBeCloseTo(0.5, 9);
+    expect(Coherence.freshnessFloor(be)).toBeCloseTo(0.9, 9);
+    expect(Coherence.freshnessFloor(st)).toBeCloseTo(0.98, 9);
+    expect(Coherence.refreshCadenceS(ev)).toBeCloseTo(7200.0, 9);
+    expect(Coherence.refreshCadenceS(be)).toBeCloseTo(1800.0, 9);
+    expect(Coherence.refreshCadenceS(st)).toBeCloseTo(600.0, 9);
+
+    // Names cover all three; unknown level falls back to EVENTUAL.
+    expect(Coherence.nameOf(ev)).toBe("EVENTUAL");
+    expect(Coherence.nameOf(be)).toBe("BEST_EFFORT");
+    expect(Coherence.nameOf(st)).toBe("STRONG");
+    expect(Coherence.nameOf(99)).toBe("EVENTUAL");
+    expect(Coherence.costMultiplier(99)).toBeCloseTo(1.0, 9); // unknown -> Eventual
   });
 });
 
