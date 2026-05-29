@@ -63,6 +63,9 @@ The app runs in the browser. No Tauri gate — see SD-2. The remaining engineeri
 
 **Supersedes DD-11** (C# on Godot .NET). Design decisions DD-1 through DD-7 and the full GDD remain the design authority; only the *engineering stack* changed.
 
+### SD-11 — No UI framework; imperative DOM and Three.js only
+**Status: ACCEPTED.** No React, Vue, Svelte, or any reactive/reconciliation layer. The frame loop is `requestAnimationFrame → sim.tick() → orrery.update(state) → renderer.render()` — no diffing, no virtual DOM, no scheduling, no effect lifecycle. Three reasons: (1) The orrery renders to a WebGL canvas — a framework can't schedule or diff GPU draw calls; a React-Three-Fiber wrapper adds JS overhead before the same GL calls. (2) A real-time sim updates every frame — position, packets, freshness all change every tick. Reactive frameworks optimise for skipping unchanged subtrees, but there's nothing to skip; the reconciliation cost is pure overhead. (3) GC pressure: each framework render cycle allocates vdom nodes, memo objects, and effect cleanup closures. At 60fps (~16ms/frame) this competes with the sim and orrery for the frame budget. The adversarial review caught ~960 `Vector3`/frame in Three.js — a framework's allocation pattern would compound this. Panels use `element.textContent = newValue` in the frame loop. If panel complexity grows later, the answer is writing that component imperatively, not introducing a framework.
+
 ---
 
 ## Resolved engineering decisions (from scoping)
