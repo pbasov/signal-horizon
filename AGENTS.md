@@ -11,6 +11,7 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - The **backlog** (`docs/backlog.md`) tracks what's done and what's next. The **decisions log** (`docs/decisions.md`) records why. Read both before starting any ticket.
 - The **implementation plan** (`docs/signal-horizon-implementation-plan-v0.1.md`) and **scoping doc** (`docs/signal-horizon-scoping-v0.1.md`) define milestones and acceptance criteria.
 - **Never invent requirements.** If the GDD doesn't call for it, don't build it. If you're unsure, say so and ask.
+- **Never modify the GDD without explicit user instruction.** The game design document is the user's domain. Autonomous agents may propose changes (suggest, don't edit) but must not alter GDD content unless the user explicitly approves each change.
 
 ---
 
