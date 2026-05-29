@@ -73,3 +73,4 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - One logical change per commit. Don't bundle unrelated refactors with feature work.
 - Commit messages must reference the ticket (e.g. `P0-05: Add action-log save format`).
 - Run `npm test && npx tsc --noEmit && npm run build` before every push.
+- **Always push immediately after committing.** Do not batch commits locally — push after each commit so the remote stays current and work is never lost.
