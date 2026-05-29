@@ -19,13 +19,13 @@
 
 ---
 
-## Spike decisions (TS/Three.js/Tauri)
+## Spike decisions (TS/Three.js)
 
-### SD-1 — Stack under test: Tauri + TypeScript + Three.js, Chromium-first
-**Status: ACCEPTED.** The spike evaluates whether the DD-10 tiling-WM shell + 3D orrery build more naturally on a web stack than on Godot. Developed in Chromium first. The Tauri native shell is deferred (SD-2).
+### SD-1 — Stack: TypeScript + Three.js, browser-first
+**Status: ACCEPTED.** The spike evaluates whether the DD-10 tiling-WM shell + 3D orrery build more naturally on a web stack than on Godot. Developed and deployed in Chromium.
 
-### SD-2 — Defer the Tauri native shell
-**Status: ACCEPTED (deferred).** Tauri 2.x is available (rustc 1.95, webkit2gtk-4.1). We do **not** wrap the app yet. **Risk:** Linux Tauri renders in **WebKitGTK**, not Chromium — WebGL2, CSS dither, and fonts must be re-validated. Code is kept Tauri-ready. See FINDINGS "Open risks #1".
+### SD-2 — No Tauri; browser is the platform
+**Status: ACCEPTED.** The app runs in the browser (Chromium). Tauri wrapping is deferred indefinitely — the browser IS the deployment target for now. This removes the WebKitGTK validation gate entirely. The code remains standard web APIs only (no Chrome-only extensions), so a Tauri wrap remains a future option if needed.
 
 ### SD-3 — Port the Kepler truth layer to TS; pin against a C# golden master
 **Status: ACCEPTED.** `Ephemeris.cs`/`OrbitalBody.cs` ported verbatim to `src/sim/ephemeris.ts`. TS `number` is f64 natively. Bit-identical to the C# golden master. Vitest pin holds `1e-9` tolerance for cross-machine libm robustness.
@@ -52,14 +52,14 @@
 
 ## Stack migration decision
 
-### SD-10 — Migrate from Godot C# to TypeScript + Three.js + Tauri
+### SD-10 — Migrate from Godot C# to TypeScript + Three.js (browser)
 **Status: ACCEPTED.** The spike (see `FINDINGS.md`) proved the UX builds at least as naturally in the web stack:
 - Kepler truth ported bit-for-bit (f64 is native in TS)
 - Tiling WM, 3D orrery, packet honesty, keyboard presets all work
 - HMR iteration is dramatically faster
 - No numerical-fidelity loss
 
-**Gate before committing:** validate under **WebKitGTK** (the Linux Tauri WebView). If that passes, the remaining cost is re-implementing the deterministic fixed-tick + save/replay in TS — bounded, low-risk work that the already-bit-identical pure layer de-risks.
+The app runs in the browser. No Tauri gate — see SD-2. The remaining engineering work is the deterministic fixed-tick + save/replay in TS (bounded, low-risk; the pure layer is already bit-identical).
 
 **Supersedes DD-11** (C# on Godot .NET). Design decisions DD-1 through DD-7 and the full GDD remain the design authority; only the *engineering stack* changed.
 
@@ -69,7 +69,7 @@
 
 | ID | Decision | Status | Rationale |
 |---|---|---|---|
-| D1 | **Pin stack versions** | PROPOSED | Tauri 2.x + Node 26 + Three.js 0.184.x. Pin in README + CI. |
+| D1 | **Pin stack versions** | PROPOSED | Node 26 + Three.js 0.184.x + Vite 8.x. Pin in README + CI. |
 | D2 | **Sim-core language** | ACCEPTED | TypeScript (SD-3). Pure `src/sim/` with zero DOM/Three.js imports. Bit-identical to C#. |
 | D3 | **Test framework** | ACCEPTED | Vitest for pure sim; Playwright for headful screenshot CI. |
 | D4 | **RNG portability** | OPEN | Splitmix64 needs TS port. If golden hashes must survive across JS engines, verify `bigint`/paired-`uint32` semantics. **Must decide before P0-06.** |
@@ -110,7 +110,6 @@
 
 - **Before P0-06 (determinism test):** D4 (RNG portability in TS).
 - **At M0-02:** Kepler accuracy tolerance target — add as **D8 when reached**.
-- **Before Tauri wrap:** validate WebGL2 limits, custom scrollbars, font-smoothing under WebKitGTK on the actual distro.
 - **M3–M4:** default "hardcore" level — is the player's *own* network awareness delayed, or only in-fiction data products?
 - **Before M6:** does the optional currency flip read as climax or confusion?
 
@@ -120,10 +119,11 @@
 
 | ID | Old decision | Superseded by | Why |
 |---|---|---|---|
-| DD-11 | C# on Godot .NET | **SD-10** (TS/Three.js/Tauri) | Spike proved web stack is at least as natural with faster iteration and no fidelity loss. |
+| DD-11 | C# on Godot .NET | **SD-10** (TS/Three.js/browser) | Spike proved web stack is at least as natural with faster iteration and no fidelity loss. |
 | DD-12 | Godogen frame-grounded loop | **Retained in spirit** | Judge from rendered output, never from "it compiled." Replaced by Playwright screenshot CI. |
 | DD-13 | Develop on `main`, auto-push | **Retained** | Same policy, new repo. |
 | DD-14 | Build C# frontend fresh from v3 mockups | **SD-10** | Frontend is now TypeScript/DOM, built fresh from the spike + v3 mockups. Design target unchanged. |
+| (old) SD-2 | Defer the Tauri native shell | **SD-2** (no Tauri; browser is the platform) | Owner decision: skip Tauri, keep it in the browser. Removes WebKitGTK gate. |
 
 ---
 

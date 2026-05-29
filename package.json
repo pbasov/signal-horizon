@@ -1,21 +1,17 @@
 {
-  "name": "signal-horizon-prototype-tauri",
+  "name": "signal-horizon",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Parallel spike: can the Signal Horizon DD-10 tiling-WM shell + 3D orrery be built more naturally in Tauri + TypeScript + Three.js than in Godot?",
+  "description": "Signal Horizon — a satellite & information-network tycoon sim in TypeScript + Three.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2",
     "@types/three": "^0.184.1",
     "playwright-core": "^1.60.0",
     "typescript": "^6.0.3",
@@ -23,7 +19,6 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0",
     "three": "^0.184.0"
   }
 }

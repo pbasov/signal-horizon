@@ -1,16 +1,8 @@
-# Signal Horizon — Tauri / TypeScript / Three.js spike
+# Signal Horizon — TypeScript / Three.js
 
-A self-contained parallel spike that answers one question:
+A satellite & information-network tycoon simulation. The product you sell is *knowledge moved across distance*; the speed of light is the hardest constraint.
 
-> Can the Signal Horizon UX — specifically the **DD-10 tiling-WM shell** + **3D orrery** —
-> be built more naturally in **Tauri + TypeScript + Three.js** than in Godot?
-
-It is **not** a migration. It does not touch `main` or the Godot project. It reuses the
-Godot project's canonical `data/system.json` (via a symlink — same file, no copy) and
-ports the pure orbital truth layer to TypeScript, pinned bit-for-bit against the C#
-implementation.
-
-**The answer and the honest trade-offs live in [`FINDINGS.md`](./FINDINGS.md).**
+Runs in the browser. See [`FINDINGS.md`](./FINDINGS.md) for the spike verdict and [`docs/`](./docs/) for the full design and engineering documentation.
 
 ---
 
@@ -18,12 +10,10 @@ implementation.
 
 ```bash
 npm install
-npm run dev          # Vite dev server → http://localhost:5173  (open in Chromium)
+npm run dev          # Vite dev server → http://localhost:5173
 ```
 
-For a bare, OS-chrome-free window, press **F11** in the browser. (Tauri wrapping is
-deferred — see DD-S2 in `docs/decisions.md`. The whole UX is webview content, so it
-behaves identically in a browser or a Tauri WebView.)
+For a bare, OS-chrome-free window, press **F11** in the browser.
 
 ### Tests
 
@@ -102,9 +92,9 @@ tools/
   golden/               throwaway C# tool that emits the golden master from the real sources
   shoot.mjs             Playwright (ungoogled-chromium) screenshot driver
 data/system.json        → symlink to ../../../../Godot/galaxy-link/data/system.json
-docs/                   backlog / decisions / progress (mirrors the Godot docs)
+docs/                   backlog / decisions / GDD / specs / mockups / screenshots / progress
 ```
 
-> Note: `data/system.json` is a symlink into the Godot tree. This spike depends on that
+> Note: `data/system.json` is a symlink into the Godot tree. This project depends on that
 > project being present at its path. That is intentional — the brief asked to use the
 > *same* dataset, no copy.

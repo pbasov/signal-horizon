@@ -29,7 +29,7 @@ const topbar = document.createElement("div");
 topbar.className = "topbar";
 topbar.innerHTML =
   `<span class="brand">◆ SIGNAL HORIZON</span>` +
-  `<span>· tauri/ts/three spike</span>` +
+  `<span>· ts/three.js</span>` +
   `<span class="spacer"></span>` +
   `<span class="hint">F11 fullscreen · drag title-bars to swap · drag gutters to resize</span>` +
   `<span class="win-glyphs"><span>●</span><span>⛶</span><span>✕</span></span>`;

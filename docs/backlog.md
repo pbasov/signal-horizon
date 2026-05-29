@@ -7,11 +7,11 @@
 
 ---
 
-## 🔁 BUILD TRACK — TypeScript / Three.js / Tauri
+## 🔁 BUILD TRACK — TypeScript / Three.js (browser)
 
-> The project has migrated from Godot 4.6 C# to **Tauri 2.x + TypeScript + Three.js**. The spike (see `FINDINGS.md`) proved the UX builds at least as naturally in the web stack with no fidelity loss and dramatically faster iteration. The C# Godot project's design docs (GDD, tiling-WM spec, UI critique) remain the design authority; this backlog reflects the *current* TS stack.
+> The project runs in the browser (SD-2). The spike (see `FINDINGS.md`) proved the UX builds at least as naturally in the web stack with no fidelity loss and dramatically faster iteration. The C# Godot project's design docs (GDD, tiling-WM spec, UI critique) remain the design authority; this backlog reflects the *current* TS stack.
 >
-> **Key status:** the spike demonstrated the full M0 visual/UX scope. Phase 0 foundations and M0 are "done in spike" — but several P0 items (deterministic clock, save/replay, WebKitGTK validation) still need production implementation. The gate before full migration is **webkitGTK validation** (wrap in Tauri, re-run the same screenshots under the Linux WebView).
+> **Key status:** the spike demonstrated the full M0 visual/UX scope. Phase 0 foundations and M0 are "done in spike" — but the deterministic backbone (fixed-tick clock, save/replay) still needs production implementation. WebKitGTK validation is no longer a gate (SD-2).
 
 **Build phases (live status):**
 - [x] **PA — pure sim (TypeScript port)** — `src/sim/ephemeris.ts` (8-iter Newton → perifocal → 3-1-3 → recursive parent); bit-identical to the C# golden master. Light delay, freshness, LoS occlusion all ported. **Vitest pin + 13 structural assertions green.**
@@ -20,10 +20,9 @@
 - [x] **PB.2r — orrery in 3D + camera-only views** — body-anchored orbit camera + 4 animated presets (CISLUNAR / ORBITS / SYSTEM / TOP-DOWN). LEO inclined + GEO equatorial planes read in 3D. Dashed rings, dithered Bayer 4×4 billboards, freshness-as-saturation.
 - [x] **PB.3 — tiling WM shell + 1-bit chrome** — DD-10 zone-grid in the DOM (1–3 cols × 1–3 rows, relative weights, always-tiled invariant). Title-bar drag → zone swap, edge-resize, 5 presets (OVERVIEW / OPS / TRACK / STREAM / SPLIT) switched by keys 1–5. Runtime Bayer dither via CSS custom properties. Monospace placeholder font.
 - [x] **PB.4 — panels** — SYSTEM.LOG (severity syntax highlighting + glyphs, scrollable, ring-buffer), telemetry readout, status strip (sim time, time scale, light-delay, focus, presets, occult).
-- [ ] **P0-GATE — WebKitGTK validation** — wrap the spike in a Tauri binary, re-run all screenshots under WebKitGTK. Verify WebGL2 limits, dither rendering, custom scrollbars, font-smoothing. **This is the gate before committing to full migration.** See `FINDINGS.md` "Open risks #1".
 - [ ] **PC — deterministic backbone (TS)** — fixed-tick integer clock, seeded splitmix64 RNG, action-log save format, golden-master replay test in Vitest. The spike's f64 accumulator is non-deterministic; this replaces it.
 - [ ] **PD — M1 economy integration** — demand, caching, prefetch, economy, finance panel. Wire to the fixed-tick sim clock. The M1 fun-gate playtest.
-- [ ] **CI** — GitHub Actions: `npm test` (vitest) + Playwright screenshot CI + Tauri build check.
+- [ ] **CI** — GitHub Actions: `npm test` (vitest) + Playwright screenshot CI.
 
 ---
 
@@ -31,16 +30,16 @@
 
 - [x] **GIT-00** Init git repo + commit current tree as baseline
 - [x] **DEC-00** Confirm decisions D1–D3, D7; establish the sim/ purity rule
-- [x] **SD-1..9** Spike decisions recorded (see `decisions.md`)
+- [x] **SD-1..10** Spike decisions recorded (see `decisions.md`)
 
 ---
 
 ## Phase 0 — Foundations
 
-> **Status: substantially done in spike scope, but three critical items need production-grade implementation: the WebKitGTK gate (P0-GATE), deterministic clock (P0-03), and save/replay (P0-05/06).**
+> **Status: substantially done in spike scope, but two critical items need production-grade implementation: deterministic clock (P0-03) and save/replay (P0-05/06).**
 
 **Spikes**
-- [x] **P0-S1** Pin stack versions (Tauri 2.x + Node + Three.js) — *SPIKE S*
+- [x] **P0-S1** Pin stack versions (Node + Three.js + Vite) — *SPIKE S*
 - [x] **P0-S2** Sim-core language — *SPIKE S* · RESOLVED: TypeScript. `src/sim/` is pure TS with zero DOM/Three.js imports. Bit-identical to C# golden master (SD-3).
 - [x] **P0-S3** Test & CI tooling — *SPIKE S* · Vitest + Playwright headful. Green.
 
@@ -62,7 +61,7 @@
 
 ## Milestone 0 — Sim spike + the visible web
 
-> **Status: SPIKE-DONE.** The full M0 scope was built and verified headful in Chromium. See `docs/screenshots/` and `FINDINGS.md`. The only gate remaining is P0-GATE (WebKitGTK validation).
+> **Status: SPIKE-DONE.** The full M0 scope was built and verified headful in Chromium. See `docs/screenshots/` and `FINDINGS.md`.
 
 **Orbital sim core (truth layer)**
 - [x] **M0-01** f64 Keplerian element model — done (`src/sim/ephemeris.ts`, parent hierarchy)
@@ -106,7 +105,7 @@
 - [ ] **M1-08** Cash, simple revenue & opex — *S* · bankruptcy on `balance<0`
 - [ ] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE
 - [ ] **M1-10** Glanceable map readout — *S* · Mars freshness drain + fetch packet/countdown
-- [ ] **M1-11** Cache-hit audio cue — *S* · first audio; Web Audio API, verified under WebKitGTK
+- [ ] **M1-11** Cache-hit audio cue — *S* · first audio; Web Audio API
 - [ ] **M1-12** 30-minute scenario script — *S* · scripted conjunction; pre-position-to-survive
 - [ ] **M1-GATE** Playtest instrumentation — *S–M* · telemetry action log + event stream + gate metrics
 
@@ -128,9 +127,9 @@
 
 - [ ] **X-01** Determinism & replay — fixed-tick clock in TS; golden-master green every milestone; +1 replay fixture per milestone.
 - [ ] **X-02** Performance budget — GC allocation pools in Three.js (scratch vectors + direct Float32Array writes — proven in spike review); event-driven route re-solve; headless perf benchmark M2–M3; budget real before M4.
-- [ ] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle; tested under WebKitGTK. "Colour-off fully playable" = per-milestone exit check.
+- [ ] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
-- [ ] **X-05** Audio system — Web Audio API; one-way event-bus → cues. Placeholder at M1-11; health-sonification M2+. Must work under WebKitGTK.
+- [ ] **X-05** Audio system — Web Audio API; one-way event-bus → cues. Placeholder at M1-11; health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.
 
 ---
@@ -148,13 +147,13 @@ All 7 findings fixed:
 
 ---
 
-## Follow-ups if the migration graduates past the spike
+## Follow-ups
 
 - ⬜ Hide far/parent orbit rings in near-field presets (ORBITS shows stray distant dashes)
 - ⬜ Wire Tab/Split/Close gestures in the WM
 - ⬜ Port the WmModel unit tests to Vitest
 - ⬜ Pool the ephemeris `Vec3` array returns (truth-layer still allocates small arrays)
-- ⬜ Port fixed-tick clock + run the headless C# sim as an optional state source
+- ⬜ Fixed-tick clock + deterministic backbone (P0-03..06)
 
 ---
 
