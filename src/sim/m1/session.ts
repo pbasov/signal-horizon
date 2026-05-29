@@ -27,11 +27,12 @@
  * object's state and returns the render-facing snapshot.
  */
 import type { Ephemeris } from "../ephemeris";
+import { DT } from "../clock";
 import { oneWaySeconds } from "../delay";
 import { Cache } from "./cache";
 import { Demand } from "./demand";
-import { Level, costMultiplier } from "./coherence";
-import { M1Economy } from "./economy";
+import { Level } from "./coherence";
+import { M1Economy, OPENING_BALANCE } from "./economy";
 import { feasible, resolve, type ResolveOutcome } from "./resolver";
 
 /**
@@ -54,19 +55,30 @@ export interface SessionRenderState {
   fetchCountdownSeconds: number | null;
   /** True when the link is down AND there is no usable cache (a blackout miss). */
   blackout: boolean;
-  /** On-hand balance (currency units) after this step's payout + opex. */
+  /** On-hand balance (€) after this step's continuous accrual. */
   balance: number;
-  /** The signed payout applied to the balance THIS step (resolve payout). */
-  lastPayout: number;
-  /** Ticks until bankruptcy at the current per-tick burn (+Inf when not burning). */
+  /**
+   * REVENUE RATE (€ per SIM-SECOND) for the current serve band — the money-IN
+   * rate the FINANCE panel's REVENUE row reads. Positive while serving
+   * (fresh/stale), 0 on a miss, and NEGATIVE during a blackout (the SLA penalty
+   * rate). NOT a per-tick payout — a continuous per-sim-time rate.
+   */
+  revenueRatePerSecond: number;
+  /**
+   * OPEX RATE (€ per SIM-SECOND) to run the cache at the chosen coherence level
+   * (baseline × costMultiplier) — the standing money-OUT rate. The FINANCE
+   * panel's OPEX row.
+   */
+  opexRatePerSecond: number;
+  /**
+   * NET RATE (€ per SIM-SECOND): revenueRate − opexRate. >0 earning, <0 burning.
+   * The FINANCE panel's NET row and the source of the runway.
+   */
+  netRatePerSecond: number;
+  /** Sim-seconds until bankruptcy at the current net burn (+Inf when not burning). */
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
-  /**
-   * The cache opex burned THIS step (cacheOpexPerTick × coherence costMultiplier),
-   * i.e. the standing money-out rate per tick — the FINANCE panel's OPEX row.
-   */
-  opexPerTick: number;
   /**
    * Age (sim-seconds) of the data that was served this step, or null when the
    * serve did not come from the cache (a miss/blackout has no served sample).
@@ -116,7 +128,7 @@ export class M1Session {
   constructor(
     demand: Demand = new Demand(),
     coherence: Level = Level.Eventual,
-    openingBalance = 1000.0,
+    openingBalance = OPENING_BALANCE,
   ) {
     this.demand = demand;
     this.cache = new Cache(demand.customerId);
@@ -148,12 +160,18 @@ export class M1Session {
    * the very step it lands the demand resolves to a cache HIT (a one-way-old copy
    * lands at ≈ 0.84 freshness — a usable, stale-band hit; see step 1 below).
    *
-   * ECONOMY (E3): each step charges one tick of cache opex (scaled by the chosen
-   * coherence level's costMultiplier) and credits the served payout — so the
-   * wallet breathes with the loop. A blackout_miss applies its NEGATIVE payout
-   * (the -500 penalty); a fresh/stale hit credits the price; a miss pays 0.
+   * ECONOMY (reworked): the wallet accrues on CONTINUOUS PER-SIM-TIME RATES, not
+   * per-tick payouts. Each step accrues (revenueRate(band) − opexRate(coherence))
+   * × `dtSeconds` of elapsed sim-time, so the balance is DT-INVARIANT — running to
+   * the same sim-time at 1× or 1000× yields the same balance. A fresh serve is
+   * net-positive, stale ≈ break-even, a miss pays no income (net-negative on opex
+   * alone), and a blackout adds an SLA penalty rate (the deepest burn).
+   *
+   * `dtSeconds` is the step's elapsed sim-time (defaults to one fixed {@link DT}
+   * step). The live loop and replay pass the clock's dt so the accrual matches
+   * the sim-time the step advanced.
    */
-  step(eph: Ephemeris, t: number): SessionRenderState {
+  step(eph: Ephemeris, t: number, dtSeconds: number = DT): SessionRenderState {
     // 1. Land any in-flight fetch that has crossed the light-gap by t. The
     //    sample is a SNAPSHOT OF EARTH taken at the fetch's LAUNCH instant, so
     //    its captured-at time is fetchLaunchT — NOT the arrival instant. On
@@ -173,12 +191,12 @@ export class M1Session {
     const linkOpen = feasible(eph, t, this.demand.sourceId, this.demand.customerId, ["sun"]);
     const result = resolve(eph, t, this.demand, this.cache, linkOpen);
 
-    // 3. Economy: burn one tick of cache opex (× coherence cost multiplier) for
-    //    the one Mars-relay cache, then credit the served payout. Both go
-    //    through the economy's single mutation point, so the balance is a pure
-    //    fold of the (deterministic) step sequence.
-    this.economy.chargeOpex(1, this.coherence);
-    this.economy.applyPayout(result);
+    // 3. Economy: accrue this step's net flow over its elapsed sim-time —
+    //    (revenueRate(band) − opexRate(coherence)) × dtSeconds — through the
+    //    economy's single mutation point. The balance is a pure, DT-invariant
+    //    fold of the (deterministic) step sequence: same sim-time ⇒ same balance,
+    //    independent of the tick rate.
+    this.economy.accrue(result.outcome, result.viaCache, dtSeconds, this.coherence);
 
     // 4. A MISS with the link up and no fetch already crawling starts the data
     //    leg: the packet the player watches. Its one-way ETA is the countdown.
@@ -198,12 +216,16 @@ export class M1Session {
       fetchCountdownSeconds: this.fetchInFlight ? Math.max(0, this.fetchArrivalT - t) : null,
       blackout: result.outcome === "blackout_miss",
       balance: this.economy.balance,
-      lastPayout: result.payout,
-      // Runway off the baseline per-tick opex burn (the standing cost floor).
-      runway: this.economy.runway(this.economy.cacheOpexPerTick),
+      // The continuous per-sim-second rates the FINANCE panel reads. Revenue is
+      // keyed by the current band (negative during a blackout: the SLA penalty);
+      // opex is the standing cost at the chosen coherence level.
+      revenueRatePerSecond: this.economy.revenueRate(result.outcome),
+      opexRatePerSecond: this.economy.opexRate(this.coherence),
+      netRatePerSecond: this.economy.netRatePerSecond(result.outcome, this.coherence),
+      // Runway off the LIVE net burn (positive = losing money): balance / burn,
+      // in sim-seconds. +Inf when breaking even or earning.
+      runway: this.economy.runway(-this.economy.netRatePerSecond(result.outcome, this.coherence)),
       bankrupt: this.economy.bankrupt(),
-      // The actual money-out rate this step: baseline × the coherence multiplier.
-      opexPerTick: this.economy.cacheOpexPerTick * costMultiplier(this.coherence),
       // servedAge is -1 on a miss/blackout (no served sample); surface null then.
       servedAgeSeconds: result.servedAge >= 0 ? result.servedAge : null,
       // The value of freshness, DERIVED from this demand's own price curve.

@@ -4,7 +4,11 @@ import { Ephemeris } from "../ephemeris";
 import { oneWaySeconds } from "../delay";
 import { M1Session } from "./session";
 import { Demand } from "./demand";
-import { PREFETCH_COST } from "./economy";
+import {
+  PREFETCH_COST,
+  STALE_REVENUE_RATE_PER_SECOND,
+  BLACKOUT_PENALTY_RATE_PER_SECOND,
+} from "./economy";
 
 /**
  * M1-05 — M1Session: the LIVE cache-miss → fetch → arrive → hit loop.
@@ -89,7 +93,9 @@ describe("M1Session — full cycle: miss → fetch → arrive → hit", () => {
     // is above the min-acceptable floor, so the demand is served (not a miss).
     expect(r.outcome).toBe("stale");
     expect(r.cacheFreshness).toBeGreaterThan(s.demand.minAcceptableFreshness);
-    expect(r.lastPayout).toBeGreaterThan(0);
+    // A stale serve earns the (positive) stale REVENUE RATE per sim-second.
+    expect(r.revenueRatePerSecond).toBe(STALE_REVENUE_RATE_PER_SECOND);
+    expect(r.revenueRatePerSecond).toBeGreaterThan(0);
   });
 
   it("is path-independent: stepping straight to arrival equals stepping in pieces", () => {
@@ -105,16 +111,17 @@ describe("M1Session — full cycle: miss → fetch → arrive → hit", () => {
     pieced.step(eph, arrival * 0.7);
     const rPieced = pieced.step(eph, arrival);
 
-    // The RESOLVE-facing state is path-independent. The economy state is NOT —
-    // it folds one opex charge PER step, so more steps burn more — compare the
-    // resolve fields only (balance/runway/bankrupt are step-count dependent).
+    // The RESOLVE-facing state is path-independent. The economy BALANCE is NOT —
+    // accrual folds opex over each step's dt, so more steps over the same span
+    // sum to the same burn, but the per-step rate snapshot is band-derived and so
+    // IS path-independent — compare the resolve fields + the rate snapshot.
     expect(rPieced.outcome).toBe(rDirect.outcome);
     expect(rPieced.viaCache).toBe(rDirect.viaCache);
     expect(rPieced.cacheFreshness).toBeCloseTo(rDirect.cacheFreshness, 12);
     expect(rPieced.fetchInFlight).toBe(rDirect.fetchInFlight);
     expect(rPieced.fetchCountdownSeconds).toBe(rDirect.fetchCountdownSeconds);
     expect(rPieced.blackout).toBe(rDirect.blackout);
-    expect(rPieced.lastPayout).toBeCloseTo(rDirect.lastPayout, 9);
+    expect(rPieced.revenueRatePerSecond).toBeCloseTo(rDirect.revenueRatePerSecond, 9);
   });
 });
 
@@ -314,7 +321,8 @@ describe("M1Session — prefetch survives a scripted blackout (pre-position skil
     expect(rBlackout.outcome).not.toBe("blackout_miss");
     expect(rBlackout.viaCache).toBe(true);
     expect(rBlackout.cacheFreshness).toBeGreaterThanOrEqual(d.minAcceptableFreshness);
-    expect(rBlackout.lastPayout).toBeGreaterThan(0); // PAID, not penalised
+    // PAID (positive revenue rate), not penalised — the prefetch bought it out.
+    expect(rBlackout.revenueRatePerSecond).toBeGreaterThan(0);
   });
 
   it("NOT prefetching: the same blackout window takes the blackout_miss penalty (-500)", () => {
@@ -324,8 +332,10 @@ describe("M1Session — prefetch survives a scripted blackout (pre-position skil
     expect(r.outcome).toBe("blackout_miss");
     expect(r.blackout).toBe(true);
     expect(r.viaCache).toBe(false);
-    expect(r.lastPayout).toBeLessThan(0); // the -500 penalty
-    expect(r.lastPayout).toBe(-500);
+    // A blackout's revenue rate is the NEGATIVE SLA-penalty rate (no income, plus
+    // the penalty) — net-negative on top of opex.
+    expect(r.revenueRatePerSecond).toBeLessThan(0);
+    expect(r.revenueRatePerSecond).toBe(-BLACKOUT_PENALTY_RATE_PER_SECOND);
   });
 });
 

@@ -138,8 +138,9 @@ function replay(
       const tSeconds = tick * sg.dt;
       // One rng draw per fixed step (shared anchor with the clock).
       rng.nextU64();
-      // Advance the live cache/economy loop one fixed step.
-      session.step(eph, tSeconds);
+      // Advance the live cache/economy loop one fixed step. The economy accrues
+      // over THIS step's dt (sg.dt) — the per-sim-time rate model is DT-invariant.
+      session.step(eph, tSeconds, sg.dt);
       // Apply a prefetch recorded at THIS tick AFTER the step (post-drain), via
       // the SAME shared helper main.ts uses — so the launched fetch + the €
       // charge land exactly as they did live, even when step() just started its
@@ -195,7 +196,7 @@ function liveDrive(prefetchTicks: number[], endTick: number, dt = GOLDEN_DT): M1
   const pref = new Set(prefetchTicks);
   for (let tick = 1; tick <= endTick; tick++) {
     const tSeconds = tick * dt;
-    session.step(eph, tSeconds); // the frame's drain
+    session.step(eph, tSeconds, dt); // the frame's drain (accrue over this step's dt)
     if (pref.has(tick)) {
       // Post-drain keypress, at the current tick — main.ts's exact ordering.
       applySessionAction(eph, session, prefetch(tick), dt);
@@ -210,7 +211,7 @@ function liveDrive(prefetchTicks: number[], endTick: number, dt = GOLDEN_DT): M1
 // HERE as the regression guard. Any change to the economy fold, the session
 // loop, the prefetch action, the rng, or the scheduler moves this value.
 // ---------------------------------------------------------------------------
-const REPLAY_GOLDEN = 10747947300889452403n;
+const REPLAY_GOLDEN = 15239501741372586683n;
 
 describe("m1-session replay golden — action-driven economy + cache + fetch (E3)", () => {
   it("pins the M1-session replay state hash for the golden SaveGame (regression guard)", () => {

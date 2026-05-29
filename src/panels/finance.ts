@@ -13,8 +13,10 @@
  *     negative balance prints "€-…", and a ✕ marker precedes a sub-zero balance).
  *   - RUNWAY — green ample / amber short / red bankrupt, redundant on the value
  *     itself (a duration shrinking toward "BANKRUPT" / "0s").
- *   - REVENUE / OPEX — a credit prints "+€…" (green, leading +), a charge "−€…"
- *     (red, leading −): the +/− glyph IS the channel, colour merely reinforces it.
+ *   - REVENUE / OPEX / NET — continuous RATES (€ per hour of SIM-time, not
+ *     per-tick): a money-in rate prints "+€…/hr" (green, leading +), a money-out
+ *     rate "−€…/hr" (red, leading −): the +/− glyph IS the channel, colour
+ *     reinforces it. NET is the live earn/burn rate that drives RUNWAY.
  *   - FRESHNESS PREMIUM — cyan info value; the number itself is the signal.
  * The BANKRUPT banner appears only while balance < 0 (structural, like the status
  * strip's occult alarm) — a fourth, position-based redundant cue.
@@ -26,11 +28,13 @@
  */
 import type { FrameState } from "../types";
 import type { PanelHandle } from "../wm/shell";
-import { DT } from "../sim/clock";
 import { fmtDuration, fmtEuro, fmtEuroSigned } from "../format";
 
 /** Below this many sim-seconds of runway, the runway reads AMBER (cash is short). */
 const RUNWAY_WARN_SECONDS = 30 * 60; // 30 sim-minutes
+
+/** Sim-seconds per hour — the FLOW rates are shown per SIM-HOUR for readability. */
+const SECONDS_PER_HOUR = 3600;
 
 export class Finance implements PanelHandle {
   readonly title = "NETWORK·FINANCE";
@@ -40,9 +44,10 @@ export class Finance implements PanelHandle {
   private vBalance: HTMLElement;
   private vRunway: HTMLElement;
 
-  // --- FLOW (money in vs money out) ---
+  // --- FLOW (money-in vs money-out RATES, € per sim-hour) ---
   private vRevenue: HTMLElement;
   private vOpex: HTMLElement;
+  private vNet: HTMLElement;
 
   // --- VALUE ---
   private vPremium: HTMLElement;
@@ -64,10 +69,12 @@ export class Finance implements PanelHandle {
     this.vBalance = valueOf(row(wallet, "BALANCE", "green"));
     this.vRunway = valueOf(row(wallet, "RUNWAY", "green"));
 
-    // GROUP: FLOW — money in (per-serve payout) vs money out (cache opex burn).
-    const flow = group("FLOW · PER TICK");
+    // GROUP: FLOW — continuous RATES (€ per sim-hour): revenue in, opex out, and
+    // the NET earn/burn that drives the runway. Rates, never per-tick.
+    const flow = group("FLOW · €/HR (SIM)");
     this.vRevenue = valueOf(row(flow, "REVENUE", "green"));
     this.vOpex = valueOf(row(flow, "OPEX", "red"));
+    this.vNet = valueOf(row(flow, "NET", "green"));
 
     // GROUP: VALUE — the derived worth of freshness + the served data's age.
     const value = group("VALUE · MARS_IMAGERY");
@@ -80,7 +87,7 @@ export class Finance implements PanelHandle {
   update(state: FrameState): void {
     const d = state.demand;
     this.bankrupt = d.bankrupt;
-    this.runwaySeconds = d.runway * DT; // runway is in TICKS; DT sim-seconds each.
+    this.runwaySeconds = d.runway; // runway is already in SIM-SECONDS (rate model).
 
     // --- BALANCE — solvent green / insolvent red, redundant on the sign glyph.
     // A sub-zero balance prints a leading ✕ AND "€-…" so the loss reads colour-off.
@@ -103,16 +110,27 @@ export class Finance implements PanelHandle {
       setValueClass(this.vRunway, this.runwaySeconds < RUNWAY_WARN_SECONDS ? "amber" : "green");
     }
 
-    // --- REVENUE — the per-serve payout this step. A credit reads "+€…" (green),
-    // a penalty (blackout_miss) "−€…" (red); a 0-payout miss is a neutral "€0".
-    // The leading +/− glyph is the colour-off channel.
-    setText(this.vRevenue, fmtEuroSigned(d.lastPayout));
-    setValueClass(this.vRevenue, d.lastPayout > 0 ? "green" : d.lastPayout < 0 ? "red" : "");
+    // --- REVENUE — the money-IN RATE (€ per sim-hour) for the current band. A
+    // serving rate reads "+€…/hr" (green); a blackout's SLA-penalty rate reads
+    // "−€…/hr" (red); a 0-income miss is a neutral "€0/hr". Leading +/− is the
+    // colour-off channel.
+    const revPerHr = d.revenueRatePerSecond * SECONDS_PER_HOUR;
+    setText(this.vRevenue, fmtRatePerHour(revPerHr));
+    setValueClass(this.vRevenue, revPerHr > 0 ? "green" : revPerHr < 0 ? "red" : "");
 
-    // --- OPEX — the standing money-out burn (cache opex × coherence). Always a
-    // charge, so always "−€…" red (the − glyph is redundant with the colour).
-    setText(this.vOpex, fmtEuroSigned(-d.opexPerTick));
+    // --- OPEX — the standing money-OUT RATE (€ per sim-hour) to run the cache
+    // (baseline × coherence). Always a charge, so always "−€…/hr" red (the −
+    // glyph is redundant with the colour).
+    const opexPerHr = d.opexRatePerSecond * SECONDS_PER_HOUR;
+    setText(this.vOpex, fmtRatePerHour(-opexPerHr));
     setValueClass(this.vOpex, "red");
+
+    // --- NET — the live earn/burn RATE (€ per sim-hour): revenue − opex. Green
+    // "+€…/hr" when earning, red "−€…/hr" when burning; the +/− glyph is the
+    // colour-off channel. This is the rate that drives RUNWAY.
+    const netPerHr = d.netRatePerSecond * SECONDS_PER_HOUR;
+    setText(this.vNet, fmtRatePerHour(netPerHr));
+    setValueClass(this.vNet, netPerHr > 0 ? "green" : netPerHr < 0 ? "red" : "");
 
     // --- FRESHNESS PREMIUM — the DERIVED € gap (price(fresh) − price(min)). The
     // real number from the live demand's price curve, never a hardcoded string.
@@ -148,6 +166,15 @@ export class Finance implements PanelHandle {
   subtitle(): string {
     return "· MARS_IMAGERY";
   }
+}
+
+/**
+ * A signed € RATE per sim-hour: "+€18,000/hr", "−€7,200/hr", "€0/hr". Reuses the
+ * signed-euro glyphs (the +/− is the colour-off channel) and appends the "/hr"
+ * unit so a rate is never mistaken for a balance.
+ */
+function fmtRatePerHour(amountPerHour: number): string {
+  return `${fmtEuroSigned(amountPerHour)}/hr`;
 }
 
 // --- tiny DOM helpers (kept local; no per-frame allocation in update) --------

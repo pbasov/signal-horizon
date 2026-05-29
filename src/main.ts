@@ -71,10 +71,13 @@ let demand: SessionRenderState = {
   fetchCountdownSeconds: null,
   blackout: false,
   balance: session.economy.balance,
-  lastPayout: 0,
-  runway: session.economy.runway(session.economy.cacheOpexPerTick),
+  // Pre-first-step rates: idle cache (no serve yet) burns opex with no income —
+  // a net loss, like an opening miss. The first step() overwrites these.
+  revenueRatePerSecond: session.economy.revenueRate("miss"),
+  opexRatePerSecond: session.economy.opexRate(session.coherence),
+  netRatePerSecond: session.economy.netRatePerSecond("miss", session.coherence),
+  runway: session.economy.runway(-session.economy.netRatePerSecond("miss", session.coherence)),
   bankrupt: false,
-  opexPerTick: session.economy.cacheOpexPerTick,
   servedAgeSeconds: null,
   freshnessPremium:
     session.demand.price(session.demand.freshFreshness) -
@@ -265,10 +268,11 @@ function frame(now: number): void {
       fetchCountdownSeconds: demand.fetchCountdownSeconds,
       blackout: demand.blackout,
       balance: demand.balance,
-      lastPayout: demand.lastPayout,
+      revenueRatePerSecond: demand.revenueRatePerSecond,
+      opexRatePerSecond: demand.opexRatePerSecond,
+      netRatePerSecond: demand.netRatePerSecond,
       runway: demand.runway,
       bankrupt: demand.bankrupt,
-      opexPerTick: demand.opexPerTick,
       servedAgeSeconds: demand.servedAgeSeconds,
       freshnessPremium: demand.freshnessPremium,
     },

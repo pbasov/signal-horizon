@@ -51,16 +51,22 @@ export interface DemandReadout {
   fetchCountdownSeconds: number | null;
   /** True when the link is down AND there is no usable cache (blackout miss). */
   blackout: boolean;
-  /** M1-08 — on-hand wallet balance (currency units) after the latest step. */
+  /** M1-08 — on-hand wallet balance (€) after the latest step's accrual. */
   balance: number;
-  /** Signed payout applied to the balance this step (the resolve payout). */
-  lastPayout: number;
-  /** Ticks until bankruptcy at the standing per-tick burn (+Inf when not burning). */
+  /**
+   * REVENUE RATE (€ per sim-second) for the current serve band: positive while
+   * serving fresh/stale, 0 on a miss, NEGATIVE during a blackout (the SLA penalty
+   * rate). The FINANCE panel's REVENUE row — a rate, not a per-tick payout.
+   */
+  revenueRatePerSecond: number;
+  /** OPEX RATE (€ per sim-second) to run the cache (baseline × coherence). The OPEX row. */
+  opexRatePerSecond: number;
+  /** NET RATE (€ per sim-second): revenue − opex. >0 earning, <0 burning. The NET row. */
+  netRatePerSecond: number;
+  /** Sim-seconds until bankruptcy at the live net burn (+Inf when not burning). */
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
-  /** Cache opex burned per tick this step (× coherence multiplier) — the OPEX rate. */
-  opexPerTick: number;
   /** Age (sim-seconds) of the served data, or null on a non-cache serve (miss/blackout). */
   servedAgeSeconds: number | null;
   /**
