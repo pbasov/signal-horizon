@@ -56,7 +56,18 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 
 ---
 
-## 6. Commit discipline
+## 6. Always update backlog.md and decisions.md
+
+- **Every completed ticket** must be ticked `[x]` in `docs/backlog.md`. Every started ticket must be marked `[~]`.
+- **Every architectural or design decision** must be recorded in `docs/decisions.md` — status (PROPOSED / ACCEPTED / SUPERSEDED / DEPRECATED), context, rationale, and consequences.
+- If a ticket's scope changed during implementation, update its description in the backlog to match what was actually built.
+- If a new cross-cutting concern or follow-up emerged, add it to the backlog.
+- If a spike or experiment produced a decision, record it in decisions.md with the relevant SD/D label.
+- **Do this as part of the same commit** as the code change, not as a separate cleanup later. Stale docs are bugs.
+
+---
+
+## 7. Commit discipline
 
 - One logical change per commit. Don't bundle unrelated refactors with feature work.
 - Commit messages must reference the ticket (e.g. `P0-05: Add action-log save format`).
