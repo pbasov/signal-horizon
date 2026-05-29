@@ -13,7 +13,6 @@
   > One or two sentences of scope. **Done when:** testable acceptance criteria.
 - **Detail is deliberately front-loaded.** P0, M0 and M1 are specified tightly because they gate everything. M2–M4 are epics + headline tickets only. M5–M6 are sketches. Per GDD §10, the endgame must not be designed in detail until the mid-game is proven fun — so this doc refuses to pretend otherwise.
 - **The single most important fact in this plan:** **M1 is a kill-gate.** Its only job is to answer *"is watching and optimising light-delayed information flow fun for 30 minutes with no narrative?"* If M1 fails its playtest (§ M1 below), the correct action is to stop or pivot the core — not to build M2. Everything before M1 exists to reach that question as cheaply as possible.
-- **Pre-Migration gate:** before committing to full migration past the spike, the spike must be wrapped in Tauri and re-validated under WebKitGTK. This is recorded as P0-GATE below and must pass before P0-01 through P0-08 begin.
 
 **Sizing legend (solo-dev gut estimates, not commitments):** `S` ≈ ≤1 day · `M` ≈ 2–4 days · `L` ≈ 1–2 weeks · `XL` ≈ multi-week, break down further before starting · `SPIKE` = time-boxed research/decision, produce a written conclusion not production code.
 
@@ -35,7 +34,7 @@
 
 ## 2. Tech decisions to lock now (Phase 0 spikes)
 
-- **[P0-S1] Pin the Tauri + Node + Three.js versions** — *SPIKE (S) · DONE-SPIKE* · Pin exact versions: Tauri 2.x (`@tauri-apps/cli ^2.11.2`, `@tauri-apps/api ^2.11.0`), Node (runtime), Three.js `^0.184.0`, TypeScript `^6.0.3`, Vite `^8.0.14`, Vitest `^4.1.7`, Playwright `^1.60.0`. Desktop target: Linux (WebKitGTK), Windows (WebView2), macOS (WKWebView). **Done when:** versions pinned in `package.json` and README; `npm install && npm test && npm run dev` all pass from a clean clone.
+- **[P0-S1] Pin the Node + Three.js versions** — *SPIKE (S) · DONE-SPIKE* · Pin exact versions: Node (runtime), Three.js `^0.184.0`, TypeScript `^6.0.3`, Vite `^8.0.14`, Vitest `^4.1.7`, Playwright `^1.60.0`. **Done when:** versions pinned in `package.json` and README; `npm install && npm test && npm run dev` all pass from a clean clone.
 - **[P0-S2] Sim-core implementation approach** — *SPIKE (S) · RESOLVED BY SPIKE* · The sim core is pure **TypeScript** with **no DOM or Three.js imports** (`src/sim/`), keeping it rigorously pure so the hot path (Kepler propagation, routing solver) stays portable to a Rust/WASM kernel *later, only when a profiler says so*. The Kepler truth layer is already ported and pinned bit-identical to the C# implementation (14/14 Vitest pass vs the golden master). **Done when:** decision + rationale written; the purity boundary (principle #1) documented as a lint/review rule.
 - **[P0-S3] Test & CI tooling** — *SPIKE (S) · DONE-SPIKE* · Vitest for pure-TS unit tests, Playwright (headful ungoogled-chromium) for visual regression. Confirm test execution works locally and in CI. **Done when:** `npm test` passes on your machine and in CI.
 
@@ -43,15 +42,7 @@
 
 ## 3. Critical path (one paragraph)
 
-`P0-GATE WebKitGTK validation` → `P0 foundations` → `M0 sim spike + a coloured packet crawling to Mars` → **`M1 fun-gate (STOP/GO)`** → `M2 Earth vertical slice` → `M3 cislunar on-ramp` → `M4 interplanetary (the game becomes itself)` → post-1.0 (`M5 outer/DTN`, `M6 optional information economy`). Cross-cutting epics (determinism, perf, accessibility, save/load, audio, content pipeline) run continuously from P0. **Do not start M2 until M1 passes its gate.**
-
----
-
-## Pre-Migration Gate — WebKitGTK Validation
-
-*Goal: confirm the spike renders and performs acceptably inside Tauri's shipping WebView (WebKitGTK on Linux) before committing to the full migration. This is the single highest-risk unknown (FINDINGS.md § Open risks).*
-
-- **[P0-GATE] Wrap spike in Tauri and re-validate under WebKitGTK** — *M · P0-S1* · Wrap the existing Vite app in a Tauri 2.x native binary; confirm WebGL2, dithered billboards, dashed orbit rings, custom scrollbars, `-webkit-font-smoothing`, keyboard input, and interactive drag/resize all work under WebKitGTK. Re-run the six spike screenshots against the Tauri window. **Done when:** visual parity with Chromium screenshots is confirmed; any WebKitGTK-specific rendering differences are documented and acceptable. *If this gate fails, re-evaluate whether to stay on Godot for the 3D/render layer (FINDINGS.md recommendation).*
+`P0 foundations` → `M0 sim spike + a coloured packet crawling to Mars` → **`M1 fun-gate (STOP/GO)`** → `M2 Earth vertical slice` → `M3 cislunar on-ramp` → `M4 interplanetary (the game becomes itself)` → post-1.0 (`M5 outer/DTN`, `M6 optional information economy`). Cross-cutting epics (determinism, perf, accessibility, save/load, audio, content pipeline) run continuously from P0. **Do not start M2 until M1 passes its gate.**
 
 ---
 
@@ -60,8 +51,8 @@
 *Goal: a deterministic, testable skeleton you can build features on without regret. ~1–2 weeks.*
 
 **Epic: Project & repo setup**
-- **[P0-01] Repo + Tauri project skeleton** — *S · P0-GATE · DONE-SPIKE* · Git repo, Tauri 2.x project, `package.json`, `.gitignore`, README, license, module folders `src/sim/ src/orrery/ src/panels/ src/wm/ src/main.ts data/` per GDD §6. **Done when:** project opens in browser via `npm run dev` and in Tauri via `npm run tauri:dev`; folder boundaries documented in README.
-- **[P0-02] CI: test + build check** — *M · P0-S3 · NEEDS-PORT* · CI pipeline that runs `npm test` (Vitest) and `npm run build` on push and (later) produces Tauri export builds. **Done when:** green pipeline on a trivial commit; failing test fails the build. *(You're a DevOps engineer — make this nice early; it pays for itself.)*
+- **[P0-01] Repo + project skeleton** — *S · DONE-SPIKE* · Git repo, `package.json`, `.gitignore`, README, license, module folders `src/sim/ src/orrery/ src/panels/ src/wm/ src/main.ts data/` per GDD §6. **Done when:** project opens in browser via `npm run dev`; folder boundaries documented in README.
+- **[P0-02] CI: test + build check** — *M · P0-S3 · NEEDS-PORT* · CI pipeline that runs `npm test` (Vitest) and `npm run build` on push. **Done when:** green pipeline on a trivial commit; failing test fails the build. *(You're a DevOps engineer — make this nice early; it pays for itself.)*
 
 **Epic: Deterministic core backbone**
 - **[P0-03] Authoritative sim-clock + fixed-step tick** — *M · P0-01 · NEEDS-PORT* · A sim clock holding absolute time; a fixed-dt advance loop decoupled from render framerate (accumulator pattern). Time-acceleration multiplies how fast the clock advances, nothing else. The spike uses a plain f64 accumulator (SD-7); this ticket replaces it with an integer fixed-step tick for bit-determinism, matching the Godot project's `SimClock` discipline. **Done when:** ticking at 1× and 100× for the same sim-duration yields identical end-state (unit test).
@@ -202,20 +193,19 @@ Run ≥5 testers (or yourself + 4 others) through M1-12 cold. **PASS if** most t
 
 - **[X-01] Determinism & replay** — keep the golden-master test (P0-06) green at every milestone; add a recorded replay per milestone as a regression fixture. *TS note:* the fixed-tick clock (P0-03) is the new foundation for this; the spike's f64 accumulator was not deterministic across replays.
 - **[X-02] Performance budget** — routing graph re-solves **only on topology-change events**, not per tick; **precompute geometric link windows** (they're predictable from orbits). Establish a frame/tick budget and a headless perf benchmark before M4's graph gets big. *TS note:* the primary perf concern is GC allocation pools in Three.js — the adversarial review caught ~960 `Vector3`/frame in the orrery hot loop; the fix (scratch vectors + direct `Float32Array` writes) is the pattern to enforce. Pool ephemeris `Vec3` array returns as well.
-- **[X-03] Accessibility** — colour-blind-safe palettes, the fully-playable monochrome-purist mode, scalable-UI/larger-bitmap mode (GDD §8). Test the colour-off path every milestone so it never rots. *TS note:* must be tested under WebKitGTK (the shipping WebView on Linux), not just Chromium.
+- **[X-03] Accessibility** — colour-blind-safe palettes, the fully-playable monochrome-purist mode, scalable-UI/larger-bitmap mode (GDD §8). Test the colour-off path every milestone so it never rots.
 - **[X-04] Save/load robustness** — versioned saves, migration story, fast snapshot load. Grows with each milestone's new action types. *TS note:* save format is JSON serialisable from the pure `src/sim/` layer; no DOM/Three.js state in saves.
-- **[X-05] Audio system** — UI beeps/clacks, telemetry chirps, the *commit* tone, and audio-as-information for network health (GDD §5/§8). *TS note:* Web Audio API; must work under WebKitGTK.
+- **[X-05] Audio system** — UI beeps/clacks, telemetry chirps, the *commit* tone, and audio-as-information for network health (GDD §5/§8). *TS note:* Web Audio API.
 - **[X-06] Content pipeline** — `data/` JSON resources for bodies, tech, contracts, balance tables, and hand-authored flavour-text templates, designer-editable without code (GDD §6).
 
 ---
 
 ## First two weeks — concrete next actions
 
-1. **Run the Pre-Migration gate** (P0-GATE): wrap the spike in Tauri and validate under WebKitGTK. If it passes, proceed; if it fails, re-evaluate before investing further.
-2. **Pin the resolved P0 spikes** (P0-S1/S2/S3): Tauri + Node + Three.js versions (already pinned), sim-core language (TS, resolved), test framework (Vitest + Playwright, working). Write the one-paragraph decisions if not already in `docs/decisions.md`.
-3. **Stand up the deterministic backbone** (P0-03, P0-04, P0-06). Port the fixed-step tick from the Godot project; implement the seeded RNG; write the golden-master replay test before any new sim code. This is the highest-leverage work remaining.
-4. **Wire CI** (P0-02): `npm test` + `npm run build` in CI.
-5. **Then chase the M0 gap:** packet + freshness (M0-09 → M0-12) are already DONE-SPIKE; the gap is the deterministic backbone (P0-03..P0-06) and the save format (P0-05).
+1. **Pin the resolved P0 spikes** (P0-S1/S2/S3): Node + Three.js versions (already pinned), sim-core language (TS, resolved), test framework (Vitest + Playwright, working). Write the one-paragraph decisions if not already in `docs/decisions.md`.
+2. **Stand up the deterministic backbone** (P0-03, P0-04, P0-06). Port the fixed-step tick from the Godot project; implement the seeded RNG; write the golden-master replay test before any new sim code. This is the highest-leverage work remaining.
+3. **Wire CI** (P0-02): `npm test` + `npm run build` in CI.
+4. **Then chase the M0 gap:** packet + freshness (M0-09 → M0-12) are already DONE-SPIKE; the gap is the deterministic backbone (P0-03..P0-06) and the save format (P0-05).
 
 Everything after that is in service of reaching the **M1 gate** as fast as honestly possible.
 
@@ -228,7 +218,6 @@ Everything after that is in service of reaching the **M1 gate** as fast as hones
 - **Hex grid library vs roll-your-own** — existing JS/TS hex/grid libraries or a simpler geodesic grid? (Spike at M2-01.)
 - **When (if ever) to port the sim hot path** off plain TypeScript to a native (Rust/WASM) kernel — gate this on a real profiler result during M4, not a hunch.
 - **Time-compression ratio** — how aggressively to compress so months-apart windows fit minutes-long sessions without killing the "waiting" tension (GDD §10). Prototype empirically at M4-08.
-- **Cross-platform WebView parity** — what's the acceptable rendering/behaviour matrix across WebKitGTK (Linux), WebView2 (Windows), and WKWebView (macOS)? Document early; test on all three before M2.
 
 ---
 

@@ -1,13 +1,13 @@
 # SIGNAL HORIZON — Engineering Scoping
-### v0.1 (Tauri/TS/Three.js) · companion to implementation-plan-v0.1 / GDD v0.5
+### v0.1 (TS/Three.js) · companion to implementation-plan-v0.1 / GDD v0.5
 
-> Output of a 5-way scoping pass (P0 foundations · M0 sim core · M0 render/signal · M1 fun-gate · cross-cutting/spikes) against the live codebase, then **updated** to reflect the Tauri + TypeScript + Three.js spike results. The spike proved the UX builds at least as naturally on the web stack (see `FINDINGS.md`); the remaining cost is re-implementing determinism and validating WebKitGTK. Scope only — game design is unchanged.
+> Output of a 5-way scoping pass (P0 foundations · M0 sim core · M0 render/signal · M1 fun-gate · cross-cutting/spikes) against the live codebase, then **updated** to reflect the TypeScript + Three.js spike results. The spike proved the UX builds at least as naturally on the web stack (see `FINDINGS.md`); the app runs in the browser (SD-2). Scope only — game design is unchanged.
 
 ---
 
 ## 0. The one-paragraph picture
 
-The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at least as naturally as Godot — the DD-10 tiling WM, the 3D orrery, the honest light-speed packet, and the keyboard-native presets all work, with dramatically faster iteration and zero numerical-fidelity loss. The render/UI/aesthetic layer is now *proven reusable* (floating origin, log-compression, dithered billboards, DOM panels — all ported and screenshot-verified). The sim layer is real Kepler (bit-identical to C#, golden-master-pinned), not a placeholder. What remains greenfield is the **deterministic backbone**: fixed-tick clock, seeded PRNG, and save/replay — all load-bearing for M1 and absent from the spike. The work now is to (a) validate under WebKitGTK (the one open gate before committing to this stack), (b) port the deterministic fixed-tick + save/replay machinery to TypeScript, and (c) drive the proven visuals from a fully deterministic sim.
+The spike **proved** the TypeScript/Three.js stack can build the UX at least as naturally as Godot — the DD-10 tiling WM, the 3D orrery, the honest light-speed packet, and the keyboard-native presets all work, with dramatically faster iteration and zero numerical-fidelity loss. The render/UI/aesthetic layer is now *proven reusable* (floating origin, log-compression, dithered billboards, DOM panels — all ported and screenshot-verified). The sim layer is real Kepler (bit-identical to C#, golden-master-pinned), not a placeholder. What remains greenfield is the **deterministic backbone**: fixed-tick clock, seeded PRNG, and save/replay — all load-bearing for M1 and absent from the spike. The work now is to build the deterministic backbone, then the M1 economy in the pure sim, and reach the kill-gate.
 
 ---
 
@@ -15,14 +15,14 @@ The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at lea
 
 | Check | Result |
 |---|---|
-| Tauri | **2.x** (`@tauri-apps/cli` 2.11.2, `@tauri-apps/api` 2.11.0). Rust toolchain: **rustc 1.95.0**. `webkit2gtk-4.1` present on host. |
+| Browser | **Chromium** (ungoogled-chromium 148 primary; any modern Chromium-based browser). No native shell — the app is browser-native (SD-2). |
 | Node | **v26.1.0**. `npm run dev` starts Vite HMR; `npm test` runs Vitest. |
 | TypeScript | **6.0.3**, strict, `ES2022` target, `bundler` module resolution. |
 | Three.js | **0.184.0** with `@types/three` 0.184.1. WebGL2 renderer. |
 | Vite | **8.0.14**. HMR sub-second on this hardware. |
 | Vitest | **4.1.7**. 14/14 Kepler pins pass (golden-master vs C#). |
 | Playwright | **1.60.0** (`playwright-core`). Headful screenshot driver (`tools/shoot.mjs`) against ungoogled-chromium 148. |
-| Git | **Initialized and pushed.** Two commits on `main`: spike build + screenshot cleanup. |
+| Git | **Initialized and pushed.** Repository at `git@github.com:pbasov/signal-horizon.git`, branch `main`. |
 | `data/` dir | **Exists.** `data/system.json` is a relative symlink to the Godot project's canonical file. Vite `server.fs.allow` widened to read the symlink target. |
 
 ---
@@ -31,17 +31,17 @@ The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at lea
 
 | # | Decision | Recommendation (from scoping) |
 |---|---|---|
-| D1 | Pin Tauri + Node versions | **Tauri 2.11.x, Node 26 LTS, Three.js 0.184.x.** Pin CI to these exact versions (Tauri's WebView inherits the OS renderer; pin only what we control). Re-pin when Tauri 3.x is stable and WebKitGTK is re-validated. |
+| D1 | Pin Node + Three.js versions | **Node 26, Three.js 0.184.x, Vite 8.x.** Pin CI to these exact versions. Tauri is no longer in the stack (SD-2). |
 | D2 | Sim-core language | **RESOLVED — TypeScript.** Proven by spike (SD-3): `number` is IEEE-754 f64 natively, Kepler ports bit-identically, pure layer stays engine-agnostic and unit-tested under Vitest. No Godot-node boundary. The GDD §6 "hot core" discipline is preserved: the sim is a pure TS module with no DOM/Three.js/WebGL reference. |
-| D3 | Test framework | **RESOLVED — Vitest + Playwright.** Vitest for the pure sim (fast, no DOM); Playwright headful for visual regression and WebKitGTK validation (same browser the user runs). Vitest pins already green on the golden master. |
-| D4 | RNG portability | **Still open — decide before P0-04.** Port the splitmix64 (or xoshiro256**) to TypeScript; pin seed → output. If golden hashes must survive runtime upgrades / cross-platform, prefer hand-rolled integer PRNG over `Math.random()` (which is explicitly not portable). |
+| D3 | Test framework | **RESOLVED — Vitest + Playwright.** Vitest for the pure sim (fast, no DOM); Playwright headful for visual regression. Vitest pins already green on the golden master. |
+| D4 | RNG portability | **Still open — decide before P0-04.** Port the splitmix64 (or xoshiro256\*\*) to TypeScript; pin seed → output. If golden hashes must survive runtime upgrades / cross-platform, prefer hand-rolled integer PRNG over `Math.random()` (which is explicitly not portable). |
 | D5 | Fixed sim `DT` | Provisional now (e.g. 1/60 s), finalized empirically at M0-08/M0-11. Time-accel scales *how many fixed steps run*, never `DT` or physics constants. |
-| D6 | Project rename | `GalaxyLink` → `SignalHorizon` (cosmetic, do once). |
+| D6 | Project rename | `GalaxyLink` → `SignalHorizon` (done). |
 | D7 | Epoch / frame convention | **J2000 + ecliptic-J2000.** Threads through all of M0; lock it once. |
 
 ---
 
-## 3. Cross-cutting findings (all five agents independently, updated for TS stack)
+## 3. Cross-cutting findings (all five agents independently, updated for browser stack)
 
 1. **`git init` is done.** Repository initialized, committed, and pushed. The spike tree is the baseline.
 2. **The sim is not a placeholder — it's real Kepler.** The spike's `src/sim/ephemeris.ts` is a verbatim, bit-identical port of the C# truth layer (8-iteration Newton solver, 3-1-3 rotation, recursive parent composition, golden-master-pinned). The light-delay math (`delay.ts`) and link geometry (`links.ts`) are also real. What is *missing* is the deterministic backbone: fixed-tick clock, seeded PRNG, and save/replay. The pure sim is **not** throwaway — it is the foundation.
@@ -52,17 +52,16 @@ The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at lea
 
 ---
 
-## 4. Per-slice scope (condensed for TS/Tauri stack)
+## 4. Per-slice scope (condensed for TS/Three.js stack)
 
 ### Phase 0 — Foundations (TS stack)
-- **Spikes (D1, D4):** pin Tauri/Node/Three.js versions (D1, one sitting); settle PRNG choice (D4, one sitting). D2 and D3 are resolved.
-- **WebKitGTK validation gate (highest priority):** wrap the spike in Tauri (`npm run tauri:dev`), re-run the six existing screenshots under WebKitGTK, verify WebGL2 limits, CSS dither rendering, font smoothing, and custom scrollbars. If this fails, the stack decision re-opens. This is the **one gate** that must close before any other Phase 0 work.
-- **Backbone:** P0-03 fixed-tick clock in `src/sim/` (integer tick scheduler; f64 accumulator in the game loop drives N fixed steps per frame, never the other way) · P0-04 seeded sim PRNG in TypeScript (port splitmix64 or xoshiro256**; settle D4) · P0-05 save = seed + initial conditions + ordered action log + snapshots · **P0-06 determinism golden-master replay test (highest-leverage item in the project — write it before the sim gets complex)**.
+- **Spikes (D1, D4):** pin Node/Three.js/Vite versions (D1, one sitting); settle PRNG choice (D4, one sitting). D2 and D3 are resolved.
+- **Backbone:** P0-03 fixed-tick clock in `src/sim/` (integer tick scheduler; f64 accumulator in the game loop drives N fixed steps per frame, never the other way) · P0-04 seeded sim PRNG in TypeScript (port splitmix64 or xoshiro256\*\*; settle D4) · P0-05 save = seed + initial conditions + ordered action log + snapshots · **P0-06 determinism golden-master replay test (highest-leverage item in the project — write it before the sim gets complex)**.
 - **Render/style backbone (already proven):** P0-07 floating-origin (ported, screenshot-verified — prove no jitter at 1e9 m under the fixed-tick clock) · P0-08 chrome/signal split (already the live architecture — document the contract explicitly: DOM owns chrome, WebGL canvas owns signal, freshness-as-saturation on the orrery side, 1-bit dither on the panel side).
 - **Sim purity boundary:** enforce that `src/sim/` has no import from `three`, DOM APIs, or WebGL. Vitest is the purity guard — the sim test suite runs without a DOM.
 
 ### Milestone 0 — Spike-done + deterministic backbone
-- **M0 is now spike-done** (just needs the WebKitGTK gate). The orrery, WM, panels, packet crawl, and Kepler truth layer all exist and pass. The spike backlog (§6 items) is ✅. Remaining M0 work:
+- **M0 is now spike-done.** The orrery, WM, panels, packet crawl, and Kepler truth layer all exist and pass. The spike backlog (§6 items) is ✅. Remaining M0 work:
   - Port the fixed-tick clock to replace the f64 accumulator (P0-03 → M0-08 rewire).
   - Wire the seeded PRNG (P0-04).
   - Add save/load + replay (P0-05/06).
@@ -78,7 +77,7 @@ The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at lea
 - **X-01 determinism** = same mechanism as **X-04 save/load** (seed+log+snapshot+canonical hash) — build together. Canonical hash: fixed field order, hash f64 by raw IEEE-754 bits (`DataView`/`Float64Array`), sort collections by stable id. One regression replay fixture per milestone.
 - **X-02 perf:** routes re-solve **on topology-change events only**; **precompute geometric link windows** (deterministic from orbits). Wire the event-driven invalidation at M1 while trivial; benchmark harness M2–M3; budget real before M4.
 - **X-03 accessibility:** chrome/signal split is already live — make "colour-off still fully playable" a per-milestone exit check. CVD-safe palette stub + purist toggle in P0.
-- **X-05 audio:** one-way event-bus → cues (never read wall-clock / feed back into sim). Placeholder at M1-11; health-sonification matures M2+.
+- **X-05 audio:** one-way event-bus → cues (never read wall-clock / feed back into sim). Web Audio API. Placeholder at M1-11; health-sonification matures M2+.
 - **X-06 content pipeline:** `data/` JSON via symlink (already working). First scenario file at M1-12. Validate schema in CI.
 
 ### Open questions (resolved/deferred)
@@ -92,13 +91,12 @@ The spike **proved** the Tauri/TypeScript/Three.js stack can build the UX at lea
 
 ## 5. Recommended first weeks
 
-**Week 1 — WebKitGTK gate + backbone**
-0. **Wrap in Tauri (`npm run tauri:dev`)** — this is the gate. Re-run the six spiked screenshots under WebKitGTK. Verify WebGL2, CSS dither, font smoothing, custom scrollbars. If green, proceed; if red, the stack decision re-opens.
+**Week 1 — Backbone**
 1. Resolve D1 (pin versions) + D4 (PRNG choice). Write the one-paragraph decisions + the `src/sim/` purity lint rule (no `three`/DOM imports).
 2. P0-03: fixed-tick clock in `src/sim/clock.ts` (integer tick scheduler; the game loop's `requestAnimationFrame` drives N fixed steps per frame). Replace the current f64 accumulator.
-3. P0-04: seeded PRNG in `src/sim/` (port splitmix64 or xoshiro256**). Pin seed → output with a Vitest fixture.
+3. P0-04: seeded PRNG in `src/sim/` (port splitmix64 or xoshiro256\*\*). Pin seed → output with a Vitest fixture.
 
-**Week 2 — save/replay/determinism + integration**
+**Week 2 — Save/replay/determinism + integration**
 4. P0-05 (action-log + snapshot + canonical state hash in TS).
 5. **P0-06 (golden-master replay in CI)** — before any real sim code beyond Kepler.
 6. Rewire the orrery and panels to the fixed-tick clock (verify the money shot still works under deterministic stepping).
@@ -136,4 +134,4 @@ Then chase **M1** (economy model in the pure sim, fed to the proven visuals), wh
 | Screenshot driver | `tools/shoot.mjs` | Playwright headful screenshots against ungoogled-chromium. Reproducible visual verification. |
 | Tests | `src/sim/ephemeris.test.ts` | Vitest. Kepler golden-master pin + 13 structural assertions. Purity guard: sim tests run without DOM. |
 
-*v0.1 (Tauri/TS/Three.js). The spike proved the UX works — the path to the M1 kill-gate is now deterministic-backbone + economy in the pure sim, driven by the proven visuals. Everything before M1 exists to reach that fun question as cheaply and honestly as possible.*
+*v0.1 (TS/Three.js). The spike proved the UX works — the path to the M1 kill-gate is now deterministic-backbone + economy in the pure sim, driven by the proven visuals. Everything before M1 exists to reach that fun question as cheaply and honestly as possible.*

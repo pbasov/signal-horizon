@@ -1,7 +1,7 @@
 # SIGNAL HORIZON
 ### Game Design Document — v0.5 (Pre-Production)
 
-> A satellite & information-network tycoon simulation built in Godot 4.
+> A satellite & information-network tycoon simulation built in TypeScript + Three.js (browser).
 > Working title: **Signal Horizon**. Genre: economic/management sim with orbital-mechanics substrate. Platform: **Desktop-only for the full experience** (Linux/Windows/macOS); a mobile *companion* app for remote management is a speculative, far-post-1.0 goal, not a second port of the whole game. Currency: **EUR (€)** early/mid game — see §4.10 for the late-game currency flip, now reframed as an *optional* endgame path.
 
 ---
@@ -77,10 +77,10 @@ The loop is always **gap → asset → integration → revenue → bigger gap**,
 
 The single most important *architectural* decision (visualization, §5, is the most important *design* decision). Two decoupled layers:
 
-- **Simulation layer (truth):** All bodies and craft are propagated in **real SI units (metres, seconds, kilograms)** using **double-precision (`f64`) Keplerian elements** plus optional SGP4-style propagation for Earth-orbit assets. This layer is engine-agnostic plain C# math and could run headless (critical for testing and for keeping multiplayer *possible* later without committing to it now).
+- **Simulation layer (truth):** All bodies and craft are propagated in **real SI units (metres, seconds, kilograms)** using **double-precision (`f64`) Keplerian elements** plus optional SGP4-style propagation for Earth-orbit assets. This layer is engine-agnostic pure math (TypeScript `number` is f64 natively) and runs headless (critical for testing and for keeping multiplayer *possible* later without committing to it now).
 - **Render layer (lie):** Positions are scaled, floating-origin-rebased, and rendered in `float32`. The camera defines a local origin; everything is expressed relative to it to avoid precision jitter at solar-system scale. Distant objects collapse to icons/labels.
 
-Why this matters: it keeps coverage, link budgets, and revenue *honest* (computed in real units) while letting the visuals cheat freely. It also sidesteps Godot's large-world precision limits without a custom double-precision engine build — the truth never touches the float32 transform.
+Why this matters: it keeps coverage, link budgets, and revenue *honest* (computed in real units) while letting the visuals cheat freely. It also sidesteps WebGL's float32 precision limits at solar-system scale — the truth (f64) never touches the Three.js transform (f32).
 
 Orbital model fidelity tiers (player-invisible, perf-driven):
 - **Tier 0 — Two-body Keplerian:** default for everything. Cheap, deterministic, analytically propagatable to any time `t`.
@@ -274,25 +274,28 @@ Because the product is invisible information, **visualization is not a feature o
 
 ---
 
-## 6. Technical Architecture (Godot 4)
+## 6. Technical Architecture (TypeScript + Three.js, browser)
 
-**Engine:** Godot 4.x .NET, **C# throughout** — gameplay, UI, and the hot sim core (orbital propagation, routing over a large time-varying graph) all in one language. Forward+ renderer on desktop.
+**Stack:** TypeScript, Three.js (WebGL2), Vite. **Browser-native** — the app runs in Chromium (SD-2); no native shell. Gameplay, UI, and the hot sim core (orbital propagation, routing over a large time-varying graph) all in one language. Three.js WebGL2 renderer.
 
 **Module layout:**
-- `sim/` — headless, deterministic, double-precision. Bodies, ephemerides, propagators, link-budget solver, routing solver, economy tick. **No Godot rendering dependencies** → testable, and reusable as a future server authority *if* multiplayer is ever pursued.
-- `render/` — floating-origin scene management, orrery, LOD/icon collapse, overlay rendering (coverage shells, link flows, isochrones, **packets-in-flight**). Given §5's priority, this module gets disproportionate early attention.
-- `ui/` — Control-node dashboards. Godot's Control system is a genuine strength; heavy panels as reusable scenes.
-- `game/` — orchestration: tick scheduling, save/load, contract & market state machines, AI competitors/partners, **emergent-event generator (§3)**.
-- `data/` — content as resources/JSON: bodies, ephemeris constants, tech tree, contract templates, balance tables, **hand-authored flavour-text templates (§4.6)** — designer-editable without code.
+- `sim/` — headless, deterministic, double-precision. Bodies, ephemerides, propagators, link-budget solver, routing solver, economy tick. **No DOM, no Three.js, no rendering, no input** — plain TypeScript with zero browser dependencies. Testable under Vitest with no WebGL setup, and reusable as a future server authority *if* multiplayer is ever pursued.
+- `orrery/` — Three.js scene: floating-origin scene management, orrery, LOD/icon collapse, overlay rendering (coverage shells, link flows, isochrones, **packets-in-flight**). Given §5's priority, this module gets disproportionate early attention.
+- `wm/` — DD-10 tiling window manager in the DOM: zone-grid model, drag-to-swap, gutter resize, data-driven presets. Always-tiled invariant. Pure DOM + CSS — no canvas.
+- `panels/` — DOM dashboards: SYSTEM.LOG, telemetry, status strip. Styled in the 1-bit chrome theme.
+- `game/` — orchestration: tick scheduling, save/load, contract & market state machines, AI competitors/partners, **emergent-event generator (§3)**. Currently lives in `main.ts`; will expand as M1+ systems land.
+- `data/` — content as JSON: bodies, ephemeris constants, tech tree, contract templates, balance tables, **hand-authored flavour-text templates (§4.6)** — designer-editable without code.
 
 **Key technical decisions:**
-- **Determinism first.** Fixed-step sim tick decoupled from render framerate. Analytic propagation (Kepler → position at absolute `t`) means the sim fast-forwards and any state is reproducible from seed + action log. Backbone of save/load (and, if ever needed, netcode).
+- **Determinism first.** Fixed-step sim tick decoupled from render framerate. Analytic propagation (Kepler → position at absolute `t`) means the sim fast-forwards and any state is reproducible from seed + action log. Backbone of save/load (and, if ever needed, netcode). The spike used a plain f64 accumulator; production replaces it with an integer fixed-step clock (P0-03).
+- **Truth is f64; the render lie is f32.** Sim positions/velocities live as native `number` (f64) in `src/sim/`. Conversion to `Float32Array` happens *only* at the floating-origin rebase boundary in `src/orrery/`. Three.js `Vector3` is f32 — the truth never touches it.
 - **Floating origin** rebased to camera focus each frame; sim stays in absolute coords.
-- **Time as a first-class entity.** A single authoritative sim-clock; all delays, windows, and freshness derive from it. Time-acceleration scales the tick, never the physics constants.
+- **Time as a first-class entity.** A single authoritative sim-clock; all delays, windows, and freshness derive from it. Time-acceleration scales the tick (more fixed steps per frame), never the physics constants.
 - **Graph performance:** precompute geometric link windows; re-solve routes only on topology-change events, not every tick.
-- **Save format:** seed + initial conditions + ordered action log (replayable) plus periodic state snapshots for fast load.
+- **Save format:** seed + initial conditions + ordered action log (replayable) plus periodic state snapshots for fast load. JSON-serialisable from the pure `src/sim/` layer — no DOM/Three.js state in saves.
+- **Sim/render purity boundary.** The sim (`src/sim/`) must never import from `three`, DOM APIs, or WebGL. This is enforced by Vitest (sim tests run without a DOM) and by code review. Any violation is a build-breaking mistake.
 
-**Platform path:** the **full game is desktop-only** (Linux primary dev target, plus Windows/macOS exports) — the dense, multi-window operations console (§5, §8) is built for a real screen and pointer, and we are not compromising it for a phone. The mobile companion (§below) is deferred far past 1.0 and may not happen.
+**Platform path:** the **full game is desktop-browser** (Chromium primary target, any modern Chromium-based browser) — the dense, multi-window operations console (§5, §8) is built for a real screen and pointer, and we are not compromising it for a phone. F11 fullscreen gives a bare, OS-chrome-free window. The code uses only standard web APIs so a native wrapper (Tauri, Electron) remains a future option, but is not on the critical path (SD-2).
 
 **The mobile companion — demoted to speculative.** Not a port; at most a lightweight remote-management app (check dashboards, get pushed alerts, approve/veto autonomy decisions, queue actions). It leans on the headless sim core being able to serve state to a thin client — a property the architecture already supports for free. **It is no longer assigned a version target.** It happens only if 1.0 succeeds and only if its action set can be held narrow; otherwise it doesn't exist.
 
