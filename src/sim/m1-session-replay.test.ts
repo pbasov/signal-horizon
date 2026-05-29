@@ -37,47 +37,63 @@ const SEED = 1234567n;
 const GOLDEN_DT = 1 / 60;
 
 /**
- * End tick the replay reaches. With the REALISTIC empty-cache session the loop
- * BREATHES on its own timeline: step(0) misses → the auto-miss fetch launches
- * (one-way Earth→Mars light time ≈ 923s) → it ARRIVES at tick ≈ 55383 storing a
- * sample ≈ 0.84 fresh → the cache then HITS with NO fetch in flight until it
- * decays below the 0.5 floor (≈ tick 216000). END_TICK sits inside that fresh-hit
- * window so the LOGGED player prefetch (tick {@link PREFETCH_TICK}) lands when no
- * auto fetch is crawling — exactly the moment a player would pre-position — and
- * therefore actually launches a fetch + charges €, materially moving the fold.
+ * End tick the replay reaches. E7: the REALISTIC empty-cache session now has FIVE
+ * feeds breathing on their own timelines against a SHARED 3-slot cache. step(0)
+ * misses on every feed → five auto-miss legs launch (one-way Earth→Mars ≈ 923s) →
+ * they ARRIVE at tick ≈ 55383; only 3 datasets survive the 3-slot eviction so the
+ * 2 losers re-miss + re-launch, and the cache breathes per-feed thereafter.
+ * END_TICK sits after the first arrivals so the LOGGED player prefetch (tick
+ * {@link PREFETCH_TICK}) finds an eligible feed (the cached ones have legs idle),
+ * actually launches a leg + charges €, materially moving the fold.
  */
 const END_TICK = 120000; // 2000 sim-seconds at DT = 1/60 (≈ 33 min).
 
 /**
- * Tick at which the golden log issues the player prefetch: ≈ t=1333s, well INSIDE
- * the fresh-hit window (after arrival at ≈ 55383, before the decay-miss at
- * ≈ 216000), so no auto fetch is in flight and the prefetch is USABLE (it
- * launches a data-leg fetch and charges €50).
+ * Tick at which the golden log issues the player prefetch: ≈ t=1333s, AFTER the
+ * first arrivals (≈ tick 55383), when at least one cached feed has no leg in flight
+ * and the link is up — so the most-urgent-eligible prefetch is USABLE (it launches
+ * a data-leg fetch and charges €50).
  */
 const PREFETCH_TICK = 80000;
 
 /**
  * Fold the session's mutable state into a u64, reusing the state-hash primitives.
- * Folds, in fixed order:
+ * E7: the state now covers the WHOLE ROSTER — every feed's fetch state and every
+ * occupied cache slot — so the fold extends accordingly. Folds, in fixed order:
  *   - clock tick (int) and rng u64 (the shared replay anchor);
- *   - economy BALANCE (double, via mixFloat — it folds one opex charge per step
- *     plus the prefetch charge, so it captures the action's € effect);
- *   - the FETCH state: in-flight flag (0/1) + the launch/arrival times (doubles);
- *   - the CACHE sample: present flag (0/1) + capture time + half-life (doubles).
+ *   - economy BALANCE (double, via mixFloat — it folds opex per step + any
+ *     prefetch charge, so it captures the action's € effect);
+ *   - PER FEED, in roster order: in-flight flag (0/1) + launch + arrival times;
+ *   - PER SLOT, in cache order: a dataset-id hash + capture time + half-life.
  * Everything folded is bit-stable across runs (the doubles come from the same
  * deterministic ephemeris geometry on every drive).
  */
+function strHash(s: string): bigint {
+  // A tiny deterministic FNV-1a over the dataset id so the slot identity folds.
+  let h = 1469598103934665603n;
+  for (let i = 0; i < s.length; i++) {
+    h ^= BigInt(s.charCodeAt(i));
+    h = (h * 1099511628211n) & 0xffffffffffffffffn;
+  }
+  return h;
+}
+
 function sessionStateHash(tick: number, rngState: bigint, s: M1Session): bigint {
   const snap = s.snapshot();
   let acc = mixInt(0n, BigInt(tick));
   acc = mixInt(acc, rngState);
   acc = mixFloat(acc, s.economy.balance);
-  acc = mixInt(acc, snap.fetchInFlight ? 1n : 0n);
-  acc = mixFloat(acc, snap.fetchLaunchT);
-  acc = mixFloat(acc, snap.fetchArrivalT);
-  acc = mixInt(acc, snap.cache == null ? 0n : 1n);
-  acc = mixFloat(acc, snap.cache == null ? 0 : snap.cache.capturedAtT);
-  acc = mixFloat(acc, snap.cache == null ? 0 : snap.cache.halfLifeS);
+  for (const f of snap.feeds) {
+    acc = mixInt(acc, f.fetchInFlight ? 1n : 0n);
+    acc = mixFloat(acc, f.fetchLaunchT);
+    acc = mixFloat(acc, f.fetchArrivalT);
+  }
+  acc = mixInt(acc, BigInt(snap.slots.length));
+  for (const slot of snap.slots) {
+    acc = mixInt(acc, strHash(slot.datasetId));
+    acc = mixFloat(acc, slot.capturedAtT);
+    acc = mixFloat(acc, slot.halfLifeS);
+  }
   return acc;
 }
 
@@ -211,7 +227,7 @@ function liveDrive(prefetchTicks: number[], endTick: number, dt = GOLDEN_DT): M1
 // HERE as the regression guard. Any change to the economy fold, the session
 // loop, the prefetch action, the rng, or the scheduler moves this value.
 // ---------------------------------------------------------------------------
-const REPLAY_GOLDEN = 15239501741372586683n;
+const REPLAY_GOLDEN = 8387670477081443185n;
 
 describe("m1-session replay golden — action-driven economy + cache + fetch (E3)", () => {
   it("pins the M1-session replay state hash for the golden SaveGame (regression guard)", () => {
@@ -273,32 +289,35 @@ describe("m1-session replay golden — action-driven economy + cache + fetch (E3
     // live == replay: identical session state.
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
     expect(live.economy.balance).toBe(replayed.balance);
-    // And the competing prefetch was correctly GATED: no €50 charge happened
-    // (the same run with NO prefetch action ends on the identical balance).
+    // And the competing prefetch was correctly GATED: at tick 1 every feed already
+    // launched its own auto-miss leg (the empty cache misses on ALL feeds), so the
+    // most-urgent-eligible prefetch has NO eligible feed and is a no-op (no €50
+    // charge) — the same run with NO prefetch action ends on the identical balance.
     const noPrefetch = liveDrive([], endTick);
     expect(live.economy.balance).toBe(noPrefetch.economy.balance);
-    // Exactly one fetch (the auto-miss) is in flight — the prefetch did not start a second.
-    expect(live.snapshot().fetchInFlight).toBe(true);
+    // Every feed has its auto-miss leg in flight — the prefetch started none extra.
+    expect(live.snapshot().feeds.every((f) => f.fetchInFlight)).toBe(true);
   });
 
   it("the PREFETCH action materially changes the folded state (balance + fetch state differ)", () => {
     const withP = replay(goldenSave(), 1, 0.1, 40000, END_TICK);
     const without = replay(noPrefetchSave(), 1, 0.1, 40000, END_TICK);
-    // Same end tick. The mid-window prefetch (tick 80000, no fetch in flight then)
-    // launched a data-leg fetch AND charged €50, so the balance and the fetch
-    // state — and thus the fold — diverge from the no-prefetch run.
+    // Same end tick. The prefetch (tick 80000) targets the most-urgent ELIGIBLE
+    // feed and launches its data leg + charges €50, so the balance and the per-feed
+    // fetch state — and thus the fold — diverge from the no-prefetch run.
     expect(withP.tick).toBe(without.tick);
     expect(withP.hash).not.toBe(without.hash);
     expect(withP.balance).not.toBe(without.balance);
     // The prefetch is exactly €50 cheaper than the no-prefetch run (the one-shot
-    // cost). Its fetch arrives one-way light time later (≈ tick 135000 > END_TICK),
-    // so the cache sample — and thus every payout up to END_TICK — is identical;
-    // €50 is the ONLY balance difference.
+    // cost). The leg it launched arrives one-way light time later (well past
+    // END_TICK), so no slot contents change up to END_TICK; €50 is the ONLY balance
+    // difference (every per-step payout up to END_TICK is otherwise identical).
     expect(without.balance - withP.balance).toBeCloseTo(50.0, 6);
-    // With prefetch: that data-leg fetch is still crawling Earth→Mars at END_TICK.
-    // Without it: the cache is fresh-hitting with no fetch in flight.
-    expect(withP.session.snapshot().fetchInFlight).toBe(true);
-    expect(without.session.snapshot().fetchInFlight).toBe(false);
+    // The fold differs in more than just the balance: the prefetch relaunched its
+    // target feed's leg at a different instant, so the per-feed fetch launch/arrival
+    // times in the snapshot differ from the no-prefetch run (the fold is sensitive
+    // to WHICH feed's leg launched WHEN, not just the count).
+    expect(withP.session.snapshot().feeds).not.toEqual(without.session.snapshot().feeds);
   });
 
   it("the SaveGame (incl. the prefetch action) survives the JSON round-trip and reproduces the hash", () => {

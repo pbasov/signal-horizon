@@ -82,10 +82,12 @@ export class Telemetry implements PanelHandle {
     }
     pkt.appendChild(gauge);
 
-    // GROUP: DEMAND — the live standing-request loop (mars_imagery).
-    const demand = group("DEMAND · MARS_IMAGERY");
+    // GROUP: DEMAND — the live MULTI-FEED summary (E7). A compact roster digest:
+    // how the 5 feeds are being served, the nearest fetch ETA, and the shared
+    // cache occupancy + peak freshness. The per-feed detail lives on the orrery map.
+    const demand = group("DEMAND · 5 FEEDS");
     this.vServe = valueOf(row(demand, "SERVE"));
-    this.vWait = valueOf(row(demand, "WAIT", "amber"));
+    this.vWait = valueOf(row(demand, "NEXT ETA", "amber"));
     this.vCache = valueOf(row(demand, "CACHE"));
 
     this.content.append(clock, link, pkt, demand);
@@ -131,42 +133,41 @@ export class Telemetry implements PanelHandle {
   }
 
   /**
-   * Paint the standing-demand readout: the SERVE outcome (coloured signal), the
-   * fetch WAIT countdown (amber while crawling, "—" when idle), and the Mars
-   * CACHE freshness % (green fresh / amber stale / red unusable).
+   * Paint the MULTI-FEED summary (E7): a SERVE digest counting feeds by band
+   * (served / fetching / blackout), the NEAREST in-flight fetch ETA, and the
+   * shared cache occupancy + peak freshness. Tone follows the worst live state:
+   * any blackout is red, any feed missing/fetching is amber, all-served is green.
    */
   private paintDemand(d: DemandReadout): void {
-    // SERVE outcome — coloured per the styling split (green hit / amber wait /
-    // red blackout). MISS shows the live countdown so the wait reads as gameplay.
-    if (d.blackout) {
-      setText(this.vServe, "BLACKOUT");
-      setValueClass(this.vServe, "red");
-    } else if (d.outcome === "fresh") {
-      setText(this.vServe, d.viaCache ? "FRESH · cache" : "FRESH");
-      setValueClass(this.vServe, "green");
-    } else if (d.outcome === "stale") {
-      setText(this.vServe, "STALE · cache");
-      setValueClass(this.vServe, "amber");
-    } else {
-      // miss — fetching across the gap
-      const c = d.fetchCountdownSeconds;
-      setText(this.vServe, c != null ? `MISS · fetching ${fmtDuration(c)}` : "MISS · fetching");
-      setValueClass(this.vServe, "amber");
+    let served = 0; // fresh or stale cache hits
+    let fetching = 0; // a leg crawling for this feed
+    let miss = 0; // missing with no leg (link down/just opened)
+    let blackout = 0;
+    let earliestEta: number | null = null;
+    for (const f of d.feeds) {
+      if (f.blackout) blackout++;
+      else if (f.viaCache) served++;
+      else if (f.fetchInFlight) fetching++;
+      else miss++;
+      if (f.fetchInFlight && f.fetchCountdownSeconds != null) {
+        if (earliestEta == null || f.fetchCountdownSeconds < earliestEta) earliestEta = f.fetchCountdownSeconds;
+      }
     }
 
-    // WAIT — the in-flight fetch ETA, the same number the crawling packet shows.
-    if (d.fetchInFlight && d.fetchCountdownSeconds != null) {
-      setText(this.vWait, `${fmtDuration(d.fetchCountdownSeconds)} · ETA`);
-    } else {
-      setText(this.vWait, "—");
-    }
+    // SERVE digest — "Nh · Nf · Nb" (hits · fetching · blackout). Worst-state tone.
+    const total = d.feeds.length;
+    setText(this.vServe, `${served}/${total} hit · ${fetching} fetch · ${blackout} blk`);
+    setValueClass(this.vServe, blackout > 0 ? "red" : served < total ? "amber" : "green");
 
-    // CACHE — Mars-relay freshness of the held copy.
-    setText(this.vCache, fmtPct(d.cacheFreshness));
-    setValueClass(
-      this.vCache,
-      d.cacheFreshness >= 0.9 ? "green" : d.cacheFreshness >= 0.5 ? "amber" : "red",
-    );
+    // NEXT ETA — the nearest in-flight fetch arrival across the roster.
+    setText(this.vWait, earliestEta != null ? `${fmtDuration(earliestEta)} · ETA` : "—");
+
+    // CACHE — occupancy + peak freshness of the held slots.
+    const peak = d.peakCacheFreshness;
+    setText(this.vCache, `${d.slotsUsed}/${d.slotCapacity} · ${fmtPct(peak)}`);
+    setValueClass(this.vCache, peak >= 0.9 ? "green" : peak >= 0.5 ? "amber" : "red");
+
+    void miss; // counted for completeness; folded into the amber "<total hit" cue.
   }
 
   status(): "ok" | "crit" {

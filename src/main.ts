@@ -62,26 +62,33 @@ const mission = new Mission(eph);
 // The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
 // loop. When it starts a fetch, we launch the Mission packet to render the wait.
 const session = new M1Session();
-// Latest render-facing resolve state; refreshed by tickSim() each fixed tick.
+// Latest render-facing resolve state; refreshed by tickSim() each fixed tick. The
+// boot tickSim(clock.seconds) below runs the FIRST real step and overwrites this;
+// the placeholder is just a well-typed idle roster (no serves, empty cache) so the
+// panels have a shape to read before the first frame, with NO premature step.
 let demand: SessionRenderState = {
-  outcome: "miss",
-  viaCache: false,
-  cacheFreshness: 0,
-  fetchInFlight: false,
-  fetchCountdownSeconds: null,
-  blackout: false,
+  feeds: session.feeds.map((f) => ({
+    id: f.id,
+    datasetId: f.datasetId,
+    outcome: "miss" as const,
+    viaCache: false,
+    cacheFreshness: 0,
+    fetchInFlight: false,
+    fetchCountdownSeconds: null,
+    blackout: false,
+    servedAgeSeconds: null,
+    freshnessPremium: f.price(f.freshFreshness) - f.price(f.minAcceptableFreshness),
+  })),
+  slotsUsed: 0,
+  slotCapacity: session.cache.capacity,
   balance: session.economy.balance,
-  // Pre-first-step rates: idle cache (no serve yet) burns opex with no income —
-  // a net loss, like an opening miss. The first step() overwrites these.
-  revenueRatePerSecond: session.economy.revenueRate("miss"),
-  opexRatePerSecond: session.economy.opexRate(session.coherence),
-  netRatePerSecond: session.economy.netRatePerSecond("miss", session.coherence),
-  runway: session.economy.runway(-session.economy.netRatePerSecond("miss", session.coherence)),
+  revenueRatePerSecond: 0,
+  opexRatePerSecond: session.opexRatePerSecond(),
+  netRatePerSecond: -session.opexRatePerSecond(),
+  runway: session.economy.runway(session.opexRatePerSecond()),
   bankrupt: false,
-  servedAgeSeconds: null,
-  freshnessPremium:
-    session.demand.price(session.demand.freshFreshness) -
-    session.demand.price(session.demand.minAcceptableFreshness),
+  fetchesInFlight: 0,
+  peakCacheFreshness: 0,
 };
 
 // --- action log -------------------------------------------------------------
@@ -123,16 +130,34 @@ let prevCue: CueDemandSlice | null = null;
 function tickSim(t: number): void {
   for (const e of mission.update(t)) log.append(e);
   demand = session.step(eph, t);
-  if (demand.fetchInFlight && mission.packet === null) {
+  // The Mission's single Earth→Mars packet represents the AGGREGATE in-flight
+  // wait (all feeds share the same geometry); the orrery draws a packet PER feed
+  // in flight from the per-feed readout. Launch the log/telemetry packet whenever
+  // any leg is crawling and none is shown.
+  if (demand.fetchesInFlight > 0 && mission.packet === null) {
     for (const e of mission.launch(t)) log.append(e);
   }
-  const slice: CueDemandSlice = {
-    fetchInFlight: demand.fetchInFlight,
-    viaCache: demand.viaCache,
-    outcome: demand.outcome,
-  };
+  // Audio reads an AGGREGATE slice across the roster: a fetch is "in flight" if
+  // ANY feed is fetching; a serve is "via cache" if ANY feed hit; the outcome is
+  // the worst live band (blackout > miss > stale > fresh) so the network SOUNDS
+  // as bad as its weakest-served feed.
+  const slice: CueDemandSlice = aggregateCueSlice(demand);
   emitCueTransition(cueBus, prevCue, slice, t);
   prevCue = slice;
+}
+
+/** Worst-band-wins aggregate of the roster for the audio cue channel. */
+function aggregateCueSlice(d: SessionRenderState): CueDemandSlice {
+  const rank: Record<string, number> = { fresh: 0, stale: 1, miss: 2, blackout_miss: 3 };
+  let worst: CueDemandSlice["outcome"] = "fresh";
+  let anyFetch = false;
+  let anyCache = false;
+  for (const f of d.feeds) {
+    if (f.fetchInFlight) anyFetch = true;
+    if (f.viaCache) anyCache = true;
+    if (rank[f.outcome] > rank[worst]) worst = f.outcome;
+  }
+  return { fetchInFlight: anyFetch, viaCache: anyCache, outcome: worst };
 }
 
 // --- orrery + panels --------------------------------------------------------
@@ -261,20 +286,27 @@ function frame(now: number): void {
     losOcculted: los.occulted,
     packet: mission.packet,
     demand: {
-      outcome: demand.outcome,
-      viaCache: demand.viaCache,
-      cacheFreshness: demand.cacheFreshness,
-      fetchInFlight: demand.fetchInFlight,
-      fetchCountdownSeconds: demand.fetchCountdownSeconds,
-      blackout: demand.blackout,
+      feeds: demand.feeds.map((f) => ({
+        id: f.id,
+        outcome: f.outcome,
+        viaCache: f.viaCache,
+        cacheFreshness: f.cacheFreshness,
+        fetchInFlight: f.fetchInFlight,
+        fetchCountdownSeconds: f.fetchCountdownSeconds,
+        blackout: f.blackout,
+        servedAgeSeconds: f.servedAgeSeconds,
+        freshnessPremium: f.freshnessPremium,
+      })),
+      slotsUsed: demand.slotsUsed,
+      slotCapacity: demand.slotCapacity,
+      peakCacheFreshness: demand.peakCacheFreshness,
+      fetchesInFlight: demand.fetchesInFlight,
       balance: demand.balance,
       revenueRatePerSecond: demand.revenueRatePerSecond,
       opexRatePerSecond: demand.opexRatePerSecond,
       netRatePerSecond: demand.netRatePerSecond,
       runway: demand.runway,
       bankrupt: demand.bankrupt,
-      servedAgeSeconds: demand.servedAgeSeconds,
-      freshnessPremium: demand.freshnessPremium,
     },
   };
 

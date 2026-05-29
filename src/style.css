@@ -217,7 +217,7 @@ body {
   position: absolute;
   top: 34px;            /* clear the tr corner (fov/dist) */
   right: 6px;
-  width: 152px;
+  width: 178px;
   padding: 5px 7px 6px;
   border: 1px solid var(--line-dim);
   background: rgba(11, 11, 18, 0.62);
@@ -269,6 +269,47 @@ body {
   letter-spacing: 0.1em;
   text-align: center;
 }
+
+/* ---- E7 per-feed map (the Mini-Metro at-a-glance roster) ----------------- */
+.orrery-readout .ro-feeds {
+  margin: 3px 0 4px;
+  padding: 3px 0;
+  border-top: 1px solid var(--line-dim);
+  border-bottom: 1px solid var(--line-dim);
+}
+.orrery-readout .ro-feed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.orrery-readout .ro-fglyph { flex: 0 0 auto; width: 0.9em; text-align: center; }
+.orrery-readout .ro-flab {
+  flex: 0 0 4.4em;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.orrery-readout .ro-fval { flex: 0 0 auto; width: 3em; text-align: right; color: var(--fg); }
+.orrery-readout .ro-fbar {
+  flex: 1 1 auto;
+  height: 3px;
+  background: rgba(228, 228, 238, 0.10);
+  overflow: hidden;
+}
+.orrery-readout .ro-ffill { display: block; height: 100%; background: var(--grey); }
+/* tone classes apply to glyph + value + bar fill (redundant width/colour/shape) */
+.orrery-readout .ro-fglyph.good,  .orrery-readout .ro-fval.good  { color: var(--green); }
+.orrery-readout .ro-fglyph.watch, .orrery-readout .ro-fval.watch { color: var(--cyan); }
+.orrery-readout .ro-fglyph.warn,  .orrery-readout .ro-fval.warn  { color: var(--amber); }
+.orrery-readout .ro-fglyph.bad,   .orrery-readout .ro-fval.bad   { color: var(--red); }
+.orrery-readout .ro-fglyph.dead,  .orrery-readout .ro-fval.dead  { color: var(--grey); }
+.orrery-readout .ro-ffill.good  { background: var(--green); }
+.orrery-readout .ro-ffill.watch { background: var(--cyan); }
+.orrery-readout .ro-ffill.warn  { background: var(--amber); }
+.orrery-readout .ro-ffill.bad   { background: var(--red); }
+.orrery-readout .ro-ffill.dead  { background: var(--grey); }
 
 /* ---- SYSTEM.LOG ---------------------------------------------------------- */
 .log {

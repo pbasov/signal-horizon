@@ -2,22 +2,25 @@ import { describe, it, expect } from "vitest";
 import { loadEphemeris } from "../system-data";
 import { Ephemeris } from "../ephemeris";
 import { oneWaySeconds } from "../delay";
-import { M1Session } from "./session";
+import { M1Session, type FeedRenderState } from "./session";
 import { Demand } from "./demand";
-import {
-  PREFETCH_COST,
-  STALE_REVENUE_RATE_PER_SECOND,
-  BLACKOUT_PENALTY_RATE_PER_SECOND,
-} from "./economy";
+import { buildFeeds, FEED_CONFIGS, CACHE_SLOTS } from "./feeds";
+import { PREFETCH_COST } from "./economy";
 
 /**
- * M1-05 — M1Session: the LIVE cache-miss → fetch → arrive → hit loop.
+ * E7 (M1-04/05 plural) — M1Session: the LIVE multi-feed cache loop.
  *
  * PURE + DETERMINISTIC: every assertion is a function of the explicit t handed to
  * step() and the prior state. No wall-clock, no RNG. Geometry uses the real
- * (deterministic) Kepler ephemeris; for the BLACKOUT case we build a minimal
- * occluding ephemeris (Earth and Mars on opposite sides of the Sun) because a
- * real solar conjunction never occurs within a play-length window.
+ * (deterministic) Kepler ephemeris; the BLACKOUT cases use a minimal occluding
+ * ephemeris (Earth and Mars opposite the Sun) since a real conjunction never
+ * occurs within a play-length window.
+ *
+ * These tests pin: the single-feed loop still breathes (now as ONE feed of the
+ * roster), PLURALITY (5 feeds resolve independently), MULTI-SLOT EVICTION (storing
+ * into a full cache drops the most-stale; a feed without a slot misses), AGGREGATE
+ * economy (summed revenue − per-slot opex), PREFETCH TARGETING (most-urgent
+ * eligible feed), and snapshot/restore over the whole roster.
  */
 
 const eph = loadEphemeris();
@@ -27,11 +30,7 @@ function expectedOneWay(t: number): number {
   return oneWaySeconds(eph.distanceBetween("earth", "mars", t));
 }
 
-/**
- * A minimal three-body system where the Sun sits BETWEEN Earth and Mars at every
- * t (they orbit at the same radius, 180° apart), so the Earth↔Mars line of sight
- * is permanently occulted — a standing blackout for testing.
- */
+/** A standing blackout system: Earth & Mars 180° apart at the same radius. */
 function occludingEph(): Ephemeris {
   return Ephemeris.build({
     epoch_jd: 0,
@@ -44,333 +43,348 @@ function occludingEph(): Ephemeris {
   });
 }
 
-describe("M1Session — full cycle: miss → fetch → arrive → hit", () => {
-  it("an empty cache with the link up resolves MISS and starts exactly one fetch", () => {
-    const s = new M1Session();
-    const r = s.step(eph, 0);
+/** A single-feed session for the focused loop tests (one feed of the roster). */
+function singleFeedSession(): { s: M1Session; feed: Demand } {
+  const feed = new Demand("mars_imagery", "earth_imagery", 1000, 3600);
+  feed.minAcceptableFreshness = 0.5;
+  const s = new M1Session([feed], undefined, undefined, 1); // 1 slot, EVENTUAL
+  return { s, feed };
+}
 
-    expect(r.outcome).toBe("miss");
-    expect(r.viaCache).toBe(false);
-    expect(r.blackout).toBe(false);
-    expect(r.fetchInFlight).toBe(true);
-    expect(r.cacheFreshness).toBe(0); // nothing held yet
-    // Countdown is the one-way DATA-LEG arrival, frozen at launch.
-    expect(s.arrivalT).toBeCloseTo(expectedOneWay(0), 9);
-    expect(r.fetchCountdownSeconds).toBeCloseTo(expectedOneWay(0), 9);
+/** Find a feed's render line by id. */
+function lineOf(feeds: FeedRenderState[], id: string): FeedRenderState {
+  const f = feeds.find((x) => x.id === id);
+  if (!f) throw new Error(`no feed ${id}`);
+  return f;
+}
+
+describe("M1Session — single-feed loop still breathes (one feed of the roster)", () => {
+  it("an empty cache with the link up resolves MISS and starts exactly one fetch", () => {
+    const { s } = singleFeedSession();
+    const r = s.step(eph, 0);
+    const f = lineOf(r.feeds, "mars_imagery");
+
+    expect(f.outcome).toBe("miss");
+    expect(f.viaCache).toBe(false);
+    expect(f.blackout).toBe(false);
+    expect(f.fetchInFlight).toBe(true);
+    expect(f.cacheFreshness).toBe(0);
+    expect(r.fetchesInFlight).toBe(1);
+    expect(s.arrivalTOf("mars_imagery")).toBeCloseTo(expectedOneWay(0), 9);
+    expect(f.fetchCountdownSeconds).toBeCloseTo(expectedOneWay(0), 9);
   });
 
   it("does NOT start a second fetch while one is already in flight", () => {
-    const s = new M1Session();
+    const { s } = singleFeedSession();
     s.step(eph, 0);
-    const arrival = s.arrivalT;
-
-    // A later step BEFORE arrival keeps the SAME in-flight fetch (no restart).
+    const arrival = s.arrivalTOf("mars_imagery");
     const r = s.step(eph, arrival / 2);
-    expect(r.outcome).toBe("miss");
-    expect(r.fetchInFlight).toBe(true);
-    expect(s.arrivalT).toBe(arrival); // unchanged — not relaunched
-    expect(r.fetchCountdownSeconds).toBeCloseTo(arrival - arrival / 2, 6);
+    const f = lineOf(r.feeds, "mars_imagery");
+    expect(f.outcome).toBe("miss");
+    expect(f.fetchInFlight).toBe(true);
+    expect(s.arrivalTOf("mars_imagery")).toBe(arrival); // not relaunched
   });
 
-  it("on arrival stores an ONE-WAY-OLD sample and the next resolve is a cache HIT", () => {
-    const s = new M1Session();
+  it("on arrival stores a ONE-WAY-OLD sample and the next resolve is a HIT", () => {
+    const { s, feed } = singleFeedSession();
     s.step(eph, 0);
-    const arrival = s.arrivalT;
+    const arrival = s.arrivalTOf("mars_imagery");
     const oneWay = expectedOneWay(0);
 
     const r = s.step(eph, arrival);
-    expect(r.viaCache).toBe(true);
-    expect(r.fetchInFlight).toBe(false);
-    expect(r.fetchCountdownSeconds).toBeNull();
-    // PHYSICALLY HONEST: the cached copy is a SNAPSHOT OF EARTH taken at the
-    // fetch's LAUNCH instant (t=0); it has travelled one-way light time to Mars,
-    // so on arrival its age == oneWay and freshness == 2^(-oneWay/halfLife) ≈ 0.84
-    // — NOT a free 1.0 (that would ignore the transit age) and NOT 0.50.
-    const expectedFreshness = Math.pow(2, -oneWay / s.demand.freshnessHalfLifeS);
-    expect(r.cacheFreshness).toBeCloseTo(expectedFreshness, 12);
-    expect(r.cacheFreshness).toBeCloseTo(0.837, 3);
-    // 0.84 lands in the stale-but-PAYING band (0.5 ≤ f < 0.9) — a usable hit that
-    // is above the min-acceptable floor, so the demand is served (not a miss).
-    expect(r.outcome).toBe("stale");
-    expect(r.cacheFreshness).toBeGreaterThan(s.demand.minAcceptableFreshness);
-    // A stale serve earns the (positive) stale REVENUE RATE per sim-second.
-    expect(r.revenueRatePerSecond).toBe(STALE_REVENUE_RATE_PER_SECOND);
-    expect(r.revenueRatePerSecond).toBeGreaterThan(0);
+    const f = lineOf(r.feeds, "mars_imagery");
+    expect(f.viaCache).toBe(true);
+    expect(f.fetchInFlight).toBe(false);
+    expect(f.fetchCountdownSeconds).toBeNull();
+    const expectedFreshness = Math.pow(2, -oneWay / feed.freshnessHalfLifeS);
+    expect(f.cacheFreshness).toBeCloseTo(expectedFreshness, 12);
+    expect(f.cacheFreshness).toBeCloseTo(0.837, 3);
+    expect(f.outcome).toBe("stale");
+    expect(f.cacheFreshness).toBeGreaterThan(feed.minAcceptableFreshness);
   });
 
-  it("is path-independent: stepping straight to arrival equals stepping in pieces", () => {
-    const arrival = expectedOneWay(0);
+  it("a held sample decaying below min produces the NEXT miss + a new fetch", () => {
+    const { s, feed } = singleFeedSession();
+    s.step(eph, 0);
+    s.step(eph, s.arrivalTOf("mars_imagery")); // first stale hit
 
-    const direct = new M1Session();
-    direct.step(eph, 0);
-    const rDirect = direct.step(eph, arrival);
-
-    const pieced = new M1Session();
-    pieced.step(eph, 0);
-    pieced.step(eph, arrival * 0.3);
-    pieced.step(eph, arrival * 0.7);
-    const rPieced = pieced.step(eph, arrival);
-
-    // The RESOLVE-facing state is path-independent. The economy BALANCE is NOT —
-    // accrual folds opex over each step's dt, so more steps over the same span
-    // sum to the same burn, but the per-step rate snapshot is band-derived and so
-    // IS path-independent — compare the resolve fields + the rate snapshot.
-    expect(rPieced.outcome).toBe(rDirect.outcome);
-    expect(rPieced.viaCache).toBe(rDirect.viaCache);
-    expect(rPieced.cacheFreshness).toBeCloseTo(rDirect.cacheFreshness, 12);
-    expect(rPieced.fetchInFlight).toBe(rDirect.fetchInFlight);
-    expect(rPieced.fetchCountdownSeconds).toBe(rDirect.fetchCountdownSeconds);
-    expect(rPieced.blackout).toBe(rDirect.blackout);
-    expect(rPieced.revenueRatePerSecond).toBeCloseTo(rDirect.revenueRatePerSecond, 9);
-  });
-});
-
-describe("M1Session — freshness decay re-triggers a miss", () => {
-  it("a held sample decaying below min-acceptable produces the NEXT miss + a new fetch", () => {
-    const d = new Demand();
-    const s = new M1Session(d);
-    s.step(eph, 0); // miss at t=0 -> fetch LAUNCHES at launchT=0
-    const firstArrival = s.arrivalT;
-
-    // Land the first fetch -> a usable (stale-band) hit, NOT a miss.
-    const hit = s.step(eph, firstArrival);
-    expect(hit.viaCache).toBe(true);
-    expect(hit.outcome).toBe("stale");
-
-    // The sample was CAPTURED at the launch instant (t=0), so it reaches the 0.5
-    // floor one half-life after LAUNCH (t == halfLife), NOT one half-life after
-    // arrival. At exactly t=halfLife freshness == 0.5 == min floor (inclusive) ->
-    // still a (stale) hit, no new fetch yet.
-    const atFloor = d.freshnessHalfLifeS; // launchT(0) + halfLife
+    // Captured at launch (t=0), so it hits the 0.5 floor at t = halfLife.
+    const atFloor = feed.freshnessHalfLifeS;
     const rFloor = s.step(eph, atFloor);
-    expect(rFloor.cacheFreshness).toBeCloseTo(0.5, 9);
-    expect(rFloor.outcome).toBe("stale");
-    expect(rFloor.viaCache).toBe(true);
-    expect(rFloor.fetchInFlight).toBe(false);
+    expect(lineOf(rFloor.feeds, "mars_imagery").cacheFreshness).toBeCloseTo(0.5, 9);
+    expect(lineOf(rFloor.feeds, "mars_imagery").outcome).toBe("stale");
 
-    // Just past the half-life freshness drops below 0.5 -> MISS, new fetch starts.
-    const past = d.freshnessHalfLifeS + 60;
+    const past = feed.freshnessHalfLifeS + 60;
     const rPast = s.step(eph, past);
-    expect(rPast.outcome).toBe("miss");
-    expect(rPast.fetchInFlight).toBe(true);
-    expect(s.arrivalT).toBeCloseTo(past + expectedOneWay(past), 9);
-  });
-
-  it("the loop BREATHES: a second arrival restores a usable hit after the decay miss", () => {
-    const d = new Demand();
-    const s = new M1Session(d);
-    s.step(eph, 0);
-    s.step(eph, s.arrivalT); // first (stale-band) hit
-
-    const past = d.freshnessHalfLifeS + 60; // decayed below 0.5
-    s.step(eph, past); // decay miss -> second fetch
-    const secondLaunch = s.launchT;
-    const secondArrival = s.arrivalT;
-    expect(secondLaunch).toBeCloseTo(past, 9); // captured at THIS launch instant
-
-    const r = s.step(eph, secondArrival);
-    expect(r.viaCache).toBe(true);
-    expect(r.outcome).toBe("stale"); // again one-way-old on arrival
-    // Same honest arrival freshness: 2^(-oneWay/halfLife) for the new leg.
-    const expectedFreshness = Math.pow(2, -expectedOneWay(secondLaunch) / d.freshnessHalfLifeS);
-    expect(r.cacheFreshness).toBeCloseTo(expectedFreshness, 9);
-  });
-
-  it("BREATHES end-to-end: arrive ≈0.84 -> HIT for a meaningful window (no fetch in flight) -> decay -> miss", () => {
-    const d = new Demand();
-    const s = new M1Session(d);
-    const oneWay = expectedOneWay(0);
-
-    // 1. Empty cache -> MISS -> fetch launches at t=0.
-    expect(s.step(eph, 0).outcome).toBe("miss");
-    expect(s.isFetching).toBe(true);
-
-    // 2. Arrival: a one-way-old sample lands at ≈0.84 freshness — a usable HIT,
-    //    and crucially NO fetch is in flight afterwards.
-    const onArrival = s.step(eph, s.arrivalT);
-    expect(onArrival.viaCache).toBe(true);
-    expect(onArrival.cacheFreshness).toBeCloseTo(Math.pow(2, -oneWay / d.freshnessHalfLifeS), 9);
-    expect(onArrival.fetchInFlight).toBe(false);
-
-    // 3. The cache HITS for a MEANINGFUL window with NO fetch crawling. The
-    //    window is (halfLife - oneWay) ≈ 2677s ≈ 44.6 min: sample crosses 0.5 at
-    //    t=halfLife (age==halfLife from launch). Sample a point mid-window.
-    const windowSeconds = d.freshnessHalfLifeS - oneWay;
-    expect(windowSeconds).toBeGreaterThan(40 * 60); // > 40 sim-minutes — real breathing room
-    const midWindow = oneWay + windowSeconds * 0.5;
-    const rMid = s.step(eph, midWindow);
-    expect(rMid.viaCache).toBe(true);
-    expect(rMid.outcome).toBe("stale"); // still above the 0.5 floor
-    expect(rMid.cacheFreshness).toBeGreaterThan(d.minAcceptableFreshness);
-    expect(rMid.fetchInFlight).toBe(false); // STILL no fetch — prefetch lever is free here
-
-    // 4. Past the half-life the sample decays below min -> the NEXT miss reopens
-    //    the loop (a fresh fetch launches). The loop has BREATHED one full cycle.
-    const past = d.freshnessHalfLifeS + 60;
-    const rPast = s.step(eph, past);
-    expect(rPast.outcome).toBe("miss");
-    expect(rPast.fetchInFlight).toBe(true);
+    expect(lineOf(rPast.feeds, "mars_imagery").outcome).toBe("miss");
+    expect(lineOf(rPast.feeds, "mars_imagery").fetchInFlight).toBe(true);
+    expect(s.arrivalTOf("mars_imagery")).toBeCloseTo(past + expectedOneWay(past), 9);
   });
 });
 
-describe("M1Session — a fresh cache yields a hit with NO fetch", () => {
-  it("a restored-fresh cache resolves FRESH on the very first step without starting a fetch", () => {
+describe("M1Session — PLURALITY: all 5 feeds resolve independently", () => {
+  it("the default roster is the 5 designer feeds and each one misses + fetches at boot", () => {
     const s = new M1Session();
-    // Pre-load the cache with a sample captured at t (freshness 1.0 now).
-    s.cache.store(s.demand.datasetId, 0, s.demand.freshnessHalfLifeS);
-
     const r = s.step(eph, 0);
-    expect(r.outcome).toBe("fresh");
-    expect(r.viaCache).toBe(true);
-    expect(r.fetchInFlight).toBe(false);
-    expect(r.fetchCountdownSeconds).toBeNull();
-    expect(r.cacheFreshness).toBeCloseTo(1.0, 12);
+    expect(r.feeds).toHaveLength(5);
+    expect(r.feeds.map((f) => f.id)).toEqual(FEED_CONFIGS.map((c) => c.id));
+    // Empty shared cache → every feed misses and launches its own leg.
+    for (const f of r.feeds) {
+      expect(f.outcome).toBe("miss");
+      expect(f.fetchInFlight).toBe(true);
+    }
+    expect(r.fetchesInFlight).toBe(5);
+    expect(r.slotCapacity).toBe(CACHE_SLOTS);
+  });
+
+  it("feeds carry their OWN half-life: a fast feed stales before a slow one", () => {
+    // Two feeds, 2 slots so both can be held; different half-lives.
+    const fast = new Demand("mars_fast", "ds_fast", 1000, 1800);
+    const slow = new Demand("mars_slow", "ds_slow", 1000, 5400);
+    fast.minAcceptableFreshness = 0.5;
+    slow.minAcceptableFreshness = 0.5;
+    const s = new M1Session([fast, slow], undefined, undefined, 2);
+
+    // Pre-load both, captured at t=0, fresh enough to start above min.
+    s.cache.store("ds_fast", 0, 1800);
+    s.cache.store("ds_slow", 0, 5400);
+
+    // At t = 1800 the fast feed is at its half-life floor (0.5); the slow feed is
+    // still well above it. The fast feed stales first — distinct decay per feed.
+    const r = s.step(eph, 1800);
+    const fastF = lineOf(r.feeds, "mars_fast");
+    const slowF = lineOf(r.feeds, "mars_slow");
+    expect(fastF.cacheFreshness).toBeCloseTo(0.5, 6);
+    expect(slowF.cacheFreshness).toBeGreaterThan(fastF.cacheFreshness);
   });
 });
 
-describe("M1Session — blackout yields blackout + NO fetch", () => {
-  it("link down with no usable cache resolves blackout_miss and starts no fetch", () => {
-    const blk = occludingEph();
-    const s = new M1Session();
+describe("M1Session — MULTI-SLOT cache + lowest-freshness eviction", () => {
+  it("a feed with NO slot misses while feeds that hold slots hit", () => {
+    // 3 feeds, 1 slot. Only one dataset can be cached at a time.
+    const a = new Demand("mars_a", "ds_a", 1000, 100000);
+    const b = new Demand("mars_b", "ds_b", 1000, 100000);
+    const c = new Demand("mars_c", "ds_c", 1000, 100000);
+    for (const d of [a, b, c]) d.minAcceptableFreshness = 0.5;
+    const s = new M1Session([a, b, c], undefined, undefined, 1);
 
-    const r = s.step(blk, 0);
-    expect(r.outcome).toBe("blackout_miss");
-    expect(r.blackout).toBe(true);
-    expect(r.viaCache).toBe(false);
-    expect(r.fetchInFlight).toBe(false);
-    expect(r.fetchCountdownSeconds).toBeNull();
-    expect(r.cacheFreshness).toBe(0);
+    // Hold ds_a fresh. The link is up, so b/c (no slot) miss; a hits.
+    s.cache.store("ds_a", 0, 100000);
+    const r = s.step(eph, 10);
+    expect(lineOf(r.feeds, "mars_a").viaCache).toBe(true);
+    expect(lineOf(r.feeds, "mars_b").viaCache).toBe(false);
+    expect(lineOf(r.feeds, "mars_b").outcome).toBe("miss");
+    expect(lineOf(r.feeds, "mars_c").outcome).toBe("miss");
+    expect(r.slotsUsed).toBe(1);
   });
 
-  it("a fresh cache rescues a blackout: serves locally, no penalty path, no fetch", () => {
-    const blk = occludingEph();
-    const s = new M1Session();
-    s.cache.store(s.demand.datasetId, 0, s.demand.freshnessHalfLifeS);
+  it("storing into a FULL cache evicts the slot with the lowest current freshness", () => {
+    const cap = 2;
+    const a = new Demand("mars_a", "ds_a", 1000, 3600);
+    const b = new Demand("mars_b", "ds_b", 1000, 3600);
+    const c = new Demand("mars_c", "ds_c", 1000, 3600);
+    for (const d of [a, b, c]) d.minAcceptableFreshness = 0.1;
+    const s = new M1Session([a, b, c], undefined, undefined, cap);
 
-    const r = s.step(blk, 0);
-    expect(r.outcome).toBe("fresh");
-    expect(r.blackout).toBe(false);
-    expect(r.viaCache).toBe(true);
-    expect(r.fetchInFlight).toBe(false);
+    // ds_a captured early (older → staler), ds_b captured late (fresher). Cache full.
+    s.cache.store("ds_a", 0, 3600);
+    s.cache.store("ds_b", 1000, 3600);
+    expect(s.cache.occupied).toBe(2);
+
+    // Store ds_c at t=1000: judged at t, ds_a (age 1000) is staler than ds_b (age 0),
+    // so ds_a is EVICTED, not ds_b.
+    s.cache.store("ds_c", 1000, 3600, 1000);
+    expect(s.cache.occupied).toBe(2);
+    expect(s.cache.holds("ds_a", 1000)).toBe(false); // evicted (was stalest)
+    expect(s.cache.holds("ds_b", 1000)).toBe(true); // survived
+    expect(s.cache.holds("ds_c", 1000)).toBe(true); // inserted
   });
-});
 
-describe("M1Session — prefetch is USABLE mid fresh-hit window", () => {
-  it("during a fresh-hit window (no fetch in flight) prefetch() succeeds and charges €", () => {
-    const d = new Demand();
-    const s = new M1Session(d);
-    // Reach a fresh-hit window: miss -> fetch -> arrive -> the cache HITS with no
-    // fetch crawling. This is the moment the prefetch lever frees up — the whole
-    // point of FIX 1 (an always-in-flight fetch would gate prefetch out forever).
+  it("3 feeds contend for 1 slot through the live loop: the loser keeps missing", () => {
+    const a = new Demand("mars_a", "ds_a", 1000, 100000);
+    const b = new Demand("mars_b", "ds_b", 1000, 100000);
+    for (const d of [a, b]) d.minAcceptableFreshness = 0.5;
+    const s = new M1Session([a, b], undefined, undefined, 1);
+
+    // Both miss at t=0 and launch legs (same Earth→Mars geometry → same ETA).
     s.step(eph, 0);
-    const arrival = s.arrivalT;
-    s.step(eph, arrival); // sample lands; no fetch in flight now
-    expect(s.isFetching).toBe(false);
+    const arrival = s.arrivalTOf("mars_a");
+    expect(s.arrivalTOf("mars_b")).toBeCloseTo(arrival, 9);
 
-    // Mid-window: the demand is hitting, no fetch is in flight, so a player
-    // prefetch can fire. It launches a NEW data-leg fetch and charges €50.
-    const midWindow = arrival + (d.freshnessHalfLifeS - expectedOneWay(0)) * 0.5;
+    // On arrival BOTH legs land into the 1-slot cache; the second store evicts the
+    // first. So at most one feed holds the slot — the other is back to missing.
+    const r = s.step(eph, arrival);
+    const held = r.feeds.filter((f) => f.viaCache).length;
+    const missing = r.feeds.filter((f) => !f.viaCache).length;
+    expect(s.cache.occupied).toBe(1); // one slot, one survivor
+    expect(held).toBe(1);
+    expect(missing).toBe(1);
+  });
+});
+
+describe("M1Session — AGGREGATE economy (summed revenue − per-slot opex)", () => {
+  it("revenue sums across serving feeds and opex scales with occupied slots", () => {
+    const a = new Demand("mars_a", "ds_a", 1000, 100000);
+    const b = new Demand("mars_b", "ds_b", 1000, 100000);
+    for (const d of [a, b]) {
+      d.minAcceptableFreshness = 0.5;
+      d.freshFreshness = 0.9;
+    }
+    const s = new M1Session([a, b], undefined, undefined, 2);
+    // Hold both fresh (captured now → freshness ~1.0 → fresh band).
+    s.cache.store("ds_a", 0, 100000);
+    s.cache.store("ds_b", 0, 100000);
+
+    const r = s.step(eph, 1);
+    // Both serve fresh → summed fresh revenue (2 feeds), opex for 2 occupied slots.
+    expect(r.feeds.every((f) => f.outcome === "fresh")).toBe(true);
+    expect(r.slotsUsed).toBe(2);
+    // Net rate is summed revenue − opex; with two fresh feeds it should be positive.
+    expect(r.netRatePerSecond).toBeGreaterThan(0);
+    expect(r.revenueRatePerSecond).toBeGreaterThan(0);
+    expect(r.opexRatePerSecond).toBeGreaterThan(0);
+  });
+
+  it("an all-blackout roster burns (negative net) and is the deepest loss", () => {
+    const blk = occludingEph();
+    const s = new M1Session(); // 5 feeds, empty cache, link down everywhere
+    const r = s.step(blk, 0);
+    expect(r.feeds.every((f) => f.blackout)).toBe(true);
+    expect(r.netRatePerSecond).toBeLessThan(0);
+    expect(r.revenueRatePerSecond).toBeLessThan(0); // SLA penalties across feeds
+  });
+
+  it("balance is DT-invariant: stepping in pieces equals one big step to the same t", () => {
+    const mk = () => {
+      const a = new Demand("mars_a", "ds_a", 1000, 100000);
+      a.minAcceptableFreshness = 0.5;
+      const s = new M1Session([a], undefined, undefined, 1);
+      s.cache.store("ds_a", 0, 100000); // fresh, long-lived → steady fresh serve
+      return s;
+    };
+    const direct = mk();
+    direct.step(eph, 0, 0);
+    direct.step(eph, 60, 60); // one 60s accrual
+
+    const pieced = mk();
+    for (let i = 0; i < 60; i++) pieced.step(eph, i + 1, 1); // 60 × 1s accruals
+
+    expect(pieced.economy.balance).toBeCloseTo(direct.economy.balance, 6);
+  });
+});
+
+describe("M1Session — MANUAL PREFETCH targets the most-urgent eligible feed", () => {
+  it("prefetch picks the LOWEST-freshness eligible feed and charges € once", () => {
+    const a = new Demand("mars_a", "ds_a", 1000, 100000);
+    const b = new Demand("mars_b", "ds_b", 1000, 100000);
+    const c = new Demand("mars_c", "ds_c", 1000, 100000);
+    for (const d of [a, b, c]) d.minAcceptableFreshness = 0.5;
+    const s = new M1Session([a, b, c], undefined, undefined, 3);
+
+    // Hold ds_a fresh and ds_b stale-ish; ds_c has NO slot (freshness 0 → most urgent).
+    s.cache.store("ds_a", 0, 100000); // ~1.0
+    s.cache.store("ds_b", -50000, 100000); // older → lower freshness, but > 0
     const balanceBefore = s.economy.balance;
-    const launched = s.prefetch(eph, midWindow);
 
-    expect(launched).toBe(true);
-    expect(s.isFetching).toBe(true);
-    expect(s.launchT).toBeCloseTo(midWindow, 9);
-    expect(s.arrivalT).toBeCloseTo(midWindow + expectedOneWay(midWindow), 9);
-    // The one-shot prefetch cost was charged exactly once.
+    const target = s.prefetch(eph, 10);
+    expect(target).toBe("mars_c"); // empty slot (0 freshness) is the most urgent
+    expect(s.isFetchingFeed("mars_c")).toBe(true);
     expect(balanceBefore - s.economy.balance).toBeCloseTo(PREFETCH_COST, 9);
   });
 
-  it("prefetch is a no-op (NO charge) when a fetch is already in flight (the spam gate)", () => {
-    const s = new M1Session();
-    s.step(eph, 0); // miss -> auto fetch in flight
-    expect(s.isFetching).toBe(true);
-
-    const balanceBefore = s.economy.balance;
-    const launched = s.prefetch(eph, 1); // collides with the in-flight fetch
-    expect(launched).toBe(false);
-    expect(s.economy.balance).toBe(balanceBefore); // NOT charged
-  });
-});
-
-describe("M1Session — prefetch survives a scripted blackout (pre-position skill)", () => {
-  // The session computes linkOpen per step from the eph it is handed, so a
-  // "scripted link-down window" is modelled by handing it the permanently-
-  // occluded geometry during the blackout stretch and the open geometry before.
-  // The cache sample's freshness is independent of which eph is passed, so this
-  // is a faithful unit test of the pre-position skill (full scenario is E6).
-  const blk = occludingEph();
-
-  it("PREFETCH before the link closes: cache stays >= min through the blackout (served, no -500)", () => {
-    const d = new Demand();
-    const s = new M1Session(d);
-
-    // 1. While the link is UP, prefetch a sample. It launches at t=0 and arrives
-    //    one-way later at ≈0.84 freshness (FIX 1). No miss-fetch competes because
-    //    the prefetch is issued BEFORE the first step.
-    expect(s.prefetch(eph, 0)).toBe(true);
-    const arrival = s.arrivalT;
-    s.step(eph, arrival); // sample lands; cache now holds a one-way-old copy
-
-    // 2. The link CLOSES. Step through the blackout window. The freshness is well
-    //    above the 0.5 floor right after arrival, so the cache SERVES locally —
-    //    no blackout_miss, no -500 penalty.
-    const blackoutT = arrival + 60; // still deep in the fresh-hit window
-    const rBlackout = s.step(blk, blackoutT);
-    expect(rBlackout.blackout).toBe(false);
-    expect(rBlackout.outcome).not.toBe("blackout_miss");
-    expect(rBlackout.viaCache).toBe(true);
-    expect(rBlackout.cacheFreshness).toBeGreaterThanOrEqual(d.minAcceptableFreshness);
-    // PAID (positive revenue rate), not penalised — the prefetch bought it out.
-    expect(rBlackout.revenueRatePerSecond).toBeGreaterThan(0);
-  });
-
-  it("NOT prefetching: the same blackout window takes the blackout_miss penalty (-500)", () => {
-    const s = new M1Session();
-    // No prefetch, empty cache. The link is down for the whole window.
-    const r = s.step(blk, 60);
-    expect(r.outcome).toBe("blackout_miss");
-    expect(r.blackout).toBe(true);
-    expect(r.viaCache).toBe(false);
-    // A blackout's revenue rate is the NEGATIVE SLA-penalty rate (no income, plus
-    // the penalty) — net-negative on top of opex.
-    expect(r.revenueRatePerSecond).toBeLessThan(0);
-    expect(r.revenueRatePerSecond).toBe(-BLACKOUT_PENALTY_RATE_PER_SECOND);
-  });
-});
-
-describe("M1Session — countdown derives as fetchArrivalT − t", () => {
-  it("fetchCountdownSeconds tracks (arrivalT − t) and clamps to 0 at/after arrival", () => {
-    const s = new M1Session();
+  it("prefetch skips feeds that already have a leg in flight", () => {
+    const s = new M1Session(); // 5 feeds
+    // Boot: every feed misses → every feed has a leg in flight → nothing eligible.
     s.step(eph, 0);
-    const arrival = s.arrivalT;
-
-    // Mid-flight: countdown is exactly the remaining one-way time.
-    const tMid = arrival * 0.4;
-    const rMid = s.step(eph, tMid);
-    expect(rMid.fetchCountdownSeconds).toBeCloseTo(arrival - tMid, 6);
-
-    // A separate session driven to just before arrival: still positive.
-    const s2 = new M1Session();
-    s2.step(eph, 0);
-    const justBefore = s2.arrivalT - 1;
-    const rBefore = s2.step(eph, justBefore);
-    expect(rBefore.fetchInFlight).toBe(true);
-    expect(rBefore.fetchCountdownSeconds).toBeCloseTo(1, 6);
+    const balanceBefore = s.economy.balance;
+    const target = s.prefetch(eph, 1);
+    expect(target).toBeNull();
+    expect(s.economy.balance).toBe(balanceBefore); // not charged
   });
 
-  it("snapshot/restore round-trips the in-flight fetch and cache (deterministic continuation)", () => {
+  it("prefetch returns null when every link is down (blackout)", () => {
+    const blk = occludingEph();
+    const a = new Demand("mars_a", "ds_a", 1000, 100000);
+    a.minAcceptableFreshness = 0.5;
+    const s = new M1Session([a], undefined, undefined, 1);
+    expect(s.prefetch(blk, 0)).toBeNull();
+  });
+
+  it("a well-timed prefetch lands a slot that serves THROUGH a blackout (no penalty)", () => {
+    const blk = occludingEph();
+    const a = new Demand("mars_a", "ds_a", 1000, 3600);
+    a.minAcceptableFreshness = 0.5;
+    const s = new M1Session([a], undefined, undefined, 1);
+
+    // Prefetch while the link is up; it lands one-way later ≈0.84 fresh.
+    expect(s.prefetch(eph, 0)).toBe("mars_a");
+    const arrival = s.arrivalTOf("mars_a");
+    s.step(eph, arrival); // sample lands
+
+    // Link closes; the held copy serves locally — no blackout for that feed.
+    const r = s.step(blk, arrival + 60);
+    const f = lineOf(r.feeds, "mars_a");
+    expect(f.blackout).toBe(false);
+    expect(f.viaCache).toBe(true);
+    expect(f.cacheFreshness).toBeGreaterThanOrEqual(a.minAcceptableFreshness);
+  });
+});
+
+describe("M1Session — snapshot/restore covers feeds + slots + balance", () => {
+  it("round-trips the whole roster + cache + balance and continues identically", () => {
     const original = new M1Session();
     original.step(eph, 0);
-    original.step(eph, original.arrivalT * 0.5);
+    original.step(eph, original.arrivalTOf("mars_imagery") * 0.5);
+    // Also land a couple of arrivals so slots are populated.
+    original.step(eph, original.arrivalTOf("mars_science"));
 
     const snap = original.snapshot();
     const restored = new M1Session();
     restored.restore(snap);
 
     expect(restored.snapshot()).toEqual(snap);
-    // Both continue identically to arrival.
-    const t = original.arrivalT;
-    expect(restored.step(eph, t)).toEqual(original.step(eph, t));
+    // Continue both to a later t → identical render state + balance.
+    const t = 4000;
+    const a = original.step(eph, t);
+    const b = restored.step(eph, t);
+    expect(b).toEqual(a);
+    expect(restored.economy.balance).toBe(original.economy.balance);
+  });
+
+  it("path-independent resolve state: pieces vs straight-to-t agree per feed", () => {
+    const arrival = expectedOneWay(0);
+    const buildAndDrive = (pieces: number[]) => {
+      const s = new M1Session();
+      s.step(eph, 0);
+      for (const p of pieces) s.step(eph, p);
+      return s.step(eph, arrival);
+    };
+    const direct = buildAndDrive([]);
+    const pieced = buildAndDrive([arrival * 0.3, arrival * 0.7]);
+    // Compare the resolve-facing per-feed fields (balance is not path-independent).
+    const strip = (r: typeof direct) =>
+      r.feeds.map((f) => ({
+        id: f.id,
+        outcome: f.outcome,
+        viaCache: f.viaCache,
+        cacheFreshness: f.cacheFreshness,
+        fetchInFlight: f.fetchInFlight,
+      }));
+    expect(strip(pieced)).toEqual(strip(direct));
+  });
+});
+
+describe("M1Session — feeds roster builder", () => {
+  it("buildFeeds yields 5 distinct demands with varied half-lives + prices", () => {
+    const feeds = buildFeeds();
+    expect(feeds).toHaveLength(5);
+    const halfLives = new Set(feeds.map((f) => f.freshnessHalfLifeS));
+    expect(halfLives.size).toBeGreaterThan(1); // varied decay rates
+    for (const f of feeds) {
+      expect(f.freshnessHalfLifeS).toBeGreaterThanOrEqual(1800);
+      expect(f.freshnessHalfLifeS).toBeLessThanOrEqual(5400);
+      expect(f.minAcceptableFreshness).toBeGreaterThanOrEqual(0.4);
+      expect(f.minAcceptableFreshness).toBeLessThanOrEqual(0.6);
+    }
   });
 });

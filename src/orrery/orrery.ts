@@ -16,10 +16,31 @@
  */
 import * as THREE from "three";
 import type { Ephemeris, Vec3 } from "../sim/ephemeris";
-import type { Readout } from "./readout";
+import type { Readout, FeedGlyphState } from "./readout";
 import { fmtDuration, fmtPct } from "../format";
 
 const DEG = Math.PI / 180;
+
+/** Per-feed state glyph (the redundant, colour-off shape channel for the map). */
+const FEED_GLYPH: Record<FeedGlyphState, string> = {
+  fresh: "◆",
+  stale: "◇",
+  fetching: "▸",
+  miss: "○",
+  blackout: "▰",
+};
+
+/** Per-feed state tone class (colour reinforces the glyph; never the sole channel). */
+const FEED_TONE: Record<FeedGlyphState, string> = {
+  fresh: "good",
+  stale: "warn",
+  fetching: "watch",
+  miss: "dead",
+  blackout: "bad",
+};
+
+/** How many in-flight feed packets the orrery will draw at once (capped). */
+const MAX_FEED_PACKETS = 5;
 
 export interface CameraPreset {
   name: string;
@@ -165,6 +186,8 @@ export class Orrery {
   private marsHalo: THREE.Mesh;
   private rings = new Map<string, { line: THREE.LineSegments; rel: Vec3[] }>();
   private packetMesh: THREE.Mesh;
+  /** E7 — a pool of per-feed packet discs (one crawler per in-flight feed, capped). */
+  private feedPackets: THREE.Mesh[] = [];
   private linkLine: THREE.LineSegments;
   private labels = new Map<string, HTMLElement>();
   private labelLayer: HTMLElement;
@@ -174,6 +197,8 @@ export class Orrery {
   private roFreshGlyph!: HTMLElement;
   private roFreshVal!: HTMLElement;
   private roFreshFill!: HTMLElement;
+  private roSlotsVal!: HTMLElement;
+  private roFeeds!: HTMLElement;
   private roCountRow!: HTMLElement;
   private roCountVal!: HTMLElement;
   private roConjVal!: HTMLElement;
@@ -226,6 +251,15 @@ export class Orrery {
     this.buildRings();
     this.packetMesh = this.buildSignalDisc([1.0, 0.62, 0.18]);
     this.scene.add(this.packetMesh);
+    // E7 — per-feed packet crawlers: one disc per in-flight feed (capped). Built
+    // once and hidden; updatePacketAndLink positions/shows them from the readout.
+    for (let i = 0; i < MAX_FEED_PACKETS; i++) {
+      const m = this.buildSignalDisc([0.55, 0.85, 1.0]); // cool cyan: a feed leg.
+      m.visible = false;
+      m.renderOrder = 10;
+      this.feedPackets.push(m);
+      this.scene.add(m);
+    }
     // Mars freshness halo — a dithered glow whose RADIUS encodes cache freshness
     // (the redundant, colour-off SHAPE channel that backs the saturation cue).
     this.marsHalo = this.buildHaloDisc([1.0, 0.5, 0.26]);
@@ -373,6 +407,11 @@ export class Orrery {
       `<div class="ro-row ro-fresh"><span class="ro-lab">MARS CACHE</span>` +
       `<span class="ro-glyph"></span><span class="ro-val">—</span></div>` +
       `<div class="ro-bar ro-freshbar"><span class="ro-fill"></span></div>` +
+      `<div class="ro-row ro-slots"><span class="ro-lab">SLOTS</span>` +
+      `<span class="ro-val">—</span></div>` +
+      // E7 — the per-feed map: the Mini-Metro at-a-glance roster. Rows are built
+      // lazily on the first paint (one per feed) and mutated in place after.
+      `<div class="ro-feeds"></div>` +
       `<div class="ro-row ro-count"><span class="ro-lab">FETCH ETA</span>` +
       `<span class="ro-val">—</span></div>` +
       `<div class="ro-row ro-conj"><span class="ro-lab">CONJUNCTION</span>` +
@@ -384,12 +423,44 @@ export class Orrery {
     this.roFreshGlyph = box.querySelector(".ro-fresh .ro-glyph") as HTMLElement;
     this.roFreshVal = box.querySelector(".ro-fresh .ro-val") as HTMLElement;
     this.roFreshFill = box.querySelector(".ro-freshbar .ro-fill") as HTMLElement;
+    this.roSlotsVal = box.querySelector(".ro-slots .ro-val") as HTMLElement;
+    this.roFeeds = box.querySelector(".ro-feeds") as HTMLElement;
     this.roCountRow = box.querySelector(".ro-count") as HTMLElement;
     this.roCountVal = box.querySelector(".ro-count .ro-val") as HTMLElement;
     this.roConjVal = box.querySelector(".ro-conj .ro-val") as HTMLElement;
     this.roConjFill = box.querySelector(".ro-conjbar .ro-fill") as HTMLElement;
     this.roBlackout = box.querySelector(".ro-blackout") as HTMLElement;
     return box;
+  }
+
+  /**
+   * Per-feed map rows, keyed by feed id, built lazily on first paint and then
+   * mutated in place (no per-frame DOM rebuilds). Each row carries a state glyph,
+   * a short label, a freshness % value, and a freshness bar — the redundant
+   * (colour-off) channels that make the roster legible at a glance.
+   */
+  private roFeedRows = new Map<string, { glyph: HTMLElement; lab: HTMLElement; val: HTMLElement; fill: HTMLElement }>();
+
+  /** Ensure a map row exists for `id`; build it once into the ro-feeds container. */
+  private feedRow(id: string, label: string): { glyph: HTMLElement; lab: HTMLElement; val: HTMLElement; fill: HTMLElement } {
+    let row = this.roFeedRows.get(id);
+    if (!row) {
+      const r = document.createElement("div");
+      r.className = "ro-feed";
+      r.innerHTML =
+        `<span class="ro-fglyph"></span><span class="ro-flab">${label}</span>` +
+        `<span class="ro-fval">—</span>` +
+        `<span class="ro-fbar"><span class="ro-ffill"></span></span>`;
+      this.roFeeds.appendChild(r);
+      row = {
+        glyph: r.querySelector(".ro-fglyph") as HTMLElement,
+        lab: r.querySelector(".ro-flab") as HTMLElement,
+        val: r.querySelector(".ro-fval") as HTMLElement,
+        fill: r.querySelector(".ro-ffill") as HTMLElement,
+      };
+      this.roFeedRows.set(id, row);
+    }
+    return row;
   }
 
   // --- public control ------------------------------------------------------
@@ -533,6 +604,34 @@ export class Orrery {
     } else {
       this.packetMesh.visible = false;
     }
+
+    // E7 — per-feed packet crawlers. Each in-flight feed's leg gets a cool-cyan
+    // disc crawling Earth→Mars at its own progress (capped at the pool size). They
+    // share the Earth→Mars segment endpoints already rebased above. A small lateral
+    // fan-out keeps overlapping legs distinguishable without new geometry.
+    const ro = this.readout;
+    let slot = 0;
+    if (ro) {
+      for (const f of ro.feeds) {
+        if (slot >= this.feedPackets.length) break;
+        if (f.packetProgress == null) continue;
+        const mesh = this.feedPackets[slot];
+        mesh.visible = true;
+        // base crawl point, then fan perpendicular-ish by the slot index so stacked
+        // legs do not perfectly overlap (purely a presentation offset).
+        const p = f.packetProgress;
+        const fan = (slot - 2) * 0.012; // small, in scene units
+        this.tmpV.set(
+          ex + (mx - ex) * p,
+          ey + (my - ey) * p + fan,
+          ez + (mz - ez) * p,
+        );
+        mesh.position.copy(this.tmpV);
+        this.sizeBillboard(mesh, 9, worldPerPx);
+        slot++;
+      }
+    }
+    for (let i = slot; i < this.feedPackets.length; i++) this.feedPackets[i].visible = false;
   }
 
   /**
@@ -681,7 +780,8 @@ export class Orrery {
     const r = this.readout;
     if (!r) return;
 
-    // FRESHNESS — draining %, shape glyph, tone, and a bar that bleeds to grey.
+    // MARS CACHE — PEAK freshness across slots (the Mars-node saturation): draining
+    // %, shape glyph, tone, and a bar that bleeds to grey.
     const fGlyph = r.band === "fresh" ? "◆" : r.band === "stale" ? "◇" : "·";
     const fTone = r.band === "fresh" ? "good" : r.band === "stale" ? "warn" : "dead";
     setN(this.roFreshGlyph, fGlyph);
@@ -690,6 +790,32 @@ export class Orrery {
     setC(this.roFreshGlyph, `ro-glyph ${fTone}`);
     this.roFreshFill.style.width = `${Math.round(r.freshness * 100)}%`;
     setC(this.roFreshFill, `ro-fill ${fTone}`);
+
+    // SLOTS — occupied / capacity, the contention readout (amber when full).
+    setN(this.roSlotsVal, `${r.slotsUsed}/${r.slotCapacity}`);
+    setC(this.roSlotsVal, `ro-val ${r.slotsUsed >= r.slotCapacity ? "warn" : "good"}`);
+
+    // PER-FEED MAP — the Mini-Metro roster: one row per feed with a state glyph
+    // (◆ fresh / ◇ stale / ▸ fetching / ○ miss / ▰ blackout), the freshness %, and
+    // a freshness bar. Every cue rides the glyph + bar, not just colour (CVD-safe).
+    for (const f of r.feeds) {
+      const row = this.feedRow(f.id, f.label);
+      const g = FEED_GLYPH[f.state];
+      const tone = FEED_TONE[f.state];
+      setN(row.glyph, g);
+      setC(row.glyph, `ro-fglyph ${tone}`);
+      // Fetching shows the ETA in place of the %, so the wait reads as gameplay.
+      const valText =
+        f.state === "fetching" && f.countdownSeconds != null
+          ? fmtDuration(f.countdownSeconds)
+          : f.freshness > 0
+            ? fmtPct(f.freshness)
+            : "—";
+      setN(row.val, valText);
+      setC(row.val, `ro-fval ${tone}`);
+      row.fill.style.width = `${Math.round(f.freshness * 100)}%`;
+      setC(row.fill, `ro-ffill ${tone}`);
+    }
 
     // FETCH COUNTDOWN — only present while a fetch crawls Earth→Mars.
     if (r.countdownSeconds != null) {

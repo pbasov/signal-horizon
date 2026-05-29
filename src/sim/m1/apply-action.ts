@@ -40,8 +40,10 @@ export function applySessionAction(
   if (action.kind === KIND_PREFETCH) {
     // The prefetch fires at the action's recorded tick, in sim-seconds. main.ts
     // records at_tick = clock.tick (the last drained tick) and prefetches at
-    // clock.seconds = tick · dt, so replay must use the identical instant.
-    return session.prefetch(eph, action.atTick * dt);
+    // clock.seconds = tick · dt, so replay must use the identical instant. The
+    // multi-feed session returns the TARGETED feed id (or null when nothing is
+    // eligible); coerce to the boolean "did it mutate" the caller expects.
+    return session.prefetch(eph, action.atTick * dt) !== null;
   }
   return false;
 }

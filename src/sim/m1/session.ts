@@ -1,30 +1,30 @@
 /**
- * M1-05 — M1Session: the LIVE cache-miss → fetch → arrive → hit loop.
+ * E7 (M1-04/05 plural) — M1Session: the LIVE multi-feed cache loop.
  *
- * This is the hinge of the fun-gate. The proven-but-inert M1 models (Demand,
- * Cache, Coherence, Resolver) are stitched into ONE standing demand that is
- * evaluated continuously on SIM time, so the player can WATCH the loop breathe:
+ * This generalises the proven SINGLE-feed loop to N SIMULTANEOUS feeds sharing a
+ * SCARCE multi-slot cache — the hand-management STRAIN that GDD §3a/§3b + plan
+ * v0.2.1 make the core of M1. With fewer slots than feeds you cannot keep them all
+ * cached, so the contention IS the game; the relief comes in E8's prefetch policy.
  *
- *   MISS (cache empty/stale, link open)
- *     -> START a fetch of the data leg Earth->Mars (the crawling packet)
- *        record fetchLaunchT = t, fetchArrivalT = t + oneWay(distance @ t)
- *     -> when t >= fetchArrivalT: STORE the sample, captured at the LAUNCH
- *        instant (a snapshot of Earth taken when the fetch left). It travelled
- *        one-way to Mars, so on arrival it is already one-way-light-time old:
- *        freshness == 2^(-oneWay/halfLife) ≈ 0.84 — physically honest, not 1.0.
- *        Subsequent resolves HIT for a real window (≈ 0.84 decaying to the 0.5
- *        floor ≈ 44 min) during which NO fetch is in flight ...
- *     -> ... until cache freshness decays below the demand's min-acceptable,
- *        which produces the NEXT miss -> the loop BREATHES.
+ * Each feed runs its OWN copy of the proven loop against the SHARED cache:
  *
- *   BLACKOUT (link DOWN and no usable cache): do NOT start a fetch — expose a
- *   blackout flag (the fresh prefetch BEFORE the link closed is what avoids it).
+ *   MISS (its dataset is absent/stale, link open)
+ *     -> START a fetch of ITS data leg Earth->Mars (its own crawling packet),
+ *        recording the feed's launchT and arrivalT = launchT + oneWay(distance).
+ *     -> on arrival STORE the sample into a slot, captured at the LAUNCH instant
+ *        (a snapshot taken when the fetch left), so on arrival it is already
+ *        one-way-light-time old (≈0.84 fresh) — physically honest. Storing into a
+ *        FULL cache EVICTS the slot with the lowest current freshness (the cache's
+ *        policy). A feed serves a HIT only while ITS dataset is in a slot AND fresh
+ *        enough; otherwise the slot it needs may have been evicted by a rival feed
+ *        — the strain.
  *
- * PURE + DETERMINISTIC: a pure function of (eph, t, prior state). No three / DOM
- * / wall-clock / RNG. The resolver computes the round-trip economic waitSeconds;
- * for E2 the VISIBLE countdown is driven off the one-way DATA-LEG arrival — the
- * leg the player actually watches crawl Earth->Mars. {@link step} mutates this
- * object's state and returns the render-facing snapshot.
+ *   BLACKOUT (link DOWN, no usable cache for that feed): no fetch starts; the feed
+ *   takes the SLA penalty unless a pre-positioned slot serves it through.
+ *
+ * PURE + DETERMINISTIC: step() is a pure function of (eph, t, prior state). No
+ * three / DOM / wall-clock / RNG. Snapshot/restore covers every feed's fetch state
+ * + every cache slot + the wallet, so save/replay reproduce the whole roster.
  */
 import type { Ephemeris } from "../ephemeris";
 import { DT } from "../clock";
@@ -32,256 +32,330 @@ import { oneWaySeconds } from "../delay";
 import { Cache } from "./cache";
 import { Demand } from "./demand";
 import { Level } from "./coherence";
-import { M1Economy, OPENING_BALANCE } from "./economy";
+import { M1Economy, OPENING_BALANCE, OPEX_RATE_PER_SECOND, revenueRatePerSecond } from "./economy";
+import { costMultiplier } from "./coherence";
 import { feasible, resolve, type ResolveOutcome } from "./resolver";
+import { buildFeeds, CACHE_SLOTS } from "./feeds";
+
+/** Per-feed mutable fetch state — one in-flight data leg per feed at most. */
+interface FetchState {
+  inFlight: boolean;
+  launchT: number;
+  arrivalT: number;
+}
+
+/** The render-facing readout for ONE feed after the latest {@link M1Session.step}. */
+export interface FeedRenderState {
+  /** Stable feed identity (mars_imagery, …). */
+  id: string;
+  /** The dataset this feed serves (the cache key). */
+  datasetId: string;
+  /** Latest resolve outcome ("fresh"/"stale"/"miss"/"blackout_miss"). */
+  outcome: ResolveOutcome;
+  /** Whether the serve came from the shared Mars cache (a hit). */
+  viaCache: boolean;
+  /** Current Mars cache freshness for THIS feed's dataset, in [0,1] (0 = no slot). */
+  cacheFreshness: number;
+  /** True while THIS feed's data-leg fetch is crawling Earth->Mars. */
+  fetchInFlight: boolean;
+  /** Seconds until this feed's in-flight fetch arrives, or null when none. */
+  fetchCountdownSeconds: number | null;
+  /** True when the link is down AND this feed has no usable cache. */
+  blackout: boolean;
+  /** Age (sim-seconds) of the data served this step, or null on a non-cache serve. */
+  servedAgeSeconds: number | null;
+  /** The € value of keeping THIS feed fresh: price(fresh) − price(min). */
+  freshnessPremium: number;
+}
 
 /**
- * The render-facing state the orrery + panels read. A pure projection of the
- * session's internal state after the latest {@link M1Session.step}.
+ * The render-facing state the orrery + panels read after a step: the PER-FEED
+ * readouts plus the AGGREGATE economy (summed over feeds). A pure projection.
  */
 export interface SessionRenderState {
-  /** Latest resolve outcome at this instant ("fresh"/"stale"/"miss"/"blackout_miss"). */
-  outcome: ResolveOutcome;
-  /** Whether the serve came from the local Mars cache (a hit). */
-  viaCache: boolean;
-  /** Current Mars cache freshness for the demanded dataset, in [0,1] (0 = no usable copy). */
-  cacheFreshness: number;
-  /** True while a data-leg fetch is crawling Earth->Mars. */
-  fetchInFlight: boolean;
-  /**
-   * Seconds until the in-flight fetch arrives (fetchArrivalT - t), clamped >= 0,
-   * or null when no fetch is in flight. THE visible countdown.
-   */
-  fetchCountdownSeconds: number | null;
-  /** True when the link is down AND there is no usable cache (a blackout miss). */
-  blackout: boolean;
-  /** On-hand balance (€) after this step's continuous accrual. */
+  /** One readout per feed, in roster order. */
+  feeds: FeedRenderState[];
+  /** Occupied cache slots / total capacity (the contention readout). */
+  slotsUsed: number;
+  slotCapacity: number;
+
+  // --- AGGREGATE economy (the FINANCE panel reads these) ---
+  /** On-hand balance (€) after this step's accrual. */
   balance: number;
-  /**
-   * REVENUE RATE (€ per SIM-SECOND) for the current serve band — the money-IN
-   * rate the FINANCE panel's REVENUE row reads. Positive while serving
-   * (fresh/stale), 0 on a miss, and NEGATIVE during a blackout (the SLA penalty
-   * rate). NOT a per-tick payout — a continuous per-sim-time rate.
-   */
+  /** Summed REVENUE RATE (€/sim-second) across all feeds (negative parts = blackout SLA). */
   revenueRatePerSecond: number;
-  /**
-   * OPEX RATE (€ per SIM-SECOND) to run the cache at the chosen coherence level
-   * (baseline × costMultiplier) — the standing money-OUT rate. The FINANCE
-   * panel's OPEX row.
-   */
+  /** Total OPEX RATE (€/sim-second): per-slot baseline × occupied slots × coherence. */
   opexRatePerSecond: number;
-  /**
-   * NET RATE (€ per SIM-SECOND): revenueRate − opexRate. >0 earning, <0 burning.
-   * The FINANCE panel's NET row and the source of the runway.
-   */
+  /** NET RATE (€/sim-second): summed revenue − opex. >0 earning, <0 burning. */
   netRatePerSecond: number;
   /** Sim-seconds until bankruptcy at the current net burn (+Inf when not burning). */
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
-  /**
-   * Age (sim-seconds) of the data that was served this step, or null when the
-   * serve did not come from the cache (a miss/blackout has no served sample).
-   * The "AS-OF" universal-artifact stamp reads this.
-   */
-  servedAgeSeconds: number | null;
-  /**
-   * The DERIVED € value of keeping data fresh: the price gap between a fresh serve
-   * and a bottom-of-band (min-acceptable) serve for THIS demand —
-   * price(freshFreshness) − price(minAcceptableFreshness) (= €600 at defaults).
-   * NOT a hardcoded flavour string; the live demand's own price curve produces it.
-   */
-  freshnessPremium: number;
+  /** Total data-leg fetches crawling Earth->Mars right now (across all feeds). */
+  fetchesInFlight: number;
+  /** Peak cache freshness across the held slots, in [0,1] (the Mars-node saturation). */
+  peakCacheFreshness: number;
 }
 
-/** JSON-safe capture of the session's mutable fetch state (for save/restore parity). */
-export interface SessionSnapshot {
-  /** Whether a data-leg fetch is currently crawling Earth->Mars. */
+/** JSON-safe per-feed fetch capture. */
+export interface FeedFetchSnapshot {
+  id: string;
   fetchInFlight: boolean;
-  /** Sim-time the in-flight fetch launched (meaningful only when fetchInFlight). */
   fetchLaunchT: number;
-  /** Sim-time the in-flight fetch arrives (meaningful only when fetchInFlight). */
   fetchArrivalT: number;
-  /** The cache sample, copied by value, or null when the slot is empty. */
-  cache: { datasetId: string; capturedAtT: number; halfLifeS: number } | null;
-  /** The economy's on-hand balance (currency units), copied by value. */
+}
+
+/** JSON-safe per-slot capture. */
+export interface SlotSnapshot {
+  datasetId: string;
+  capturedAtT: number;
+  halfLifeS: number;
+}
+
+/** JSON-safe capture of the whole session's mutable state (save/restore parity). */
+export interface SessionSnapshot {
+  /** Per-feed fetch state, in roster order. */
+  feeds: FeedFetchSnapshot[];
+  /** The occupied cache slots, by value. */
+  slots: SlotSnapshot[];
+  /** The economy's on-hand balance, by value. */
   balance: number;
 }
 
 export class M1Session {
-  /** The standing demand (default mars_imagery, ramp price curve). */
-  readonly demand: Demand;
-  /** The one-slot Mars-orbit relay cache. */
+  /** The feed roster (default: the 5 Mars feeds from feeds.ts). */
+  readonly feeds: Demand[];
+  /** The SHARED multi-slot Mars-orbit relay cache (default 3 slots). */
   readonly cache: Cache;
-  /** The chosen coherence level — feeds the per-tick opex cost multiplier (E3). */
+  /** The chosen coherence level — feeds the opex cost multiplier. */
   coherence: Level;
-  /** The wallet: balance fed by served payouts, opex burn, and prefetch cost. */
+  /** The shared wallet across all feeds. */
   readonly economy: M1Economy;
 
-  /** Whether a data-leg fetch is currently in flight (the crawling packet). */
-  private fetchInFlight = false;
-  /** Sim-time the in-flight fetch launched. */
-  private fetchLaunchT = 0;
-  /** Sim-time the in-flight fetch arrives at Mars (one-way data-leg ETA). */
-  private fetchArrivalT = 0;
+  /** Per-feed fetch state, keyed by feed id (one in-flight leg per feed). */
+  private fetches = new Map<string, FetchState>();
 
   constructor(
-    demand: Demand = new Demand(),
+    feeds: Demand[] = buildFeeds(),
     coherence: Level = Level.Eventual,
     openingBalance = OPENING_BALANCE,
+    slotCapacity = CACHE_SLOTS,
   ) {
-    this.demand = demand;
-    this.cache = new Cache(demand.customerId);
+    this.feeds = feeds;
+    this.cache = new Cache("mars", slotCapacity);
     this.coherence = coherence;
     this.economy = new M1Economy(openingBalance);
+    for (const f of this.feeds) {
+      this.fetches.set(f.id, { inFlight: false, launchT: 0, arrivalT: 0 });
+    }
   }
 
-  /** True iff a data-leg fetch is crawling Earth->Mars right now. */
+  /** True iff ANY feed has a data leg in flight right now. */
   get isFetching(): boolean {
-    return this.fetchInFlight;
+    for (const fs of this.fetches.values()) if (fs.inFlight) return true;
+    return false;
   }
 
-  /** Sim-time the in-flight fetch arrives (only meaningful while {@link isFetching}). */
-  get arrivalT(): number {
-    return this.fetchArrivalT;
+  /** The fetch state for a feed (throws on an unknown id — feeds are fixed). */
+  private fetchOf(id: string): FetchState {
+    const fs = this.fetches.get(id);
+    if (fs === undefined) throw new Error(`unknown feed: ${id}`);
+    return fs;
   }
 
-  /** Sim-time the in-flight fetch launched (only meaningful while {@link isFetching}). */
-  get launchT(): number {
-    return this.fetchLaunchT;
+  /** True iff THIS feed's data leg is in flight. */
+  isFetchingFeed(id: string): boolean {
+    return this.fetchOf(id).inFlight;
+  }
+
+  /** Arrival sim-time of THIS feed's in-flight fetch (meaningful only while in flight). */
+  arrivalTOf(id: string): number {
+    return this.fetchOf(id).arrivalT;
+  }
+
+  /** Launch sim-time of THIS feed's in-flight fetch (meaningful only while in flight). */
+  launchTOf(id: string): number {
+    return this.fetchOf(id).launchT;
   }
 
   /**
-   * Advance the standing demand to sim-time t. PURE of (eph, t, prior state):
-   * the same inputs from the same prior state always produce the same mutation
-   * and the same render snapshot.
+   * Advance ALL feeds to sim-time t over `dtSeconds` of elapsed sim-time. PURE of
+   * (eph, t, prior state). Ordering, per feed: (1) land any arrival into the shared
+   * cache BEFORE resolving, so the landing step is a hit; (2) resolve against the
+   * cache; (3) on a miss with the link up and no leg already in flight for that
+   * feed, start its fetch. After all feeds resolve, the economy accrues ONE summed
+   * step: Σ revenueRate(feed band) over feeds, minus opex for the occupied slots.
    *
-   * Ordering matters: a fetch that arrives AT t is stored BEFORE the resolve, so
-   * the very step it lands the demand resolves to a cache HIT (a one-way-old copy
-   * lands at ≈ 0.84 freshness — a usable, stale-band hit; see step 1 below).
-   *
-   * ECONOMY (reworked): the wallet accrues on CONTINUOUS PER-SIM-TIME RATES, not
-   * per-tick payouts. Each step accrues (revenueRate(band) − opexRate(coherence))
-   * × `dtSeconds` of elapsed sim-time, so the balance is DT-INVARIANT — running to
-   * the same sim-time at 1× or 1000× yields the same balance. A fresh serve is
-   * net-positive, stale ≈ break-even, a miss pays no income (net-negative on opex
-   * alone), and a blackout adds an SLA penalty rate (the deepest burn).
-   *
-   * `dtSeconds` is the step's elapsed sim-time (defaults to one fixed {@link DT}
-   * step). The live loop and replay pass the clock's dt so the accrual matches
-   * the sim-time the step advanced.
+   * The accrual is a single fold over dtSeconds, so the balance is DT-invariant
+   * (same sim-time ⇒ same balance at 1× or 1000×).
    */
   step(eph: Ephemeris, t: number, dtSeconds: number = DT): SessionRenderState {
-    // 1. Land any in-flight fetch that has crossed the light-gap by t. The
-    //    sample is a SNAPSHOT OF EARTH taken at the fetch's LAUNCH instant, so
-    //    its captured-at time is fetchLaunchT — NOT the arrival instant. On
-    //    arrival the copy is already one-way-light-time old (it travelled the
-    //    gap), so freshness(arrivalT) == 2^(-oneWay/halfLife) ≈ 0.84 for the
-    //    ~923s Earth→Mars leg at the 3600s half-life — physically honest, not a
-    //    free 1.0. This gives a real fresh-hit window (~0.84 decaying to the 0.5
-    //    floor ≈ 44 min) during which NO fetch is in flight, so the loop
-    //    BREATHES and the prefetch lever is available.
-    if (this.fetchInFlight && t >= this.fetchArrivalT) {
-      this.cache.store(this.demand.datasetId, this.fetchLaunchT, this.demand.freshnessHalfLifeS);
-      this.fetchInFlight = false;
+    // 1. LAND arrivals first, across every feed, so a feed that lands its sample
+    //    this step resolves to a hit immediately. Eviction (if the cache is full)
+    //    is judged at the store instant t.
+    for (const feed of this.feeds) {
+      const fs = this.fetchOf(feed.id);
+      if (fs.inFlight && t >= fs.arrivalT) {
+        this.cache.store(feed.datasetId, fs.launchT, feed.freshnessHalfLifeS, t);
+        fs.inFlight = false;
+      }
     }
 
-    // 2. Evaluate the standing demand at t. linkOpen is computed here (the Sun
-    //    is the conjunction occluder) so the resolver stays a pure function.
-    const linkOpen = feasible(eph, t, this.demand.sourceId, this.demand.customerId, ["sun"]);
-    const result = resolve(eph, t, this.demand, this.cache, linkOpen);
+    // 2. RESOLVE every feed against the shared cache + its own link feasibility.
+    const feedStates: FeedRenderState[] = [];
+    let summedRevenueRate = 0;
+    for (const feed of this.feeds) {
+      const linkOpen = feasible(eph, t, feed.sourceId, feed.customerId, ["sun"]);
+      const result = resolve(eph, t, feed, this.cache, linkOpen);
+      summedRevenueRate += revenueRatePerSecond(result.outcome);
 
-    // 3. Economy: accrue this step's net flow over its elapsed sim-time —
-    //    (revenueRate(band) − opexRate(coherence)) × dtSeconds — through the
-    //    economy's single mutation point. The balance is a pure, DT-invariant
-    //    fold of the (deterministic) step sequence: same sim-time ⇒ same balance,
-    //    independent of the tick rate.
-    this.economy.accrue(result.outcome, result.viaCache, dtSeconds, this.coherence);
+      // 3. A MISS with the link up and no leg already crawling for THIS feed starts
+      //    its data leg. blackout_miss (link down) does NOT start a fetch.
+      const fs = this.fetchOf(feed.id);
+      if (result.outcome === "miss" && !fs.inFlight) {
+        const d = eph.distanceBetween(feed.sourceId, feed.customerId, t);
+        fs.launchT = t;
+        fs.arrivalT = t + oneWaySeconds(d);
+        fs.inFlight = true;
+      }
 
-    // 4. A MISS with the link up and no fetch already crawling starts the data
-    //    leg: the packet the player watches. Its one-way ETA is the countdown.
-    if (result.outcome === "miss" && !this.fetchInFlight) {
-      const d = eph.distanceBetween(this.demand.sourceId, this.demand.customerId, t);
-      this.fetchLaunchT = t;
-      this.fetchArrivalT = t + oneWaySeconds(d);
-      this.fetchInFlight = true;
+      feedStates.push({
+        id: feed.id,
+        datasetId: feed.datasetId,
+        outcome: result.outcome,
+        viaCache: result.viaCache,
+        cacheFreshness: this.cache.freshnessOf(feed.datasetId, t),
+        fetchInFlight: fs.inFlight,
+        fetchCountdownSeconds: fs.inFlight ? Math.max(0, fs.arrivalT - t) : null,
+        blackout: result.outcome === "blackout_miss",
+        servedAgeSeconds: result.servedAge >= 0 ? result.servedAge : null,
+        freshnessPremium: feed.price(feed.freshFreshness) - feed.price(feed.minAcceptableFreshness),
+      });
     }
-    // blackout_miss (link down, no usable cache) does NOT start a fetch.
 
+    // 4. ECONOMY: one summed accrual over this step's dt. Revenue is the sum across
+    //    feeds (each band's rate); opex scales with the OCCUPIED slots (you pay to
+    //    run each held slot) × the coherence cost multiplier. The balance is a pure,
+    //    DT-invariant fold of the deterministic step sequence.
+    const opexRate = this.opexRatePerSecond();
+    this.economy.apply((summedRevenueRate - opexRate) * dtSeconds);
+
+    const netRate = summedRevenueRate - opexRate;
     return {
-      outcome: result.outcome,
-      viaCache: result.viaCache,
-      cacheFreshness: this.cache.freshnessOf(this.demand.datasetId, t),
-      fetchInFlight: this.fetchInFlight,
-      fetchCountdownSeconds: this.fetchInFlight ? Math.max(0, this.fetchArrivalT - t) : null,
-      blackout: result.outcome === "blackout_miss",
+      feeds: feedStates,
+      slotsUsed: this.cache.occupied,
+      slotCapacity: this.cache.capacity,
       balance: this.economy.balance,
-      // The continuous per-sim-second rates the FINANCE panel reads. Revenue is
-      // keyed by the current band (negative during a blackout: the SLA penalty);
-      // opex is the standing cost at the chosen coherence level.
-      revenueRatePerSecond: this.economy.revenueRate(result.outcome),
-      opexRatePerSecond: this.economy.opexRate(this.coherence),
-      netRatePerSecond: this.economy.netRatePerSecond(result.outcome, this.coherence),
-      // Runway off the LIVE net burn (positive = losing money): balance / burn,
-      // in sim-seconds. +Inf when breaking even or earning.
-      runway: this.economy.runway(-this.economy.netRatePerSecond(result.outcome, this.coherence)),
+      revenueRatePerSecond: summedRevenueRate,
+      opexRatePerSecond: opexRate,
+      netRatePerSecond: netRate,
+      runway: this.economy.runway(-netRate),
       bankrupt: this.economy.bankrupt(),
-      // servedAge is -1 on a miss/blackout (no served sample); surface null then.
-      servedAgeSeconds: result.servedAge >= 0 ? result.servedAge : null,
-      // The value of freshness, DERIVED from this demand's own price curve.
-      freshnessPremium:
-        this.demand.price(this.demand.freshFreshness) -
-        this.demand.price(this.demand.minAcceptableFreshness),
+      fetchesInFlight: this.countFetchesInFlight(),
+      peakCacheFreshness: this.peakCacheFreshness(t),
     };
   }
 
   /**
-   * M1-06 — PLAYER-INITIATED PREFETCH: pre-position fresh data into the Mars
-   * cache BEFORE the demand asks for it. When no fetch is already in flight,
-   * this launches a data-leg fetch (Earth->Mars, the SAME crawl as a miss-driven
-   * fetch) and charges the one-shot prefetch cost.
-   *
-   * TIMING IS THE GAME (M1-06): like a miss-fetch, the sample is captured at the
-   * LAUNCH instant and lands one-way light time later already ≈ 0.84 fresh (NOT a
-   * freshness boost — a prefetch's data is one-way old too). Its value is TIMING /
-   * COVERAGE: an EARLY prefetch lands a copy the cache holds, and — issued before
-   * a conjunction — that copy serves THROUGH the blackout (no -500 penalty).
-   * Issued too LATE the demand misses before the prefetch lands; issued
-   * WASTEFULLY early the € is spent for a copy that decays before it is needed.
-   *
-   * GATED against spamming: a prefetch is a no-op (no fetch launched, NO charge)
-   * while a fetch is already crawling — exactly one fetch in flight at a time.
-   * Returns true iff it actually launched a fetch (and charged).
+   * The standing opex RATE (€/sim-second): per-slot baseline × OCCUPIED slots ×
+   * coherence cost multiplier. An empty cache still pays a one-slot baseline floor
+   * so an idle, never-caching network is never free (it still burns) — survivable
+   * per E6a's model but never a no-cost strategy.
    */
-  prefetch(eph: Ephemeris, t: number): boolean {
-    if (this.fetchInFlight) return false; // one fetch in flight — gate the spam.
-    const d = eph.distanceBetween(this.demand.sourceId, this.demand.customerId, t);
-    this.fetchLaunchT = t;
-    this.fetchArrivalT = t + oneWaySeconds(d);
-    this.fetchInFlight = true;
+  opexRatePerSecond(): number {
+    const slots = Math.max(1, this.cache.occupied); // floor of one slot's worth of opex.
+    return OPEX_RATE_PER_SECOND * slots * costMultiplier(this.coherence);
+  }
+
+  /** Count feeds with a data leg in flight. */
+  private countFetchesInFlight(): number {
+    let n = 0;
+    for (const fs of this.fetches.values()) if (fs.inFlight) n++;
+    return n;
+  }
+
+  /** Highest freshness across the held slots at t, in [0,1] (0 when empty). */
+  private peakCacheFreshness(t: number): number {
+    let peak = 0;
+    for (const s of this.cache.entries()) {
+      const f = s.freshness(t);
+      if (f > peak) peak = f;
+    }
+    return peak;
+  }
+
+  /**
+   * M1-06 (plural) — PLAYER-INITIATED MANUAL PREFETCH: pre-position fresh data for
+   * the MOST-URGENT eligible feed. "Urgent" = the lowest current cache freshness
+   * among feeds that are ELIGIBLE: the link is up AND no leg is already in flight
+   * for that feed (one leg per feed). Launches that feed's data leg and charges the
+   * one-shot prefetch cost. Returns the feed id it targeted, or null when nothing
+   * is eligible (every feed already fetching, or every link down).
+   *
+   * E8 will add the STANDING policy; this is the manual lever. Per-feed targeting
+   * can refine later (the lowest-freshness pick is the simple, intuitive default).
+   */
+  prefetch(eph: Ephemeris, t: number): string | null {
+    const target = this.pickPrefetchTarget(eph, t);
+    if (target === null) return null;
+    const d = eph.distanceBetween(target.sourceId, target.customerId, t);
+    const fs = this.fetchOf(target.id);
+    fs.launchT = t;
+    fs.arrivalT = t + oneWaySeconds(d);
+    fs.inFlight = true;
     this.economy.chargePrefetch();
-    return true;
+    return target.id;
   }
 
-  /** Capture mutable session state by value for a fast-load snapshot. */
+  /**
+   * The feed a manual prefetch would target at t: among feeds with the link UP and
+   * NO leg in flight, the one with the lowest current cache freshness (an empty
+   * slot reads 0 freshness → most urgent). Deterministic: ties break on roster
+   * order. Returns null when no feed is eligible. PURE.
+   */
+  pickPrefetchTarget(eph: Ephemeris, t: number): Demand | null {
+    let best: Demand | null = null;
+    let bestFreshness = Number.POSITIVE_INFINITY;
+    for (const feed of this.feeds) {
+      if (this.fetchOf(feed.id).inFlight) continue; // already crawling a leg.
+      if (!feasible(eph, t, feed.sourceId, feed.customerId, ["sun"])) continue; // link down.
+      const f = this.cache.freshnessOf(feed.datasetId, t);
+      if (f < bestFreshness) {
+        bestFreshness = f;
+        best = feed;
+      }
+    }
+    return best;
+  }
+
+  /** Capture all mutable session state by value for a fast-load snapshot. */
   snapshot(): SessionSnapshot {
-    const s = this.cache.sample;
-    return {
-      fetchInFlight: this.fetchInFlight,
-      fetchLaunchT: this.fetchLaunchT,
-      fetchArrivalT: this.fetchArrivalT,
-      cache: s == null ? null : { datasetId: s.datasetId, capturedAtT: s.capturedAtT, halfLifeS: s.halfLifeS },
-      balance: this.economy.balance,
-    };
+    const feeds: FeedFetchSnapshot[] = this.feeds.map((feed) => {
+      const fs = this.fetchOf(feed.id);
+      return { id: feed.id, fetchInFlight: fs.inFlight, fetchLaunchT: fs.launchT, fetchArrivalT: fs.arrivalT };
+    });
+    const slots: SlotSnapshot[] = this.cache
+      .entries()
+      .map((s) => ({ datasetId: s.datasetId, capturedAtT: s.capturedAtT, halfLifeS: s.halfLifeS }));
+    return { feeds, slots, balance: this.economy.balance };
   }
 
-  /** Restore mutable session state from a snapshot (the ephemeris is unchanged). */
+  /** Restore all mutable session state from a snapshot (the ephemeris is unchanged). */
   restore(s: SessionSnapshot): void {
-    this.fetchInFlight = s.fetchInFlight;
-    this.fetchLaunchT = s.fetchLaunchT;
-    this.fetchArrivalT = s.fetchArrivalT;
-    if (s.cache == null) this.cache.clear();
-    else this.cache.store(s.cache.datasetId, s.cache.capturedAtT, s.cache.halfLifeS);
+    for (const fsnap of s.feeds) {
+      const fs = this.fetches.get(fsnap.id);
+      if (fs === undefined) continue; // tolerate roster changes across saves.
+      fs.inFlight = fsnap.fetchInFlight;
+      fs.launchT = fsnap.fetchLaunchT;
+      fs.arrivalT = fsnap.fetchArrivalT;
+    }
+    this.cache.clear();
+    for (const slot of s.slots) {
+      // Restore directly; capacity is honoured by the original store sequence, and
+      // a saved snapshot never exceeds capacity.
+      this.cache.store(slot.datasetId, slot.capturedAtT, slot.halfLifeS, slot.capturedAtT);
+    }
     this.economy.balance = s.balance;
   }
 }

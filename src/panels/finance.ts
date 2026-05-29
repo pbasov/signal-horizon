@@ -51,7 +51,7 @@ export class Finance implements PanelHandle {
 
   // --- VALUE ---
   private vPremium: HTMLElement;
-  private vAsOf: HTMLElement;
+  private vSlots: HTMLElement;
 
   // --- BANKRUPT banner (created/removed dynamically, like the occult alarm) ---
   private bankruptBanner: HTMLElement | null = null;
@@ -76,10 +76,11 @@ export class Finance implements PanelHandle {
     this.vOpex = valueOf(row(flow, "OPEX", "red"));
     this.vNet = valueOf(row(flow, "NET", "green"));
 
-    // GROUP: VALUE — the derived worth of freshness + the served data's age.
-    const value = group("VALUE · MARS_IMAGERY");
+    // GROUP: VALUE — the derived worth of freshness across the roster + the cache
+    // contention (occupied / total slots, the E7 strain readout).
+    const value = group("VALUE · ALL FEEDS");
     this.vPremium = valueOf(row(value, "FRESHNESS PREMIUM", "cyan"));
-    this.vAsOf = valueOf(row(value, "AS-OF"));
+    this.vSlots = valueOf(row(value, "CACHE SLOTS"));
 
     this.content.append(wallet, flow, value);
   }
@@ -132,16 +133,17 @@ export class Finance implements PanelHandle {
     setText(this.vNet, fmtRatePerHour(netPerHr));
     setValueClass(this.vNet, netPerHr > 0 ? "green" : netPerHr < 0 ? "red" : "");
 
-    // --- FRESHNESS PREMIUM — the DERIVED € gap (price(fresh) − price(min)). The
-    // real number from the live demand's price curve, never a hardcoded string.
-    setText(this.vPremium, fmtEuro(d.freshnessPremium));
+    // --- FRESHNESS PREMIUM — the DERIVED € gap (price(fresh) − price(min)) SUMMED
+    // across the roster: the total € on the table if every feed were kept fresh
+    // vs. bottom-of-band. Real numbers from each feed's price curve, never flavour.
+    let premium = 0;
+    for (const f of d.feeds) premium += f.freshnessPremium;
+    setText(this.vPremium, fmtEuro(premium));
 
-    // --- AS-OF — the served data's age (the universal artifact). Only meaningful
-    // on a cache serve; a miss/blackout has no served sample → "—".
-    setText(
-      this.vAsOf,
-      d.servedAgeSeconds != null ? fmtDuration(d.servedAgeSeconds) : "—",
-    );
+    // --- CACHE SLOTS — occupied / capacity, the E7 contention readout. Amber when
+    // the cache is full (every slot is a held copy you are paying opex to keep).
+    setText(this.vSlots, `${d.slotsUsed} / ${d.slotCapacity}`);
+    setValueClass(this.vSlots, d.slotsUsed >= d.slotCapacity ? "amber" : "green");
 
     // --- BANKRUPT banner — structural, only present while balance < 0.
     if (this.bankrupt && !this.bankruptBanner) {
@@ -164,7 +166,7 @@ export class Finance implements PanelHandle {
   }
 
   subtitle(): string {
-    return "· MARS_IMAGERY";
+    return "· ALL FEEDS";
   }
 }
 

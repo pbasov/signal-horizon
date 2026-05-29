@@ -29,16 +29,46 @@ export const CONJUNCTION_CRIT_RSUN = 2;
 /** A demand-freshness band for the redundant (CVD-safe) shape/dither channel. */
 export type FreshnessBand = "fresh" | "stale" | "empty";
 
-export interface Readout {
-  /** Mars-relay cache freshness in [0,1] — the draining colour. */
+/** A compact, glanceable state glyph code for one feed's current outcome. */
+export type FeedGlyphState = "fresh" | "stale" | "fetching" | "miss" | "blackout";
+
+/** E7 — one feed's glanceable line in the orrery map readout. */
+export interface FeedReadoutLine {
+  /** Stable feed id (mars_imagery, …); the readout shows a short suffix label. */
+  id: string;
+  /** Short display label (the part after "mars_", uppercased: IMAGERY, …). */
+  label: string;
+  /** Cache freshness in [0,1]. */
   freshness: number;
-  /** Cache freshness as a whole-percent integer (for "FRESH 84%"). */
+  /** Cache freshness as a whole-percent integer. */
   freshnessPct: number;
-  /** Banded freshness for the redundant glyph/dither channel (colour-off legible). */
+  /** Banded freshness for the redundant glyph/dither channel. */
   band: FreshnessBand;
-  /** Seconds until the in-flight fetch lands, or null when none is crawling. */
+  /** Compact at-a-glance state for the redundant glyph (the Mini-Metro cue). */
+  state: FeedGlyphState;
+  /** Seconds until this feed's fetch arrives, or null when no leg is in flight. */
   countdownSeconds: number | null;
-  /** True when the link is down AND no usable cache — a hard blackout. */
+  /** Packet crawl progress in [0,1] for the per-feed orrery packet (null when idle). */
+  packetProgress: number | null;
+}
+
+export interface Readout {
+  /** Mars-relay PEAK cache freshness in [0,1] — the draining Mars-node saturation. */
+  freshness: number;
+  /** Peak cache freshness as a whole-percent integer. */
+  freshnessPct: number;
+  /** Banded peak freshness for the redundant glyph/dither channel (colour-off legible). */
+  band: FreshnessBand;
+  /** E7 — per-feed glanceable lines (the multi-feed Mini-Metro at-a-glance map). */
+  feeds: FeedReadoutLine[];
+  /** Occupied cache slots / total capacity (the contention readout). */
+  slotsUsed: number;
+  slotCapacity: number;
+  /** Total fetches crawling Earth→Mars right now (across all feeds). */
+  fetchesInFlight: number;
+  /** Earliest in-flight fetch ETA across feeds, or null when none is crawling. */
+  countdownSeconds: number | null;
+  /** True when ANY feed is in a hard blackout (link down, no usable cache). */
   blackout: boolean;
   /** Sun-centre miss distance of the Earth→Mars segment, in solar radii. */
   marginSolarRadii: number;
@@ -72,17 +102,71 @@ export function conjunctionApproach(marginSolarRadii: number, occulted: boolean)
   return (CONJUNCTION_WATCH_RSUN - marginSolarRadii) / (CONJUNCTION_WATCH_RSUN - CONJUNCTION_CRIT_RSUN);
 }
 
-/** Derive the full glanceable readout from a per-frame state. Pure. */
+/** Short display label for a feed id: the part after "mars_", uppercased. */
+export function feedLabel(id: string): string {
+  return id.replace(/^mars_/, "").toUpperCase();
+}
+
+/** The compact at-a-glance state for one feed's current readout. */
+export function feedGlyphState(
+  outcome: "fresh" | "stale" | "miss" | "blackout_miss",
+  fetchInFlight: boolean,
+): FeedGlyphState {
+  if (outcome === "blackout_miss") return "blackout";
+  if (outcome === "fresh") return "fresh";
+  if (outcome === "stale") return "stale";
+  // a miss: distinguish "fetching" (a leg is crawling) from a bare miss.
+  return fetchInFlight ? "fetching" : "miss";
+}
+
+/**
+ * Derive the full glanceable MULTI-FEED readout from a per-frame state. Pure.
+ *
+ * The Mars-node saturation reads the PEAK cache freshness (the best-held slot), so
+ * a network with at least one fresh feed still glows. Per-feed packet progress is
+ * derived from the feed's fetch countdown over the current one-way light time (all
+ * feeds share the Earth→Mars geometry), so the orrery can crawl a packet per feed.
+ */
 export function deriveReadout(fs: FrameState): Readout {
   const d = fs.demand;
-  const freshness = Math.max(0, Math.min(1, d.cacheFreshness));
+  const oneWay = fs.oneWaySeconds;
+  const peak = Math.max(0, Math.min(1, d.peakCacheFreshness));
   const approach = conjunctionApproach(fs.losMarginSolarRadii, fs.losOcculted);
+
+  let earliestEta: number | null = null;
+  let anyBlackout = false;
+  const feeds: FeedReadoutLine[] = d.feeds.map((f) => {
+    const freshness = Math.max(0, Math.min(1, f.cacheFreshness));
+    const countdown = f.fetchInFlight ? f.fetchCountdownSeconds : null;
+    if (countdown != null && (earliestEta == null || countdown < earliestEta)) earliestEta = countdown;
+    if (f.blackout) anyBlackout = true;
+    // packet crawl 0..1: 1 − remaining/oneWay, clamped. null when no leg in flight.
+    let packetProgress: number | null = null;
+    if (f.fetchInFlight && countdown != null && oneWay > 0) {
+      packetProgress = Math.max(0, Math.min(1, 1 - countdown / oneWay));
+    }
+    return {
+      id: f.id,
+      label: feedLabel(f.id),
+      freshness,
+      freshnessPct: Math.round(freshness * 100),
+      band: freshnessBand(freshness),
+      state: feedGlyphState(f.outcome, f.fetchInFlight),
+      countdownSeconds: countdown,
+      packetProgress,
+    };
+  });
+
   return {
-    freshness,
-    freshnessPct: Math.round(freshness * 100),
-    band: freshnessBand(freshness),
-    countdownSeconds: d.fetchInFlight ? d.fetchCountdownSeconds : null,
-    blackout: d.blackout,
+    freshness: peak,
+    freshnessPct: Math.round(peak * 100),
+    band: freshnessBand(peak),
+    feeds,
+    slotsUsed: d.slotsUsed,
+    slotCapacity: d.slotCapacity,
+    fetchesInFlight: d.fetchesInFlight,
+    countdownSeconds: earliestEta,
+    blackout: anyBlackout,
     marginSolarRadii: fs.losMarginSolarRadii,
     occulted: fs.losOcculted,
     approach,

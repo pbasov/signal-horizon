@@ -82,11 +82,12 @@ export function resolve(
       // In this branch demand.band(f) is "fresh" or "stale" (never "unusable",
       // since f >= minAcceptableFreshness); narrow to ResolveOutcome.
       const outcome: ResolveOutcome = f >= demand.freshFreshness ? "fresh" : "stale";
+      // holds() guarantees the slot for this dataset is present.
+      const held = cache.peek(demand.datasetId)!;
       return {
         outcome,
         payout: demand.price(f),
-        // holds() guarantees sample is non-null.
-        servedAge: cache.sample!.age(t),
+        servedAge: held.age(t),
         servedFreshness: f,
         viaCache: true,
         waitSeconds: 0.0,

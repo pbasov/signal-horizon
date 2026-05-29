@@ -33,47 +33,61 @@ export interface PacketState {
   freshness: number;
 }
 
+/** Resolve outcome the panels colour on. */
+export type Outcome = "fresh" | "stale" | "miss" | "blackout_miss";
+
 /**
- * M1-05 — the standing-demand resolve state the panels + orrery surface. A pure
- * projection of M1Session.step(), kept dependency-free so views can read it
- * without importing the sim layer.
+ * E7 (M1-05 plural) — ONE feed's live resolve state. A pure projection of a
+ * FeedRenderState, kept dependency-free so views read it without the sim layer.
+ */
+export interface FeedReadout {
+  /** Stable feed identity (mars_imagery, …). */
+  id: string;
+  /** Latest resolve outcome for this feed. */
+  outcome: Outcome;
+  /** Whether this feed's serve came from the shared Mars cache (a hit). */
+  viaCache: boolean;
+  /** This feed's current Mars cache freshness in [0,1] (0 = no slot holds it). */
+  cacheFreshness: number;
+  /** True while THIS feed's data-leg fetch is crawling Earth→Mars. */
+  fetchInFlight: boolean;
+  /** Seconds until this feed's fetch arrives, or null when none is in flight. */
+  fetchCountdownSeconds: number | null;
+  /** True when the link is down AND this feed has no usable cache. */
+  blackout: boolean;
+  /** Age (sim-seconds) of the data served, or null on a non-cache serve. */
+  servedAgeSeconds: number | null;
+  /** Derived € value of freshness for this feed: price(fresh) − price(min). */
+  freshnessPremium: number;
+}
+
+/**
+ * E7 — the MULTI-FEED demand readout the panels + orrery surface: the per-feed
+ * roster plus the AGGREGATE economy summed across feeds. A pure projection of
+ * M1Session.step(), kept dependency-free.
  */
 export interface DemandReadout {
-  /** Latest resolve outcome: "fresh" | "stale" | "miss" | "blackout_miss". */
-  outcome: "fresh" | "stale" | "miss" | "blackout_miss";
-  /** Whether the serve came from the local Mars cache (a hit). */
-  viaCache: boolean;
-  /** Current Mars cache freshness in [0,1] (0 = no usable copy held). */
-  cacheFreshness: number;
-  /** True while a data-leg fetch is crawling Earth→Mars. */
-  fetchInFlight: boolean;
-  /** Seconds until the in-flight fetch arrives, or null when none is in flight. */
-  fetchCountdownSeconds: number | null;
-  /** True when the link is down AND there is no usable cache (blackout miss). */
-  blackout: boolean;
+  /** One readout per feed, in roster order. */
+  feeds: FeedReadout[];
+  /** Occupied cache slots / total capacity (the contention readout). */
+  slotsUsed: number;
+  slotCapacity: number;
+  /** Peak cache freshness across the held slots, in [0,1] — the Mars-node saturation. */
+  peakCacheFreshness: number;
+  /** Total data-leg fetches crawling Earth→Mars right now (across all feeds). */
+  fetchesInFlight: number;
   /** M1-08 — on-hand wallet balance (€) after the latest step's accrual. */
   balance: number;
-  /**
-   * REVENUE RATE (€ per sim-second) for the current serve band: positive while
-   * serving fresh/stale, 0 on a miss, NEGATIVE during a blackout (the SLA penalty
-   * rate). The FINANCE panel's REVENUE row — a rate, not a per-tick payout.
-   */
+  /** Summed REVENUE RATE (€/sim-second) across feeds. The FINANCE REVENUE row. */
   revenueRatePerSecond: number;
-  /** OPEX RATE (€ per sim-second) to run the cache (baseline × coherence). The OPEX row. */
+  /** Total OPEX RATE (€/sim-second): per-slot baseline × occupied slots × coherence. */
   opexRatePerSecond: number;
-  /** NET RATE (€ per sim-second): revenue − opex. >0 earning, <0 burning. The NET row. */
+  /** NET RATE (€/sim-second): summed revenue − opex. The FINANCE NET row. */
   netRatePerSecond: number;
   /** Sim-seconds until bankruptcy at the live net burn (+Inf when not burning). */
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
-  /** Age (sim-seconds) of the served data, or null on a non-cache serve (miss/blackout). */
-  servedAgeSeconds: number | null;
-  /**
-   * Derived € value of freshness: price(freshFreshness) − price(minAcceptableFreshness)
-   * for the live demand (= €600 at defaults). The FINANCE panel's FRESHNESS PREMIUM.
-   */
-  freshnessPremium: number;
 }
 
 /** Per-frame snapshot the panels render from. */

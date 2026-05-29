@@ -3,32 +3,47 @@ import {
   deriveReadout,
   conjunctionApproach,
   freshnessBand,
+  feedGlyphState,
+  feedLabel,
   CONJUNCTION_WATCH_RSUN,
   CONJUNCTION_CRIT_RSUN,
 } from "./readout";
-import type { FrameState, DemandReadout } from "../types";
+import type { FrameState, DemandReadout, FeedReadout } from "../types";
 
 /**
- * M1-10 — the glanceable readout derivation. PURE, so it is pinned here without
- * any DOM: freshness banding, the conjunction-approach ramp (the predictable-
- * blackout lead cue), and the FrameState → Readout projection.
+ * M1-10 / E7 — the glanceable MULTI-FEED readout derivation. PURE, so it is pinned
+ * here without any DOM: freshness banding, the per-feed glyph/label mapping, the
+ * conjunction-approach ramp (the predictable-blackout lead cue), and the
+ * FrameState → Readout projection over the roster.
  */
 
-const demand = (over: Partial<DemandReadout> = {}): DemandReadout => ({
+/** One feed readout line with overridable fields. */
+const feed = (over: Partial<FeedReadout> = {}): FeedReadout => ({
+  id: "mars_imagery",
   outcome: "fresh",
   viaCache: true,
   cacheFreshness: 0.8,
   fetchInFlight: false,
   fetchCountdownSeconds: null,
   blackout: false,
+  servedAgeSeconds: 0,
+  freshnessPremium: 600,
+  ...over,
+});
+
+/** A multi-feed demand readout; defaults to a single fresh feed. */
+const demand = (over: Partial<DemandReadout> = {}): DemandReadout => ({
+  feeds: [feed()],
+  slotsUsed: 1,
+  slotCapacity: 3,
+  peakCacheFreshness: 0.8,
+  fetchesInFlight: 0,
   balance: 1000,
   revenueRatePerSecond: 5,
   opexRatePerSecond: 2,
   netRatePerSecond: 3,
   runway: Infinity,
   bankrupt: false,
-  servedAgeSeconds: 0,
-  freshnessPremium: 600,
   ...over,
 });
 
@@ -87,31 +102,80 @@ describe("conjunctionApproach — see the blackout coming (GDD §4.3a)", () => {
   });
 });
 
-describe("deriveReadout — FrameState projection", () => {
-  it("projects freshness %, band, and clamps freshness to [0,1]", () => {
-    const r = deriveReadout(frame({ demand: demand({ cacheFreshness: 0.84 }) }));
+describe("feedGlyphState + feedLabel — the per-feed Mini-Metro cues", () => {
+  it("maps each outcome to a compact state code", () => {
+    expect(feedGlyphState("fresh", false)).toBe("fresh");
+    expect(feedGlyphState("stale", false)).toBe("stale");
+    expect(feedGlyphState("blackout_miss", false)).toBe("blackout");
+    expect(feedGlyphState("miss", true)).toBe("fetching"); // a leg crawling
+    expect(feedGlyphState("miss", false)).toBe("miss"); // bare miss, no leg
+  });
+
+  it("labels a feed id by its suffix, uppercased", () => {
+    expect(feedLabel("mars_imagery")).toBe("IMAGERY");
+    expect(feedLabel("mars_telemetry")).toBe("TELEMETRY");
+  });
+});
+
+describe("deriveReadout — MULTI-FEED projection", () => {
+  it("Mars-node saturation reads PEAK cache freshness, clamped to [0,1]", () => {
+    const r = deriveReadout(frame({ demand: demand({ peakCacheFreshness: 0.84 }) }));
     expect(r.freshness).toBeCloseTo(0.84, 5);
     expect(r.freshnessPct).toBe(84);
     expect(r.band).toBe("fresh");
 
-    const clamped = deriveReadout(frame({ demand: demand({ cacheFreshness: 1.7 }) }));
+    const clamped = deriveReadout(frame({ demand: demand({ peakCacheFreshness: 1.7 }) }));
     expect(clamped.freshness).toBe(1);
     expect(clamped.freshnessPct).toBe(100);
   });
 
-  it("surfaces the countdown only while a fetch is in flight", () => {
-    const flying = deriveReadout(
-      frame({ demand: demand({ fetchInFlight: true, fetchCountdownSeconds: 320 }) }),
+  it("projects one line per feed with band, state, and freshness %", () => {
+    const r = deriveReadout(
+      frame({
+        demand: demand({
+          feeds: [
+            feed({ id: "mars_imagery", outcome: "fresh", cacheFreshness: 0.95 }),
+            feed({ id: "mars_comms", outcome: "miss", viaCache: false, cacheFreshness: 0, fetchInFlight: true, fetchCountdownSeconds: 400 }),
+          ],
+        }),
+      }),
     );
-    expect(flying.countdownSeconds).toBe(320);
+    expect(r.feeds).toHaveLength(2);
+    expect(r.feeds[0].label).toBe("IMAGERY");
+    expect(r.feeds[0].state).toBe("fresh");
+    expect(r.feeds[0].freshnessPct).toBe(95);
+    expect(r.feeds[1].label).toBe("COMMS");
+    expect(r.feeds[1].state).toBe("fetching");
+    expect(r.feeds[1].freshnessPct).toBe(0);
+    expect(r.feeds[1].packetProgress).not.toBeNull(); // a leg crawls → packet shows
+  });
 
-    const idle = deriveReadout(frame({ demand: demand({ fetchInFlight: false, fetchCountdownSeconds: null }) }));
+  it("surfaces the EARLIEST in-flight fetch ETA across feeds (else null)", () => {
+    const flying = deriveReadout(
+      frame({
+        demand: demand({
+          feeds: [
+            feed({ id: "mars_a", outcome: "miss", viaCache: false, fetchInFlight: true, fetchCountdownSeconds: 500 }),
+            feed({ id: "mars_b", outcome: "miss", viaCache: false, fetchInFlight: true, fetchCountdownSeconds: 320 }),
+          ],
+          fetchesInFlight: 2,
+        }),
+      }),
+    );
+    expect(flying.countdownSeconds).toBe(320); // the nearest leg
+    expect(flying.fetchesInFlight).toBe(2);
+
+    const idle = deriveReadout(frame({ demand: demand({ feeds: [feed({ fetchInFlight: false })] }) }));
     expect(idle.countdownSeconds).toBeNull();
   });
 
-  it("carries the blackout flag and the live conjunction approach + alarm", () => {
+  it("blackout is true when ANY feed is in blackout; carries conjunction approach", () => {
     const occ = deriveReadout(
-      frame({ losOcculted: true, losMarginSolarRadii: 0.4, demand: demand({ blackout: true, outcome: "blackout_miss" }) }),
+      frame({
+        losOcculted: true,
+        losMarginSolarRadii: 0.4,
+        demand: demand({ feeds: [feed({ blackout: true, outcome: "blackout_miss", viaCache: false })] }),
+      }),
     );
     expect(occ.blackout).toBe(true);
     expect(occ.occulted).toBe(true);
@@ -121,5 +185,12 @@ describe("deriveReadout — FrameState projection", () => {
     const open = deriveReadout(frame({ losMarginSolarRadii: 50, losOcculted: false }));
     expect(open.approach).toBe(0);
     expect(open.approachAlarm).toBe(false);
+    expect(open.blackout).toBe(false);
+  });
+
+  it("carries the slot occupancy readout", () => {
+    const r = deriveReadout(frame({ demand: demand({ slotsUsed: 2, slotCapacity: 3 }) }));
+    expect(r.slotsUsed).toBe(2);
+    expect(r.slotCapacity).toBe(3);
   });
 });
