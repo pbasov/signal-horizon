@@ -1,5 +1,5 @@
 # SIGNAL HORIZON
-### Game Design Document — v0.5 (Pre-Production)
+### Game Design Document — (live document; git history tracks revisions)
 
 > A satellite & information-network tycoon simulation built in TypeScript + Three.js (browser).
 > Working title: **Signal Horizon**. Genre: economic/management sim with orbital-mechanics substrate. Platform: **Desktop-only for the full experience** (Linux/Windows/macOS); a mobile *companion* app for remote management is a speculative, far-post-1.0 goal, not a second port of the whole game. Currency: **EUR (€)** early/mid game — see §4.10 for the late-game currency flip, now reframed as an *optional* endgame path.

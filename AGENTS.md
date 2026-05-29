@@ -6,7 +6,7 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 
 ## 1. Ground yourself in the design document
 
-- The **GDD** (`docs/signal-horizon-gdd-v0.5.md`) is the design authority. Every feature, behavior, and naming convention traces back to it.
+- The **GDD** (`docs/signal-horizon-gdd.md`) is the design authority. Every feature, behavior, and naming convention traces back to it.
 - The **sim↔render contract** (`docs/sim-render-contract.md`) is the single boundary that keeps the truth layer pure and the render layer honest. Read it before touching anything in `src/sim/` or `src/orrery/`.
 - The **backlog** (`docs/backlog.md`) tracks what's done and what's next. The **decisions log** (`docs/decisions.md`) records why. Read both before starting any ticket.
 - The **implementation plan** (`docs/signal-horizon-implementation-plan-v0.1.md`) and **scoping doc** (`docs/signal-horizon-scoping-v0.1.md`) define milestones and acceptance criteria.

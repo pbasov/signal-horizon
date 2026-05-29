@@ -9,7 +9,7 @@ The product you sell is *knowledge moved across distance*; the speed of light is
 
 | # | Doc | What it is | Status |
 |---|---|---|---|
-| 1 | [signal-horizon-gdd-v0.5.md](signal-horizon-gdd-v0.5.md) | **Game Design Document** — the *what/why*. Vision, pillars, systems, art direction. | Current (v0.5) |
+| 1 | [signal-horizon-gdd.md](signal-horizon-gdd.md) | **Game Design Document** — the *what/why*. Vision, pillars, systems, art direction. | Living |
 | 2 | [signal-horizon-implementation-plan-v0.1.md](signal-horizon-implementation-plan-v0.1.md) | **Implementation Plan** — the *how/when*. Phases, milestones, prose ticket spec. Adapted for TS/Three.js/Tauri stack. | Current (v0.1, stack-adapted) |
 | 3 | [signal-horizon-scoping-v0.1.md](signal-horizon-scoping-v0.1.md) | **Engineering Scoping** — gap analysis against the plan, first-work order. Adapted for TS/Three.js/Tauri stack. | Current (v0.1, stack-adapted) |
 | 4 | [backlog.md](backlog.md) | **Ticket Backlog** — trackable checklist (P0/M0 detailed, M1–M6 headlines). Merged spike + Godot status. | Living |
