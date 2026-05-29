@@ -28,6 +28,7 @@ import { PRESET_SPECS, buildGrid } from "./wm/presets";
 import { Orrery } from "./orrery/orrery";
 import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
+import { Finance } from "./panels/finance";
 import { StatusStrip } from "./panels/status";
 import type { FrameState } from "./types";
 
@@ -71,6 +72,11 @@ let demand: SessionRenderState = {
   lastPayout: 0,
   runway: session.economy.runway(session.economy.cacheOpexPerTick),
   bankrupt: false,
+  opexPerTick: session.economy.cacheOpexPerTick,
+  servedAgeSeconds: null,
+  freshnessPremium:
+    session.demand.price(session.demand.freshFreshness) -
+    session.demand.price(session.demand.minAcceptableFreshness),
 };
 
 // --- action log -------------------------------------------------------------
@@ -116,6 +122,7 @@ const orrery = new Orrery({
 
 const log = new SystemLog();
 const telemetry = new Telemetry();
+const finance = new Finance();
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp (it is the panel drawing the blocked link).
@@ -133,6 +140,7 @@ const registry = new Map<string, PanelHandle>([
   ["orrery", orreryHandle],
   ["system-log", log],
   ["telemetry", telemetry],
+  ["finance", finance],
 ]);
 
 const shell = new Shell(wmCanvas, registry);
@@ -238,10 +246,14 @@ function frame(now: number): void {
       lastPayout: demand.lastPayout,
       runway: demand.runway,
       bankrupt: demand.bankrupt,
+      opexPerTick: demand.opexPerTick,
+      servedAgeSeconds: demand.servedAgeSeconds,
+      freshnessPremium: demand.freshnessPremium,
     },
   };
 
   telemetry.update(fs);
+  finance.update(fs);
   status.update(fs);
   orrery.update(wallDt);
   shell.tickChrome();

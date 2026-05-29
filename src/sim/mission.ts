@@ -44,7 +44,9 @@ const SCRIPT: ScriptLine[] = [
   { sev: "warn", entity: "EARTH→MARS", msg: "conjunction approach · LOS margin tightening" },
   { sev: "error", entity: "GEO-WX", msg: "packet dropped · retransmit queued" },
   { sev: "info", entity: "LUNA-IMG", msg: "cache evict · cold slot reclaimed" },
-  { sev: "warn", entity: "FRESHNESS", value: "▼1.2%", msg: "premium softening · market repricing" },
+  // (removed) the fake "FRESHNESS premium softening · market repricing" line — it
+  // LIED about the economy; the real freshness premium is now the FINANCE panel's
+  // derived FRESHNESS PREMIUM row (price(fresh) − price(min)), not flavour text.
   { sev: "info", entity: "EM-L1", value: "1.19s", msg: "keepalive · rtt nominal" },
   { sev: "crit", entity: "EARTH-L2", msg: "farside occult · LINK LOST · store-and-forward ENGAGED" },
   { sev: "info", entity: "EARTH-L2", msg: "reacquired · resyncing buffer" },

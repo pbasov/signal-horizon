@@ -6,9 +6,14 @@
  *
  * OVERVIEW and OPS are the two designed presets the brief asks for. TRACK /
  * STREAM / SPLIT fill keys 3–5 to exercise data-driven instant switching and
- * the 3-column ceiling — recombinations of the same three panels.
+ * the 3-column ceiling — recombinations of the same panels.
  *
- * Panels (hosts) available in this spike: orrery, system-log, telemetry.
+ * OPS (key 2) is the finance-forward preset: it carries the FINANCE dashboard
+ * (NETWORK·FINANCE) in its right column alongside the orrery + telemetry, so the
+ * solvency loop is glanceable while you watch the link. Each grid keeps the
+ * DD-10 invariant: ≤3 columns × ≤3 rows per column, every host UNIQUE in the grid.
+ *
+ * Panels (hosts) available in this spike: orrery, system-log, telemetry, finance.
  */
 import type { ZoneGrid } from "./zonegrid";
 
@@ -47,8 +52,9 @@ export const PRESET_SPECS: PresetSpec[] = [
       {
         weight: 0.42,
         rows: [
-          { weight: 1.5, host: "orrery" },
+          { weight: 1.4, host: "orrery" },
           { weight: 1.0, host: "telemetry" },
+          { weight: 1.2, host: "finance" },
         ],
       },
     ],

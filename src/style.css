@@ -274,6 +274,18 @@ body {
 .gauge .seg.warn { background: var(--orange); }
 .gauge .seg.crit { background: var(--red); }
 
+/* ---- FINANCE bankrupt banner (structural, only present while balance < 0) -- */
+.finance-bankrupt {
+  margin: 2px 0 4px;
+  padding: 3px 7px;
+  background: var(--red);
+  color: #0b0b12;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
 /* ---- bottom status strip (always visible) -------------------------------- */
 .statusstrip {
   height: var(--statusbar-h);

@@ -103,10 +103,10 @@
 
 **Minimal economy + one dashboard + one map**
 - [x] **M1-08** Cash, simple revenue & opex — *S* · bankruptcy on `balance<0`. **E3:** `src/sim/m1/economy.ts` (`M1Economy`: balance/applyPayout/chargeOpex×coherence/chargePrefetch/runway/bankrupt) ported + wired into `M1Session` (payout + opex per tick). Good-vs-bad solvency gap proven through the real economy (no-prefetch → bankrupt; prefetch-before-blackout → solvent). Pinned in `economy.test.ts`. _Balance/runway in `FrameState`; the finance PANEL is M1-09 (E4)._
-- [ ] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE
+- [x] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE. **E4:** `src/panels/finance.ts` — WALLET (balance/runway) · FLOW (revenue/opex) · VALUE (derived `FRESHNESS PREMIUM €600` + AS-OF age stamp); registered in the OPS preset (key 2); CVD-redundant glyphs (✕/+/−) + structural BANKRUPT banner; fake premium log line removed from `mission.ts`. **Screenshot-verified.** _Surfaced an economy-balance blocker — see M1-12._
 - [ ] **M1-10** Glanceable map readout — *S* · Mars freshness drain + fetch packet/countdown
 - [ ] **M1-11** Cache-hit audio cue — *S* · first audio; Web Audio API
-- [ ] **M1-12** 30-minute scenario script — *S* · scripted conjunction; pre-position-to-survive
+- [ ] **M1-12** 30-minute scenario script — *S* · scripted conjunction; pre-position-to-survive. **⚠ ECONOMY-BALANCE BLOCKER (E4 finding):** the live loop bankrupts in ~17 sim-s — opex ≈60 €/sim-s (€1/tick) vs €1000 opening and a ~923 s one-way to first delivery, so you go broke before any revenue arrives; and per-tick payout would *balloon* once deliveries land. E6 needs a balance + **cadence** pass (payout per delivery, not per tick; opex/opening tuned to the compressed session) — likely a design call with the user.
 - [ ] **M1-GATE** Playtest instrumentation — *S–M* · telemetry action log + event stream + gate metrics
 
 **Gate:** ≥5 testers cold. PASS = unprompted cache/prefetch tuning + tension around conjunction + can articulate why interesting. FAIL = iterate visualization+core only; 3 failed iterations ⇒ rethink premise.

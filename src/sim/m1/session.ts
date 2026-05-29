@@ -30,7 +30,7 @@ import type { Ephemeris } from "../ephemeris";
 import { oneWaySeconds } from "../delay";
 import { Cache } from "./cache";
 import { Demand } from "./demand";
-import { Level } from "./coherence";
+import { Level, costMultiplier } from "./coherence";
 import { M1Economy } from "./economy";
 import { feasible, resolve, type ResolveOutcome } from "./resolver";
 
@@ -62,6 +62,24 @@ export interface SessionRenderState {
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
+  /**
+   * The cache opex burned THIS step (cacheOpexPerTick × coherence costMultiplier),
+   * i.e. the standing money-out rate per tick — the FINANCE panel's OPEX row.
+   */
+  opexPerTick: number;
+  /**
+   * Age (sim-seconds) of the data that was served this step, or null when the
+   * serve did not come from the cache (a miss/blackout has no served sample).
+   * The "AS-OF" universal-artifact stamp reads this.
+   */
+  servedAgeSeconds: number | null;
+  /**
+   * The DERIVED € value of keeping data fresh: the price gap between a fresh serve
+   * and a bottom-of-band (min-acceptable) serve for THIS demand —
+   * price(freshFreshness) − price(minAcceptableFreshness) (= €600 at defaults).
+   * NOT a hardcoded flavour string; the live demand's own price curve produces it.
+   */
+  freshnessPremium: number;
 }
 
 /** JSON-safe capture of the session's mutable fetch state (for save/restore parity). */
@@ -184,6 +202,14 @@ export class M1Session {
       // Runway off the baseline per-tick opex burn (the standing cost floor).
       runway: this.economy.runway(this.economy.cacheOpexPerTick),
       bankrupt: this.economy.bankrupt(),
+      // The actual money-out rate this step: baseline × the coherence multiplier.
+      opexPerTick: this.economy.cacheOpexPerTick * costMultiplier(this.coherence),
+      // servedAge is -1 on a miss/blackout (no served sample); surface null then.
+      servedAgeSeconds: result.servedAge >= 0 ? result.servedAge : null,
+      // The value of freshness, DERIVED from this demand's own price curve.
+      freshnessPremium:
+        this.demand.price(this.demand.freshFreshness) -
+        this.demand.price(this.demand.minAcceptableFreshness),
     };
   }
 

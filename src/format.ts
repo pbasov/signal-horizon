@@ -44,3 +44,26 @@ export function fmtDistance(m: number): string {
 export function fmtPct(frac: number): string {
   return `${Math.round(frac * 100)}%`;
 }
+
+/**
+ * Currency amount in the instrument style: "€1,000", "€-500", "€0". Rounded to a
+ * whole unit (M1's economy moves in whole-ish payouts) with thousands grouping.
+ * The sign is kept on the magnitude side of the € so a negative reads "€-500".
+ */
+export function fmtEuro(amount: number): string {
+  const rounded = Math.round(amount);
+  const sign = rounded < 0 ? "-" : "";
+  const grouped = Math.abs(rounded).toLocaleString("en-US");
+  return `€${sign}${grouped}`;
+}
+
+/**
+ * Signed currency for a flow (revenue / cost), with an explicit leading +/− so a
+ * credit reads "+€1,000" and a charge "−€50". Zero is a bare "€0" (no sign).
+ */
+export function fmtEuroSigned(amount: number): string {
+  const rounded = Math.round(amount);
+  if (rounded === 0) return "€0";
+  const sign = rounded > 0 ? "+" : "−"; // U+2212 minus for the flow glyph
+  return `${sign}€${Math.abs(rounded).toLocaleString("en-US")}`;
+}

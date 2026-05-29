@@ -59,6 +59,15 @@ export interface DemandReadout {
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
+  /** Cache opex burned per tick this step (× coherence multiplier) — the OPEX rate. */
+  opexPerTick: number;
+  /** Age (sim-seconds) of the served data, or null on a non-cache serve (miss/blackout). */
+  servedAgeSeconds: number | null;
+  /**
+   * Derived € value of freshness: price(freshFreshness) − price(minAcceptableFreshness)
+   * for the live demand (= €600 at defaults). The FINANCE panel's FRESHNESS PREMIUM.
+   */
+  freshnessPremium: number;
 }
 
 /** Per-frame snapshot the panels render from. */
