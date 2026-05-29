@@ -1,0 +1,103 @@
+name: CI
+
+# Ticket C1 / P0-02 — backbone gates + the money-shot screenshot before the M1 kill-gate (DD-7).
+# Gates (any failure fails the job): Vitest -> tsc --noEmit -> vite build -> orrery screenshot.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so PR pushes don't pile up.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-shoot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Preview the built dist on the documented orrery URL/port (README, shoot.mjs default).
+      # vite.config.ts pins server.port=5173 for `dev`; `preview` defaults to 4173, so we
+      # pass --port explicitly to keep the URL consistent for the screenshot helper.
+      PREVIEW_PORT: "5173"
+      ORRERY_URL: "http://localhost:5173"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # D1 pins Node 26. npm cache keyed off package-lock.json; `npm ci` for a clean, locked install.
+      - name: Set up Node 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # --- Backbone gates: fail fast on any of test / typecheck / build ---
+
+      - name: Unit tests (Vitest)
+        run: npx vitest run
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Build (vite build)
+        run: npm run build
+
+      # --- Money-shot screenshot (SD-9 / DD-2: visualization is priority zero) ---
+
+      # shoot.mjs drives chromium via playwright-core and honours CHROMIUM_BIN. The user's
+      # ungoogled-chromium does not exist in CI, so install Playwright's bundled Chromium and
+      # point shoot.mjs at it through CHROMIUM_BIN — no code change to shoot.mjs required.
+      # Pin the playwright CLI to the installed playwright-core version so the browser revision matches.
+      - name: Install Playwright Chromium
+        run: npx --yes playwright-core@1.60.0 install --with-deps chromium
+
+      # Resolve the bundled Chromium path via playwright-core and export it for shoot.mjs.
+      - name: Resolve bundled Chromium path
+        run: |
+          CHROMIUM_BIN="$(node -e "console.log(require('playwright-core').chromium.executablePath())")"
+          echo "Bundled Chromium: $CHROMIUM_BIN"
+          test -x "$CHROMIUM_BIN" || { echo "Bundled Chromium not executable at $CHROMIUM_BIN"; exit 1; }
+          echo "CHROMIUM_BIN=$CHROMIUM_BIN" >> "$GITHUB_ENV"
+
+      # Serve the production build on :5173 in the background, then poll until it answers.
+      - name: Start preview server
+        run: |
+          npm run preview -- --port "$PREVIEW_PORT" --strictPort &
+          echo "PREVIEW_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -sfo /dev/null "$ORRERY_URL"; then
+              echo "Preview server is up after ${i}s."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Preview server did not become ready on $ORRERY_URL within 60s."
+          exit 1
+
+      # HEADLESS=1 forces the SwiftShader software-GL path for the no-display CI runner.
+      # Args: <url> <out.png> [waitMs] [keysCSV] [w] [h] — press 'o' for the ORBITS camera framing.
+      - name: Screenshot the orrery
+        env:
+          HEADLESS: "1"
+        run: node tools/shoot.mjs "$ORRERY_URL" orrery.png 3000 "o" 1600 980
+
+      - name: Stop preview server
+        if: always()
+        run: '[ -n "$PREVIEW_PID" ] && kill "$PREVIEW_PID" 2>/dev/null || true'
+
+      - name: Upload screenshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orrery-screenshot
+          path: orrery.png
+          if-no-files-found: warn

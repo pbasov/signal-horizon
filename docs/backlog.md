@@ -22,7 +22,7 @@
 - [x] **PB.4 — panels** — SYSTEM.LOG (severity syntax highlighting + glyphs, scrollable, ring-buffer), telemetry readout, status strip (sim time, time scale, light-delay, focus, presets, occult).
 - [x] **PC — deterministic backbone (TS)** — fixed-tick integer clock ✅ (P0-03), seeded RNG ✅ (P0-04), action-log pending (P0-05/06).
 - [ ] **PD — M1 economy integration** — demand, caching, prefetch, economy, finance panel. Wire to the fixed-tick sim clock. The M1 fun-gate playtest.
-- [ ] **CI** — GitHub Actions: `npm test` (vitest) + Playwright screenshot CI.
+- [x] **CI** — GitHub Actions (`.github/workflows/ci.yml`): vitest + `tsc --noEmit` + build + headless Playwright orrery screenshot (uploaded as an artifact). Node 26.
 
 ---
 
@@ -45,7 +45,7 @@
 
 **Project & repo**
 - [x] **P0-01** Repo + module folders — done (`src/sim/ src/orrery/ src/wm/ src/panels/ data/`)
-- [x] **P0-02** CI — vitest green; Playwright screenshot CI pending setup
+- [x] **P0-02** CI — GitHub Actions (`.github/workflows/ci.yml`): vitest + `tsc --noEmit` + `npm run build` + headless Playwright screenshot via `tools/shoot.mjs` (CI-bundled Chromium through `CHROMIUM_BIN`, `HEADLESS=1`), artifact-uploaded. Node 26 (D1).
 
 **Deterministic core backbone**
 - [x] **P0-03** Authoritative sim-clock + fixed-step tick — *M* · Integer fixed-step clock implemented in `src/sim/clock.ts`. Tick accumulator, `scheduleWall()`/`nextTick()` drain pattern, `DT = 1/60` s. Death-spiral clamp. `setTick()` for save/load. 12 Vitest tests green.
