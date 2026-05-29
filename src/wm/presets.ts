@@ -39,8 +39,12 @@ export const PRESET_SPECS: PresetSpec[] = [
       {
         weight: 0.38,
         rows: [
-          { weight: 1.0, host: "telemetry" },
-          { weight: 2.0, host: "system-log" },
+          // Telemetry carries the E2 DEMAND group (SERVE/WAIT/CACHE) — give it
+          // enough height that the countdown + cache-freshness rows are visible
+          // without scrolling, while the log keeps the taller share. (DD-10:
+          // still ≤3 rows in the column.)
+          { weight: 1.5, host: "telemetry" },
+          { weight: 1.5, host: "system-log" },
         ],
       },
     ],

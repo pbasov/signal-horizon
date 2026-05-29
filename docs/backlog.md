@@ -104,8 +104,8 @@
 **Minimal economy + one dashboard + one map**
 - [x] **M1-08** Cash, simple revenue & opex — *S* · bankruptcy on `balance<0`. **E3:** `src/sim/m1/economy.ts` (`M1Economy`: balance/applyPayout/chargeOpex×coherence/chargePrefetch/runway/bankrupt) ported + wired into `M1Session` (payout + opex per tick). Good-vs-bad solvency gap proven through the real economy (no-prefetch → bankrupt; prefetch-before-blackout → solvent). Pinned in `economy.test.ts`. _Balance/runway in `FrameState`; the finance PANEL is M1-09 (E4)._
 - [x] **M1-09** Single finance panel (mono chrome, coloured data) — *S* · live NETWORK·FINANCE. **E4:** `src/panels/finance.ts` — WALLET (balance/runway) · FLOW (revenue/opex) · VALUE (derived `FRESHNESS PREMIUM €600` + AS-OF age stamp); registered in the OPS preset (key 2); CVD-redundant glyphs (✕/+/−) + structural BANKRUPT banner; fake premium log line removed from `mission.ts`. **Screenshot-verified.** _Surfaced an economy-balance blocker — see M1-12._
-- [ ] **M1-10** Glanceable map readout — *S* · Mars freshness drain + fetch packet/countdown
-- [ ] **M1-11** Cache-hit audio cue — *S* · first audio; Web Audio API
+- [x] **M1-10** Glanceable map readout — *S* · Mars freshness drain + fetch packet/countdown. **E5:** orrery corner overlay (`src/orrery/readout.ts`, `deriveReadout`): MARS CACHE freshness % (◆/◇/· glyph + draining bar), FETCH ETA (hidden when idle), CONJUNCTION approach gauge (from `marginSolarRadii` → blackout foreseeable), BLACKOUT badge. **Freshness-as-saturation** (§8): Mars node bleeds machine-grey→hot as the cache drains, CVD-redundant (dither coarsens + shrinking halo). E2 telemetry WAIT/CACHE clip fixed. **Screenshot-verified** (empty/grey → 79% saturated).
+- [x] **M1-11** Cache-hit audio cue — *S* · first audio; Web Audio API. **E5:** `src/audio/cue.ts` — lazy AudioContext on first user gesture (autoplay-safe), one-way `CueBus` (sim stays Web-Audio-free), synthesised blips (cache-hit rising ping / fetch-arrival / stale / blackout; pitch encodes good/bad), `emitCueTransition` on rising edges. 8 tests pin the bus + edges. _Code-verified; unheard in headless — needs a real listen._
 - [ ] **M1-12** 30-minute scenario script — *S* · scripted conjunction; pre-position-to-survive. **⚠ ECONOMY-BALANCE BLOCKER (E4 finding):** the live loop bankrupts in ~17 sim-s — opex ≈60 €/sim-s (€1/tick) vs €1000 opening and a ~923 s one-way to first delivery, so you go broke before any revenue arrives; and per-tick payout would *balloon* once deliveries land. E6 needs a balance + **cadence** pass (payout per delivery, not per tick; opex/opening tuned to the compressed session) — likely a design call with the user.
 - [ ] **M1-GATE** Playtest instrumentation — *S–M* · telemetry action log + event stream + gate metrics
 
@@ -129,7 +129,7 @@
 - [ ] **X-02** Performance budget — GC allocation pools in Three.js (scratch vectors + direct Float32Array writes — proven in spike review); event-driven route re-solve; headless perf benchmark M2–M3; budget real before M4.
 - [ ] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
-- [ ] **X-05** Audio system — Web Audio API; one-way event-bus → cues. Placeholder at M1-11; health-sonification M2+.
+- [~] **X-05** Audio system — Web Audio API; one-way event-bus → cues. **First cue landed (M1-11/E5):** `src/audio/cue.ts` lazy gesture-unlock + `CueBus` (sim stays Web-Audio-free). Health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.
 
 ---

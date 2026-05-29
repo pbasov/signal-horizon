@@ -16,6 +16,8 @@
  */
 import * as THREE from "three";
 import type { Ephemeris, Vec3 } from "../sim/ephemeris";
+import type { Readout } from "./readout";
+import { fmtDuration, fmtPct } from "../format";
 
 const DEG = Math.PI / 180;
 
@@ -159,11 +161,24 @@ export class Orrery {
 
   private bodyMeshes = new Map<string, THREE.Mesh>();
   private haloMesh?: THREE.Mesh;
+  /** Mars cache-freshness halo — the redundant SHAPE channel for §8 saturation. */
+  private marsHalo: THREE.Mesh;
   private rings = new Map<string, { line: THREE.LineSegments; rel: Vec3[] }>();
   private packetMesh: THREE.Mesh;
   private linkLine: THREE.LineSegments;
   private labels = new Map<string, HTMLElement>();
   private labelLayer: HTMLElement;
+  /** Latest glanceable readout (M1-10), painted into the overlay each frame. */
+  private readout: Readout | null = null;
+  /** Cached readout sub-nodes (grabbed once) so paintReadout never queries DOM. */
+  private roFreshGlyph!: HTMLElement;
+  private roFreshVal!: HTMLElement;
+  private roFreshFill!: HTMLElement;
+  private roCountRow!: HTMLElement;
+  private roCountVal!: HTMLElement;
+  private roConjVal!: HTMLElement;
+  private roConjFill!: HTMLElement;
+  private roBlackout!: HTMLElement;
 
   private quad = new THREE.PlaneGeometry(1, 1);
   private tmpV = new THREE.Vector3();
@@ -176,6 +191,12 @@ export class Orrery {
   private readonly _amber = new THREE.Color(1.0, 0.62, 0.18);
   private readonly _grey = new THREE.Color(0.36, 0.36, 0.4);
   private readonly _pkColor = new THREE.Color();
+  // Mars freshness-as-saturation scratch: a saturated "hot data" Mars that bleeds
+  // toward the machine-grey as the cached copy stales (reuses the packet's path).
+  private readonly _marsHot = new THREE.Color(1.0, 0.5, 0.26);
+  private readonly _marsColor = new THREE.Color();
+  /** Live Mars cache freshness in [0,1], pushed by {@link setReadout}. */
+  private marsFreshness = 0;
   private dragging = false;
   private lastPtr = { x: 0, y: 0 };
 
@@ -189,6 +210,7 @@ export class Orrery {
     this.labelLayer.className = "orrery-overlay";
     this.host.appendChild(this.labelLayer);
     this.buildOverlayCorners();
+    this.buildReadout(); // builds the block + caches its sub-nodes (no field needed)
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: false });
     this.renderer.setClearColor(0x0b0b12, 1);
@@ -204,6 +226,11 @@ export class Orrery {
     this.buildRings();
     this.packetMesh = this.buildSignalDisc([1.0, 0.62, 0.18]);
     this.scene.add(this.packetMesh);
+    // Mars freshness halo — a dithered glow whose RADIUS encodes cache freshness
+    // (the redundant, colour-off SHAPE channel that backs the saturation cue).
+    this.marsHalo = this.buildHaloDisc([1.0, 0.5, 0.26]);
+    this.marsHalo.renderOrder = 8;
+    this.scene.add(this.marsHalo);
     this.linkLine = this.buildLink();
     this.scene.add(this.linkLine);
 
@@ -239,6 +266,23 @@ export class Orrery {
         uSunDirView: { value: new THREE.Vector3(0, 0, 1) },
         uTerminator: { value: 0 },
         uCell: { value: 2.0 },
+      },
+    });
+    return new THREE.Mesh(this.quad, mat);
+  }
+
+  /** A dithered additive glow disc (same stipple as the Sun halo), tinted `color`. */
+  private buildHaloDisc(color: [number, number, number]): THREE.Mesh {
+    const mat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: VERT,
+      fragmentShader: HALO_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uColor: { value: new THREE.Color(...color) },
+        uCell: { value: 3.0 },
       },
     });
     return new THREE.Mesh(this.quad, mat);
@@ -316,7 +360,50 @@ export class Orrery {
     }
   }
 
+  /**
+   * Build the glanceable readout (M1-10): a DOM block pinned over the orrery's
+   * top-right, showing Mars-relay FRESHNESS, the fetch COUNTDOWN, a BLACKOUT
+   * badge, and a conjunction-APPROACH gauge. DOM is built ONCE here; per-frame
+   * {@link paintReadout} only mutates text / classes / widths in place.
+   */
+  private buildReadout(): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "orrery-readout";
+    box.innerHTML =
+      `<div class="ro-row ro-fresh"><span class="ro-lab">MARS CACHE</span>` +
+      `<span class="ro-glyph"></span><span class="ro-val">—</span></div>` +
+      `<div class="ro-bar ro-freshbar"><span class="ro-fill"></span></div>` +
+      `<div class="ro-row ro-count"><span class="ro-lab">FETCH ETA</span>` +
+      `<span class="ro-val">—</span></div>` +
+      `<div class="ro-row ro-conj"><span class="ro-lab">CONJUNCTION</span>` +
+      `<span class="ro-val">—</span></div>` +
+      `<div class="ro-bar ro-conjbar"><span class="ro-fill"></span></div>` +
+      `<div class="ro-badge ro-blackout">▰ BLACKOUT</div>`;
+    this.labelLayer.appendChild(box);
+    // Grab the live sub-nodes ONCE; paintReadout mutates these in place.
+    this.roFreshGlyph = box.querySelector(".ro-fresh .ro-glyph") as HTMLElement;
+    this.roFreshVal = box.querySelector(".ro-fresh .ro-val") as HTMLElement;
+    this.roFreshFill = box.querySelector(".ro-freshbar .ro-fill") as HTMLElement;
+    this.roCountRow = box.querySelector(".ro-count") as HTMLElement;
+    this.roCountVal = box.querySelector(".ro-count .ro-val") as HTMLElement;
+    this.roConjVal = box.querySelector(".ro-conj .ro-val") as HTMLElement;
+    this.roConjFill = box.querySelector(".ro-conjbar .ro-fill") as HTMLElement;
+    this.roBlackout = box.querySelector(".ro-blackout") as HTMLElement;
+    return box;
+  }
+
   // --- public control ------------------------------------------------------
+  /**
+   * Hand the orrery the latest glanceable readout (M1-10) — the live Mars-relay
+   * freshness / fetch countdown / blackout / conjunction-approach derived from
+   * FrameState. Pure presentation: stored here, painted next {@link update}.
+   * Also drives the Mars cache node's freshness-as-saturation (§8).
+   */
+  setReadout(r: Readout): void {
+    this.readout = r;
+    this.marsFreshness = r.freshness;
+  }
+
   setPreset(i: number): void {
     if (i < 0 || i >= CAMERA_PRESETS.length) return;
     this.activePreset = i;
@@ -374,6 +461,7 @@ export class Orrery {
       this.renderInto(this._rp, absBody, focusAbs);
       mesh.position.copy(this._rp);
       this.sizeBillboard(mesh, spec.px, worldPerPx);
+      if (spec.id === "mars") this.applyMarsFreshness(mesh, worldPerPx);
       if (spec.terminator) {
         // Sun direction from UNCOMPRESSED physical positions — the log-fold is a
         // per-point radial scale and would skew the terminator for off-focus bodies.
@@ -411,6 +499,7 @@ export class Orrery {
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);
     this.updateCorners();
+    this.paintReadout();
   }
 
   private updatePacketAndLink(t: number, focusAbs: Vec3, worldPerPx: number): void {
@@ -443,6 +532,38 @@ export class Orrery {
       (this.packetMesh.material as THREE.ShaderMaterial).uniforms.uColor.value.copy(this._pkColor);
     } else {
       this.packetMesh.visible = false;
+    }
+  }
+
+  /**
+   * FRESHNESS-AS-SATURATION (§8, the signature cue) on the Mars cache node. The
+   * disc colour bleeds from a hot, saturated "fresh data" tint toward the machine
+   * grey as the cached copy stales — reusing the packet's grey→hot lerp path. Two
+   * REDUNDANT, colour-off channels back it so it reads CVD-safe:
+   *   - the disc's dither cell COARSENS as it greys (a finer stipple = fresher);
+   *   - a Mars freshness HALO whose radius/brightness shrinks toward nothing as
+   *     freshness drains (a shape/size cue, gone entirely when the cache is empty).
+   * Snaps back saturated + haloed the instant a fresh delivery refills the cache.
+   * No per-frame allocation: all scratch is preallocated (_marsColor, _marsHot).
+   */
+  private applyMarsFreshness(mesh: THREE.Mesh, worldPerPx: number): void {
+    const f = this.marsFreshness;
+    const mat = mesh.material as THREE.ShaderMaterial;
+    // grey (stale) → hot (fresh): identical move to the in-flight packet.
+    this._marsColor.copy(this._grey).lerp(this._marsHot, f);
+    mat.uniforms.uColor.value.copy(this._marsColor);
+    // Redundant channel A: coarser dither when stale (cell 2 fresh → 5 dead).
+    mat.uniforms.uCell.value = 2.0 + (1 - f) * 3.0;
+    // Redundant channel B: a freshness halo that shrinks/dims to nothing as the
+    // copy decays (and vanishes when the cache is empty — f == 0).
+    this.marsHalo.position.copy(mesh.position);
+    this.marsHalo.visible = f > 0.001;
+    if (this.marsHalo.visible) {
+      const halo = this.marsHalo.material as THREE.ShaderMaterial;
+      halo.uniforms.uColor.value.copy(this._marsColor);
+      // Halo spans the Mars disc (~28px) plus a freshness-scaled glow ring, so it
+      // is a wide bright corona when fresh and a thin rim as it fades to empty.
+      this.sizeBillboard(this.marsHalo, 28 + 44 * f, worldPerPx);
     }
   }
 
@@ -549,6 +670,54 @@ export class Orrery {
     set("br", `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus`);
   }
 
+  /**
+   * Paint the glanceable readout (M1-10) — text/classes/widths only, no DOM
+   * rebuilds. Every colour cue carries a REDUNDANT channel (CVD-safe, GDD §8):
+   * the freshness band rides a shape glyph (◆ fresh / ◇ stale / · empty) and a
+   * bar width; the conjunction approach rides a bar width + an "OCCULT/Rsun"
+   * label, not just colour; blackout is a labelled badge.
+   */
+  private paintReadout(): void {
+    const r = this.readout;
+    if (!r) return;
+
+    // FRESHNESS — draining %, shape glyph, tone, and a bar that bleeds to grey.
+    const fGlyph = r.band === "fresh" ? "◆" : r.band === "stale" ? "◇" : "·";
+    const fTone = r.band === "fresh" ? "good" : r.band === "stale" ? "warn" : "dead";
+    setN(this.roFreshGlyph, fGlyph);
+    setN(this.roFreshVal, r.freshness > 0 ? fmtPct(r.freshness) : "EMPTY");
+    setC(this.roFreshVal, `ro-val ${fTone}`);
+    setC(this.roFreshGlyph, `ro-glyph ${fTone}`);
+    this.roFreshFill.style.width = `${Math.round(r.freshness * 100)}%`;
+    setC(this.roFreshFill, `ro-fill ${fTone}`);
+
+    // FETCH COUNTDOWN — only present while a fetch crawls Earth→Mars.
+    if (r.countdownSeconds != null) {
+      this.roCountRow.style.display = "flex";
+      setN(this.roCountVal, `${fmtDuration(r.countdownSeconds)} · ETA`);
+    } else {
+      this.roCountRow.style.display = "none";
+    }
+
+    // CONJUNCTION APPROACH — the predictable-blackout lead cue. Bar grows as the
+    // Sun-miss margin tightens; label shows OCCULT or the live Rsun margin.
+    const cTone = r.occulted ? "bad" : r.approachAlarm ? "warn" : r.approach > 0 ? "watch" : "good";
+    setN(
+      this.roConjVal,
+      r.occulted
+        ? "OCCULT"
+        : Number.isFinite(r.marginSolarRadii)
+          ? `${r.marginSolarRadii.toFixed(1)} Rsun`
+          : "CLEAR",
+    );
+    setC(this.roConjVal, `ro-val ${cTone}`);
+    this.roConjFill.style.width = `${Math.round(r.approach * 100)}%`;
+    setC(this.roConjFill, `ro-fill ${cTone}`);
+
+    // BLACKOUT badge — link down with no usable cache (a labelled, not just red, cue).
+    this.roBlackout.style.display = r.blackout ? "block" : "none";
+  }
+
   // --- input (body-anchored orbit) ----------------------------------------
   private attachInput(): void {
     this.canvas.addEventListener("pointerdown", (e) => {
@@ -583,4 +752,16 @@ export class Orrery {
       { passive: false },
     );
   }
+}
+
+// --- tiny in-place DOM helpers (no per-frame allocation in paintReadout) -----
+
+/** Set textContent only when it changed. */
+function setN(node: HTMLElement, text: string): void {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+/** Set className only when it changed. */
+function setC(node: HTMLElement, cls: string): void {
+  if (node.className !== cls) node.className = cls;
 }

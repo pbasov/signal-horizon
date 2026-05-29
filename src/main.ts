@@ -26,6 +26,8 @@ import { applySessionAction } from "./sim/m1/apply-action";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
 import { Orrery } from "./orrery/orrery";
+import { deriveReadout } from "./orrery/readout";
+import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audio/cue";
 import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
@@ -96,11 +98,24 @@ function recordScale(): void {
   addAction(save, setTimeScale(s, clock.tick));
 }
 
+// --- audio (M1-11) ----------------------------------------------------------
+// The one-way cue bus: tickSim (orchestration, NOT the pure sim) emits semantic
+// cues on demand-state transitions; the frame loop drains them into AudioCue.
+// src/sim stays Web-Audio-free — the bus and synth both live in src/audio.
+const cueBus = new CueBus();
+const audio = new AudioCue();
+audio.armUnlock(); // create + resume the AudioContext on the first gesture.
+// Prior demand slice for edge detection (a cache hit / arrival is a TRANSITION).
+let prevCue: CueDemandSlice | null = null;
+
 /**
  * One fixed sim tick at time t: drive the Mission (packet crawl + log), then the
  * standing demand (the cache loop). When the demand STARTS a fetch (a miss) and
  * no packet is in flight, launch the Mission packet so its crawl IS the visible
  * wait. Mission and session share the same one-way ETA, so they stay in lockstep.
+ *
+ * AUDIO: after the pure step, derive any cue from the demand transition and push
+ * it onto the one-way bus (drained by the frame loop). The sim never sees audio.
  */
 function tickSim(t: number): void {
   for (const e of mission.update(t)) log.append(e);
@@ -108,6 +123,13 @@ function tickSim(t: number): void {
   if (demand.fetchInFlight && mission.packet === null) {
     for (const e of mission.launch(t)) log.append(e);
   }
+  const slice: CueDemandSlice = {
+    fetchInFlight: demand.fetchInFlight,
+    viaCache: demand.viaCache,
+    outcome: demand.outcome,
+  };
+  emitCueTransition(cueBus, prevCue, slice, t);
+  prevCue = slice;
 }
 
 // --- orrery + panels --------------------------------------------------------
@@ -255,8 +277,12 @@ function frame(now: number): void {
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);
+  // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
+  orrery.setReadout(deriveReadout(fs));
   orrery.update(wallDt);
   shell.tickChrome();
+  // Drain the one-way cue bus into the synth (no-op until a gesture unlocks audio).
+  audio.pump(cueBus);
 
   requestAnimationFrame(frame);
 }
