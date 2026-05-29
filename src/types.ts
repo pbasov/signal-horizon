@@ -51,6 +51,14 @@ export interface DemandReadout {
   fetchCountdownSeconds: number | null;
   /** True when the link is down AND there is no usable cache (blackout miss). */
   blackout: boolean;
+  /** M1-08 — on-hand wallet balance (currency units) after the latest step. */
+  balance: number;
+  /** Signed payout applied to the balance this step (the resolve payout). */
+  lastPayout: number;
+  /** Ticks until bankruptcy at the standing per-tick burn (+Inf when not burning). */
+  runway: number;
+  /** True once the balance has gone negative — the kill condition. */
+  bankrupt: boolean;
 }
 
 /** Per-frame snapshot the panels render from. */

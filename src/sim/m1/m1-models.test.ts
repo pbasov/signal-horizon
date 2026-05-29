@@ -10,14 +10,14 @@ import { resolve, feasible, type ResolveResult } from "./resolver";
  * Mirrors SignalHorizon.Sim.Tests/M1ModelTests.cs (which itself ports
  * test/test_m1_model.gd). Proves the FUN-GATE model contracts: 3-band pricing,
  * hit/stale/miss/blackout resolution, prefetch-turns-miss-into-hit (M1-06),
- * coherence cost/freshness difference, the good-vs-bad strategy solvency gap,
- * and resolve determinism.
+ * coherence cost/freshness difference, and resolve determinism.
  *
  * Pure sim layer — runs headless (no three/DOM); only the geometry (miss wait,
  * feasibility) needs the real ephemeris from data/system.json.
  *
- * The C# solvency test drives an M1Economy (ticket E3, NOT yet ported); here we
- * sum ResolveResult.payout inline to prove the same gap without it.
+ * The good-vs-bad strategy solvency gap (Economy_GoodVsBadStrategy_SolvencyGap)
+ * now lives in economy.test.ts, driven through the REAL ported M1Economy (E3);
+ * it replaced the inline payout-sum that stood in while the economy was unported.
  */
 
 // The resolver is a pure function of explicit inputs; only geometry needs the
@@ -277,40 +277,8 @@ describe("M1-07 — coherence levels differ", () => {
   });
 });
 
-// --- M1-08: good (prefetch) stays solvent, bad (blackout) goes broke ------
-describe("M1-08 — good vs bad strategy solvency gap", () => {
-  it("Economy_GoodVsBadStrategy_SolvencyGap", () => {
-    const d = makeDemand();
-    const startBalance = 1000.0;
-    const ticks = 20;
-
-    // Sum ResolveResult.payout inline (M1Economy is ticket E3, not ported here).
-    // BAD strategy: never cache; every request during a blackout is a penalty.
-    let badBalance = startBalance;
-    const badCache = new Cache("mars"); // stays empty
-    for (let i = 0; i < ticks; i++) {
-      const t = 100.0 + i * 200.0;
-      const r = resolve(Eph, t, d, badCache, false); // link DOWN (blackout)
-      badBalance += r.payout;
-    }
-    // 20 blackout misses at -500 each, starting from 1000 -> deeply negative.
-    expect(badBalance).toBeLessThan(0.0);
-
-    // GOOD strategy: prefetch fresh data into the cache BEFORE the blackout,
-    // then serve local fresh hits through the same blackout window.
-    let goodBalance = startBalance;
-    const goodCache = new Cache("mars");
-    goodCache.store("earth_imagery", 50.0, 100000.0); // fresh & long-lived for the window
-    for (let i = 0; i < ticks; i++) {
-      const t = 100.0 + i * 200.0;
-      const r = resolve(Eph, t, d, goodCache, false); // SAME blackout
-      goodBalance += r.payout;
-    }
-    // Every serve is a paying fresh hit through the blackout -> stays solvent.
-    expect(goodBalance).toBeGreaterThan(0.0);
-    expect(goodBalance).toBeGreaterThan(badBalance); // good ends richer than bad
-  });
-});
+// M1-08 good-vs-bad strategy solvency gap moved to economy.test.ts (now driven
+// through the REAL M1Economy rather than an inline payout-sum).
 
 // --- Determinism: resolve is a pure function of its inputs ----------------
 describe("determinism — resolve is pure", () => {

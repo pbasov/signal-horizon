@@ -3,16 +3,26 @@
  * keyboard control. Everything runs on SIM time from one SimClock.
  *
  * Keys:  1–5 WM preset · 0 reset layout · C/O/S/T camera presets ·
- *        R reset camera · F cycle focus · Space pause · , / . time scale
+ *        R reset camera · F cycle focus · Space pause · , / . time scale ·
+ *        P prefetch (pre-position fresh data into the Mars cache)
+ *
+ * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
+ * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
+ * to a live {@link SaveGame} action log at the CURRENT clock tick. The log is the
+ * "inputs, not outputs" record that makes this session reproducible: replaying
+ * seed + dt + this action log re-derives the exact balance/cache/fetch state.
  */
 import "./style.css";
 import { applyDither } from "./dither";
 import { loadEphemeris } from "./sim/system-data";
-import { SimClock } from "./sim/clock";
+import { SimClock, DT } from "./sim/clock";
 import { oneWaySeconds } from "./sim/delay";
 import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
 import { M1Session, type SessionRenderState } from "./sim/m1/session";
+import { saveGame, addAction } from "./sim/save";
+import { setTimeScale, prefetch as prefetchAction } from "./sim/action";
+import { applySessionAction } from "./sim/m1/apply-action";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
 import { Orrery } from "./orrery/orrery";
@@ -57,7 +67,28 @@ let demand: SessionRenderState = {
   fetchInFlight: false,
   fetchCountdownSeconds: null,
   blackout: false,
+  balance: session.economy.balance,
+  lastPayout: 0,
+  runway: session.economy.runway(session.economy.cacheOpexPerTick),
+  bankrupt: false,
 };
+
+// --- action log -------------------------------------------------------------
+// The live, deterministic record of player input. Seed is a fixed determinism
+// anchor (the M1 session draws no RNG yet, but the log mirrors the save format).
+// dt is the clock's fixed timestep; actions are appended at the current tick.
+const SEED = 1n;
+const save = saveGame(SEED, DT, { system: "data/system.json" });
+// Track the last time-scale we recorded so we only log genuine CHANGES.
+let lastScale = clock.scale;
+
+/** Record a set_time_scale action at the current tick after a clock mutation. */
+function recordScale(): void {
+  const s = clock.scale; // 0 while paused, else TIME_SCALES[scaleIndex]
+  if (s === lastScale) return;
+  lastScale = s;
+  addAction(save, setTimeScale(s, clock.tick));
+}
 
 /**
  * One fixed sim tick at time t: drive the Mission (packet crawl + log), then the
@@ -138,8 +169,29 @@ window.addEventListener("keydown", (e) => {
   else if (k === " ") {
     e.preventDefault();
     clock.togglePause();
-  } else if (k === ",") clock.slower();
-  else if (k === ".") clock.faster();
+    recordScale(); // pause/unpause is a set_time_scale (0 ↔ current scale)
+  } else if (k === ",") {
+    clock.slower();
+    recordScale();
+  } else if (k === ".") {
+    clock.faster();
+    recordScale();
+  } else if (k === "p" || k === "P") {
+    // M1-06 PREFETCH: pre-position fresh data into the Mars cache, charged the
+    // one-shot prefetch cost. POST-DRAIN, at the current clock tick — the SAME
+    // ordering the replay driver uses (apply the action AFTER step(at_tick)), via
+    // the shared applySessionAction so live and replay cannot drift. Gated to one
+    // fetch in flight; only RECORD the action when it actually launches (so the
+    // replay charges exactly once too).
+    const action = prefetchAction(clock.tick);
+    if (applySessionAction(eph, session, action, DT)) {
+      addAction(save, action);
+      // The prefetch IS the visible wait: launch the Mission packet to crawl it.
+      if (mission.packet === null) {
+        for (const ev of mission.launch(clock.seconds)) log.append(ev);
+      }
+    }
+  }
 });
 
 // --- main loop --------------------------------------------------------------
@@ -182,6 +234,10 @@ function frame(now: number): void {
       fetchInFlight: demand.fetchInFlight,
       fetchCountdownSeconds: demand.fetchCountdownSeconds,
       blackout: demand.blackout,
+      balance: demand.balance,
+      lastPayout: demand.lastPayout,
+      runway: demand.runway,
+      bankrupt: demand.bankrupt,
     },
   };
 

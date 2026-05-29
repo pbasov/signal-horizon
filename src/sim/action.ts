@@ -32,6 +32,12 @@ export interface SimActionDict {
 /** The known action kinds (mirrors SimAction.KindNoop / KindSetTimeScale). */
 export const KIND_NOOP = "noop";
 export const KIND_SET_TIME_SCALE = "set_time_scale";
+/**
+ * M1-06 — a player-initiated prefetch: pre-position fresh data into the Mars
+ * cache. Carries no payload (the target dataset is the standing demand's); the
+ * `atTick` is what makes it deterministic on replay.
+ */
+export const KIND_PREFETCH = "prefetch";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -70,6 +76,15 @@ export function noop(atTick = 0): SimAction {
  */
 export function setTimeScale(value: number, atTick = 0): SimAction {
   return simAction(KIND_SET_TIME_SCALE, atTick, { value });
+}
+
+/**
+ * M1-06 — issue a player prefetch at a tick. No payload: the session prefetches
+ * the standing demand's dataset. On replay this is applied at `atTick`, so a
+ * recorded prefetch reproduces the exact cache + economy outcome it caused live.
+ */
+export function prefetch(atTick = 0): SimAction {
+  return simAction(KIND_PREFETCH, atTick, {});
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */
