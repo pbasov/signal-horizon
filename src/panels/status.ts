@@ -113,7 +113,9 @@ export class StatusStrip {
     appendKeys(keys, "A");
     keys.append(" policy ");
     appendKeys(keys, "[", "]");
-    keys.append(" floor");
+    keys.append(" floor ");
+    appendKeys(keys, "G");
+    keys.append(" parse");
 
     this.element.append(
       this.tabsCell,

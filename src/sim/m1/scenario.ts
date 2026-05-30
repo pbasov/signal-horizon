@@ -48,11 +48,11 @@
  * ≈ 1292 s) is ≈ 12.9 real-s at the 100× default — felt, not instant.
  */
 
-import { DT } from "../clock";
+import { DT, TIME_SCALES } from "../clock";
 
 /**
- * THE ONE-PLACE SCENARIO DIAL (E10b). Placeholder-tuned values; re-tune here and
- * NOWHERE else. {@link tick0} is derived from {@link t0Seconds} so the integer
+ * THE ONE-PLACE SCENARIO DIAL (E10b/E10c). Placeholder-tuned values; re-tune here
+ * and NOWHERE else. {@link tick0} is derived from {@link t0Seconds} so the integer
  * fixed-step clock boots exactly on the epoch.
  */
 export interface ScenarioConfig {
@@ -64,6 +64,20 @@ export interface ScenarioConfig {
    * the player starts SAFE (margin ≈ 15.93 Rsun) and the full arc fits ~30 min.
    */
   readonly t0Seconds: number;
+  /**
+   * E10c — THE ONBOARDING DEFAULT-SCALE DIAL. The index into {@link TIME_SCALES}
+   * the live clock boots at, so a PASSIVE player who never touches the speed keys
+   * still completes the full strain → relief → blackout arc in one sitting (GDD §9).
+   * At the old 100× boot the blackout was ~156 real-min away — unreachable without
+   * discovering time-accel unaided. Index 3 = 1000×: the blackout window ENTERS
+   * ≈15.7 real-min in and is dwellable to ≈25.4 min, so the arc lands inside the
+   * ~30-min target hands-off. The contention strain (5 feeds vs 3 slots) is felt at
+   * any scale; the player still manages feeds/policy/pre-stage through the wait
+   * (GDD Risk-6 — the waiting is decision-space, not a slider you merely watch). The
+   * speed keys (, / .) remain available to slow down and savour the light-gap. This
+   * dial does NOT touch the replay harness, which starts at t=0 with its own setup.
+   */
+  readonly defaultScaleIndex: number;
 }
 
 /**
@@ -75,11 +89,31 @@ export interface ScenarioConfig {
 export const SCENARIO: ScenarioConfig & { readonly tick0: number } = {
   id: "m1-conjunction-approach",
   t0Seconds: 14_500_000,
+  // 1000× (TIME_SCALES index 3) so a hands-off run reaches + dwells in the blackout
+  // inside the ~30-min sitting (see defaultScaleIndex). Re-tune here only.
+  defaultScaleIndex: 3,
   /** The boot tick: round(t0 / DT) so the clock starts exactly on the epoch. */
   get tick0(): number {
     return Math.round(this.t0Seconds / DT);
   },
 };
+
+/**
+ * E10c — THE FORESHADOW NUDGE threshold. The conjunction-approach nudge fires once
+ * the Sun-miss margin first crosses INTO the watch band (the same band the orrery
+ * gauge starts filling at — readout.CONJUNCTION_WATCH_FACTOR × corridor), surfacing
+ * the stakes + the control: "CONJUNCTION in N days — time-accel to ride it out, or
+ * slow down to savour the light-gap." It POINTS at the speed keys; it does not move
+ * the clock. One-shot per run (the live loop guards re-fire). This keeps Risk-6: the
+ * nudge names the decision, the player still does it.
+ */
+export const CONJUNCTION_NUDGE_SUPPRESS_BANDS = 0; // reserved dial; nudge fires on first watch-band entry.
+
+/** Convenience: the default boot time-multiplier (e.g. 1000) the scenario asks for. */
+export function defaultScale(scenario: ScenarioConfig = SCENARIO): number {
+  const i = Math.max(0, Math.min(TIME_SCALES.length - 1, scenario.defaultScaleIndex));
+  return TIME_SCALES[i];
+}
 
 /**
  * Mission-elapsed seconds at a given ephemeris-sim-time: simSeconds − t0. Clamped

@@ -8,7 +8,8 @@ import { feasible } from "./resolver";
 import { selectAutoPrefetches, defaultPolicy, type PolicyFeedState } from "./policy";
 import { buildFeeds } from "./feeds";
 import { M1Session } from "./session";
-import { SCENARIO, missionElapsedSeconds } from "./scenario";
+import { SCENARIO, missionElapsedSeconds, defaultScale } from "./scenario";
+import { TIME_SCALES } from "../clock";
 
 /**
  * E10b (M1-12) — THE STRAIN-TUNED 30-MIN SCENARIO, PROVEN AGAINST THE REAL EPH.
@@ -263,5 +264,28 @@ describe("the RETUNED default lead (1800 s) beats the light-gap — fixes the E1
     expect(stagedRS.blackout).toBe(false);
     expect(unstagedRS.outcome).toBe("blackout_miss");
     expect(unstagedRS.blackout).toBe(true);
+  });
+});
+
+describe("E10c — the onboarding default-scale dial (a passive player completes the arc)", () => {
+  it("the scenario asks the live clock to boot at 1000× so a hands-off run reaches the blackout", () => {
+    expect(SCENARIO.defaultScaleIndex).toBe(TIME_SCALES.indexOf(1000));
+    expect(defaultScale()).toBe(1000);
+  });
+
+  it("at the default boot scale the blackout window ENTERS inside the ~30-min sitting", () => {
+    // enter − t0 sim-seconds, ÷ the default scale, ÷ 60 = real-minutes hands-off.
+    const simToEnter = WIN.enter - t0;
+    const realMin = simToEnter / defaultScale() / 60;
+    expect(realMin).toBeGreaterThan(10);
+    expect(realMin).toBeLessThan(20); // a passive player reaches it without ramping
+  });
+
+  it("the dial is clamped to a valid TIME_SCALES index (defensive)", () => {
+    // A sane index resolves to a real scale; out-of-range would clamp, never throw.
+    expect(defaultScale({ id: "x", t0Seconds: 0, defaultScaleIndex: 99 })).toBe(
+      TIME_SCALES[TIME_SCALES.length - 1],
+    );
+    expect(defaultScale({ id: "x", t0Seconds: 0, defaultScaleIndex: -5 })).toBe(TIME_SCALES[0]);
   });
 });

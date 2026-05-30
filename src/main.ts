@@ -2,9 +2,10 @@
  * Entry point — builds the chrome scaffold, wires the sim → view loop, and routes
  * keyboard control. Everything runs on SIM time from one SimClock.
  *
- * Keys:  1–5 WM preset · 0 reset layout · C/O/S/T camera presets ·
+ * Keys:  1–6 WM preset (6 = PARSE) · 0 reset layout · C/O/S/T camera presets ·
  *        R reset camera · F cycle focus · Space pause · , / . time scale ·
- *        P prefetch (pre-position fresh data into the Mars cache)
+ *        P prefetch (pre-position fresh data into the Mars cache) · A policy ·
+ *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record)
  *
  * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
  * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
@@ -21,6 +22,9 @@ import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
 import { M1Session, type SessionRenderState } from "./sim/m1/session";
 import { SCENARIO, missionElapsedSeconds } from "./sim/m1/scenario";
+import { parseRun, type RunContext } from "./sim/m1/parse";
+import { OPENING_BALANCE } from "./sim/m1/economy";
+import { conjunctionApproach } from "./orrery/readout";
 import { saveGame, addAction } from "./sim/save";
 import { setTimeScale, prefetch as prefetchAction, setPrefetchPolicy } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
@@ -33,6 +37,7 @@ import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audi
 import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
+import { ParsePanel } from "./panels/parse";
 import { StatusStrip } from "./panels/status";
 import type { FrameState } from "./types";
 
@@ -66,6 +71,14 @@ const clock = new SimClock();
 // readout shows MISSION-ELAPSED time (missionElapsedSeconds), so the clock reads
 // 0d at boot despite the non-zero J2000 epoch. See sim/m1/scenario.ts.
 clock.setTick(SCENARIO.tick0);
+// E10c — THE ONBOARDING DEFAULT-SCALE DIAL. Boot the LIVE clock at the scenario's
+// default scale (1000×) so a PASSIVE player who never touches the speed keys still
+// reaches + dwells in the conjunction blackout inside the ~30-min sitting (the
+// blackout enters ≈15.7 real-min in). The contention strain is felt at any scale;
+// the speed keys (, / .) remain available to slow down and savour the light-gap.
+// This touches ONLY the live clock; the replay harness starts at t=0 with its own
+// setup, so the golden is unaffected.
+clock.scaleIndex = SCENARIO.defaultScaleIndex;
 const mission = new Mission(eph);
 // The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
 // loop. When it starts a fetch, we launch the Mission packet to render the wait.
@@ -209,11 +222,35 @@ const orrery = new Orrery({
 const log = new SystemLog();
 const telemetry = new Telemetry();
 const finance = new Finance();
+// THE PARSE (§4.12 / §5 view #9) — the reviewable-at-rest legible record. It holds
+// no sim state; refreshParse() folds the truthful event log into a RunParse and
+// hands it over whenever the player opens the PARSE view (preset 6 / key G).
+const parse = new ParsePanel();
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
 // not only when the physical disk occults (which never happens in this eph).
 let lastBlackedOut = false;
+
+// --- E10c — THE FORESHADOW NUDGE (the onboarding minor) ---------------------
+// A passive player who reaches the watch band must understand the stakes + the
+// control. We fire a ONE-SHOT orchestration NOTICE into SYSTEM.LOG the first time
+// the Sun-miss margin crosses INTO the watch band (the same band the orrery gauge
+// starts filling at) — surfacing both the looming blackout AND the speed keys. It
+// POINTS at the controls; it does NOT move the clock (GDD Risk-6: the waiting is
+// decision-space, the player still manages feeds/policy/pre-stage). It rides the
+// SystemLog.append legacy path (a non-event system line), so the TRUTHFUL sim event
+// stream stays pure (§4.12 honesty). The conjunction epoch is found once by a cheap
+// pure forward scan so the notice can read "in N days".
+let conjunctionNudged = false;
+const CONJ_EPOCH_SECONDS = ((): number => {
+  let best = { t: clock.seconds, m: Number.POSITIVE_INFINITY };
+  for (let tt = clock.seconds; tt <= clock.seconds + 4e6; tt += 2000) {
+    const m = earthMarsLos(eph, tt).marginSolarRadii;
+    if (m < best.m) best = { t: tt, m };
+  }
+  return best.t;
+})();
 
 const orreryHandle: PanelHandle = {
   title: "ORRERY",
@@ -228,6 +265,7 @@ const registry = new Map<string, PanelHandle>([
   ["system-log", log],
   ["telemetry", telemetry],
   ["finance", finance],
+  ["parse", parse],
 ]);
 
 const shell = new Shell(wmCanvas, registry);
@@ -240,6 +278,39 @@ function setWmPreset(i: number): void {
   if (i < 0 || i >= presets.length) return;
   wmPresetName = presets[i].name;
   shell.setPreset(presets[i].name, presets[i].grid);
+  // Opening THE PARSE view folds the run-so-far into a fresh summary — the §4.12
+  // reviewable-at-rest record. Force a refresh on entry so it always reflects the
+  // live log even if the run is paused (the per-frame caller is dirty-checked).
+  if (wmPresetName === "PARSE") refreshParse(true);
+}
+
+/**
+ * E10c — fold the truthful event log into a {@link RunParse} and hand it to the
+ * PARSE panel. PURE read of the run: a {@link RunContext} (the feed roster's ids,
+ * the run-start/now ticks, opening/current balance) drives {@link parseRun} over
+ * `session.events`. This NEVER mutates sim state — the parse is a read-only summary,
+ * so the replay golden is untouched. Called on PARSE-view entry + the toggle key.
+ *
+ * Dirty-checked: the per-frame caller skips the full re-fold + DOM rebuild unless
+ * the truthful log actually grew (`events.appended` changed) since the last parse,
+ * so a PARSE view left open on a paused/quiet run costs nothing. `force` (used on
+ * view-open) re-renders regardless, so opening the panel always reflects the log.
+ */
+let lastParseAppended = -1;
+function refreshParse(force = false): void {
+  if (!force && session.events.appended === lastParseAppended) return;
+  lastParseAppended = session.events.appended;
+  const ctx: RunContext = {
+    feeds: session.feeds.map((f) => ({ id: f.id, datasetId: f.datasetId })),
+    startTick: SCENARIO.tick0,
+    endTick: clock.tick,
+    startTSim: SCENARIO.tick0 * DT,
+    endTSim: clock.seconds,
+    openingBalance: OPENING_BALANCE,
+    closingBalance: session.economy.balance,
+    slotCapacity: session.cache.capacity,
+  };
+  parse.render(parseRun(session.events, ctx));
 }
 
 status.setPresetTabs(presets.map((p) => p.name));
@@ -270,8 +341,13 @@ if (import.meta.env.DEV) {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   const k = e.key;
-  if (k >= "1" && k <= "5") setWmPreset(Number(k) - 1);
+  if (k >= "1" && k <= "6") setWmPreset(Number(k) - 1);
   else if (k === "0") shell.reset();
+  else if (k === "g" || k === "G") {
+    // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record): open the PARSE preset,
+    // or return to OVERVIEW if it is already up. A free key beside the 1–6 presets.
+    setWmPreset(wmPresetName === "PARSE" ? 0 : presets.findIndex((p) => p.name === "PARSE"));
+  }
   else if (k === "c" || k === "C") orrery.setPreset(0);
   else if (k === "o" || k === "O") orrery.setPreset(1);
   else if (k === "s" || k === "S") orrery.setPreset(2);
@@ -345,6 +421,23 @@ function frame(now: number): void {
   const los = earthMarsLos(eph, t);
   lastBlackedOut = los.inCorridor;
 
+  // E10c — the foreshadow nudge: once the margin first enters the watch band
+  // (approach > 0), surface the looming blackout + the speed control, one-shot.
+  if (!conjunctionNudged) {
+    const approach = conjunctionApproach(los.marginSolarRadii, los.inCorridor, los.corridorRsun);
+    if (approach > 0) {
+      conjunctionNudged = true;
+      const daysToConj = Math.max(0, Math.round((CONJ_EPOCH_SECONDS - t) / 86400));
+      log.append({
+        tSim: t,
+        sev: "warn",
+        entity: "CONJUNCTION",
+        value: `${daysToConj}d`,
+        msg: "blackout approaching — set time-accel ( , / . ) to ride it out, and pre-stage the cache (P / A) before the link drops",
+      });
+    }
+  }
+
   const fs: FrameState = {
     simSeconds: t,
     missionElapsedSeconds: missionElapsedSeconds(t),
@@ -395,6 +488,10 @@ function frame(now: number): void {
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);
+  // E10c — while THE PARSE view is up, keep the reviewable record live (a read-only
+  // re-fold of the truthful log; it never mutates sim state). Only when that preset
+  // is shown, so the per-frame full rebuild is paid for only when it is on screen.
+  if (wmPresetName === "PARSE") refreshParse();
   // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
   orrery.setReadout(deriveReadout(fs));
   orrery.update(wallDt);

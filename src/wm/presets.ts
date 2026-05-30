@@ -13,7 +13,13 @@
  * solvency loop is glanceable while you watch the link. Each grid keeps the
  * DD-10 invariant: ≤3 columns × ≤3 rows per column, every host UNIQUE in the grid.
  *
- * Panels (hosts) available in this spike: orrery, system-log, telemetry, finance.
+ * Panels (hosts) available in this spike: orrery, system-log, telemetry, finance,
+ * parse (the §4.12 reviewable-at-rest record — GDD §5 view #9).
+ *
+ * PARSE (key 6) is the reviewable-at-rest preset: it puts THE PARSE panel in the
+ * wide left column (study the post-run record) with the live log + finance beside
+ * it, so the optimiser can open the legible record and grind the gap (§4.12 "slow-
+ * loop friendly — reviewable at rest, not only glanceable in the heat of play").
  */
 import type { ZoneGrid } from "./zonegrid";
 
@@ -95,6 +101,22 @@ export const PRESET_SPECS: PresetSpec[] = [
       { weight: 0.42, rows: [{ weight: 1, host: "orrery" }] },
       { weight: 0.3, rows: [{ weight: 1, host: "telemetry" }] },
       { weight: 0.28, rows: [{ weight: 1, host: "system-log" }] },
+    ],
+  },
+  {
+    // PARSE (key 6) — the reviewable-at-rest legible record (§4.12 / §5 view #9).
+    // THE PARSE takes the wide left column to be studied; the live log + finance sit
+    // beside it so the same screen carries both faces of the record (live + at-rest).
+    name: "PARSE",
+    columns: [
+      { weight: 0.6, rows: [{ weight: 1, host: "parse" }] },
+      {
+        weight: 0.4,
+        rows: [
+          { weight: 1.4, host: "system-log" },
+          { weight: 1.0, host: "finance" },
+        ],
+      },
     ],
   },
 ];

@@ -374,6 +374,42 @@ body {
 .telem .row .v.amber { color: var(--amber); }
 .telem .row .v.green { color: var(--green); }
 .telem .row .v.red { color: var(--red); }
+/* freshness-warmth ramp on values — the SAME ramp as the log + orrery (§8) */
+.telem .row .v.good  { color: var(--green); }
+.telem .row .v.watch { color: var(--cyan); }
+.telem .row .v.warn  { color: var(--amber); }
+.telem .row .v.dead  { color: var(--grey); }
+
+/* ---- THE PARSE (GDD §5 view #9, the §4.12 reviewable-at-rest record) -------
+   Reuses the .telem 1-bit chrome housing; only the data carries the warmth ramp. */
+.parse-note {
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  line-height: 1.35;
+  margin-top: 3px;
+}
+.parse-feed {
+  border-top: 1px dashed var(--line-dim);
+  padding: 3px 0 2px;
+}
+.parse-feed:first-of-type { border-top: 0; }
+.parse-feed-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.parse-feed-head .ent { color: var(--violet); flex: 0 0 auto; }
+.parse-feed-head .val { flex: 0 0 auto; }
+.parse-feed-head .val.good  { color: var(--green); }
+.parse-feed-head .val.watch { color: var(--cyan); }
+.parse-feed-head .val.warn  { color: var(--amber); }
+.parse-feed-head .val.dead  { color: var(--grey); }
+.parse-feed-head .msg { color: var(--fg-dim); margin-left: auto; text-align: right; }
+.parse-feed-note { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+.parse-feed-note.good  { color: var(--green); }
+.parse-feed-note.watch { color: var(--cyan); }
+.parse-feed-note.warn  { color: var(--amber); }
+.parse-feed-note.dead  { color: var(--grey); }
 /* dithered segmented gauge */
 .gauge { display: flex; gap: 2px; height: 8px; margin-top: 3px; }
 .gauge .seg { flex: 1 1 auto; background: var(--grey); }
