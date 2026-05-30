@@ -19,6 +19,7 @@
 
 import type { Ephemeris } from "../ephemeris";
 import type { SatOrbit } from "../m2/roster";
+import type { SimRng } from "../rng";
 import { EARTH_MU } from "../m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "../m2/orbit";
 import type { AntennaSpec, NetSat } from "./sat";
@@ -156,7 +157,7 @@ export const NET_PRESETS: NetPreset[] = [GEO_PARK, LEO_SWEEP, MARS_RELAY];
  * (The naive `m0 = subLonRad` would park at `subLonRad − ω·epoch` — the MED bug.)
  */
 export function resolveOrbit(
-  p: { semiMajorM: number; incRad: number; subLonRad: number },
+  p: { semiMajorM: number; incRad: number; subLonRad: number; raanRad?: number },
   t: number,
 ): SatOrbit {
   return {
@@ -164,7 +165,11 @@ export function resolveOrbit(
     aM: p.semiMajorM,
     e: 0,
     incRad: p.incRad,
-    raanRad: 0,
+    // RAAN is the planner's fourth parameter (§3.1) — the ceiling the player drags to slide the
+    // ground-track east/west around the pole. DEFAULTS to 0 so a launch that never touches RAAN
+    // resolves byte-identically to the pre-RAAN orbit (the net golden is unaffected; only a
+    // dragged-RAAN launch ever sets a non-zero value).
+    raanRad: p.raanRad ?? 0,
     argpRad: 0,
     m0Rad: p.subLonRad + A1_EARTH_OMEGA_RAD_PER_S * t,
     epochS: t,
@@ -177,6 +182,37 @@ export function resolveOrbit(
 export function launchCost(p: { semiMajorM: number; costBaseEur: number }): number {
   const altM = Math.max(0, p.semiMajorM - A1_BODY_RADIUS_M);
   return p.costBaseEur + altM * 1e-3;
+}
+
+/**
+ * THE FLAT PER-LAUNCH FAILURE CHANCE (design §3.5 — the launch-failure minimum). A low %, drawn
+ * from the session's SEEDED splitmix64 RNG exactly like the M2 build session's launch roll (NO new
+ * seed, NO new action): each launched member draws ONE double and FAILS the launch if the draw is
+ * below this chance — a failed launch loses that sat (you ate the cost) but never the wallet you
+ * already paid. TUNABLE: this is the spec floor (~5%), pinned here so the golden is deterministic.
+ * The value is chosen so the scripted canonical-run launches all clear the roll (verified in the
+ * re-pinned net-replay golden) while a player's ad-hoc launch can still deterministically fail. */
+export const NET_LAUNCH_FAILURE_CHANCE = 0.05;
+
+/**
+ * Roll a net launch's success against {@link NET_LAUNCH_FAILURE_CHANCE}, drawing ONE double from
+ * the SEEDED splitmix64 PRNG (advances `rng` by one u64) — the M2 `rollLaunch` pattern. Deterministic:
+ * same rng state ⇒ same roll ⇒ same outcome on replay. `ok = roll >= NET_LAUNCH_FAILURE_CHANCE`.
+ */
+export function rollNetLaunch(rng: SimRng): { ok: boolean; roll: number } {
+  const roll = rng.nextDouble();
+  return { ok: roll >= NET_LAUNCH_FAILURE_CHANCE, roll };
+}
+
+/**
+ * The launch COST BASE (€) for a recorded launch, resolved from its `presetId` (the wire carries
+ * the preset id, not the cost). A known preset uses its own `costBaseEur`; an unknown id (a hand-
+ * dragged CUSTOM orbit, or a test corridor preset) falls back to {@link NET_DEFAULT_LAUNCH_COST_BASE}.
+ * Pure + deterministic so the applier charges the SAME cost the planner previewed. */
+export const NET_DEFAULT_LAUNCH_COST_BASE = GEO_PARK.costBaseEur;
+export function launchCostBaseForPreset(presetId?: string): number {
+  const p = NET_PRESETS.find((x) => x.id === presetId);
+  return p ? p.costBaseEur : NET_DEFAULT_LAUNCH_COST_BASE;
 }
 
 // ── the launch planner: drafts, presets, and the TRUTHFUL consequence preview ────
@@ -192,6 +228,10 @@ export interface LaunchDraft {
   semiMajorM: number;
   incRad: number;
   subLonRad: number;
+  /** RAAN (radians) — the planner's fourth draggable parameter (§3.1). OPTIONAL: a preset that
+   * never sets it (and a launch that never drags it) leaves it undefined ⇒ resolveOrbit uses 0,
+   * so the orbit is byte-identical to the pre-RAAN draft (golden-safe). */
+  raanRad?: number;
   loadout: AntennaSpec[];
   count: number;
 }
@@ -291,7 +331,10 @@ export const NET_GROUND_TRACK_SAMPLES = 64;
 export function draftToSat(draft: LaunchDraft, t: number, id = "PREVIEW-SAT"): NetSat {
   return {
     id,
-    orbit: resolveOrbit({ semiMajorM: draft.semiMajorM, incRad: draft.incRad, subLonRad: draft.subLonRad }, t),
+    orbit: resolveOrbit(
+      { semiMajorM: draft.semiMajorM, incRad: draft.incRad, subLonRad: draft.subLonRad, raanRad: draft.raanRad },
+      t,
+    ),
     bus: "smallsat",
     loadout: draft.loadout.map((a) => ({ ...a })),
   };

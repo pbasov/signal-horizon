@@ -261,6 +261,7 @@ export function netLaunch(
     semiMajorM: number;
     incRad: number;
     subLonRad: number;
+    raanRad?: number;
     count?: number;
     phaseSpreadRad?: number;
   },
@@ -273,6 +274,12 @@ export function netLaunch(
     count: Math.max(1, Math.trunc(params.count ?? 1)),
   };
   if (params.presetId !== undefined) payload.presetId = params.presetId;
+  // RAAN is the planner's fourth draggable parameter (§3.1). Only emit it when the player dragged
+  // it off 0 — an undragged launch keeps its exact pre-RAAN wire shape, so the net golden (which
+  // never drags RAAN) is byte-identical; the applier defaults a missing key to 0.
+  if (params.raanRad !== undefined && params.raanRad !== 0) {
+    payload.raanRad = params.raanRad;
+  }
   // Only emit a non-zero spread — an Act-1 launch (spread 0) keeps its exact pre-Act-2 wire shape.
   if (params.phaseSpreadRad !== undefined && params.phaseSpreadRad !== 0) {
     payload.phaseSpreadRad = params.phaseSpreadRad;

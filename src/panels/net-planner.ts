@@ -16,6 +16,7 @@
  *   - the ACCEPT button:        [data-net="accept"]
  *   - the CONSTELLATION button: [data-net="constellation"]  (Act-2 phasing assist + batch launch)
  *   - a preset button:          [data-net="preset"][data-preset-id="GEO_PARK"|"LEO_SWEEP"]
+ *   - a DRAFT slider (§3.1):    [data-net="draft"][data-draft="altitude"|"inclination"|"phase"|"raan"]
  * The selected preset button additionally carries the `.active` class.
  */
 import type { PanelHandle } from "../wm/shell";
@@ -27,6 +28,26 @@ export interface NetPresetChoice {
   label: string;
   selected: boolean;
 }
+
+/** §3.1 — one DRAGGABLE planner parameter projected for the slider: its current value as a
+ * normalized 0..1 position within the draggable bounds + a human-readable label (e.g. "550 km",
+ * "53°"). The panel paints a range slider at `pos` and shows `label`; dragging fires onEditDraft. */
+export interface NetDraftParam {
+  pos: number;
+  label: string;
+}
+
+/** §3.1 — the four DRAGGABLE planner parameters (the ceiling): altitude + inclination are the first
+ * two that matter (§3.1 "expose these first"), phase + RAAN the fine controls. Each is a slider. */
+export interface NetDraftReadout {
+  altitude: NetDraftParam;
+  inclination: NetDraftParam;
+  phase: NetDraftParam;
+  raan: NetDraftParam;
+}
+
+/** The four draft slider fields, in the order the panel lays them out (altitude first — §3.1). */
+export type NetDraftField = "semiMajorM" | "incRad" | "subLonRad" | "raanRad";
 
 /** The Act-1 contract readout (the one offered REGION-0 demand). */
 export interface NetContractReadout {
@@ -77,9 +98,11 @@ export interface NetPlannerRenderState {
   balanceEur: number;
   /** The offered Act-1 contract (null before the scenario emits it). */
   contract: NetContractReadout | null;
-  /** The preset buttons + which is selected. */
+  /** The preset buttons + which is selected (none lights once the player hand-drags off a preset). */
   presets: NetPresetChoice[];
-  /** The consequence preview of the selected preset. */
+  /** §3.1 — the four DRAGGABLE parameters (the ceiling): altitude / inclination / phase / RAAN. */
+  draft: NetDraftReadout;
+  /** The consequence preview of the live editable draft (re-run every frame as the player drags). */
   preview: NetPreviewReadout;
   /** Whether a sat has already been launched (LAUNCH stays enabled for re-launch, but the
    * face reads differently once the constellation exists). */
@@ -94,6 +117,9 @@ export interface NetPlannerRenderState {
 /** The button callbacks main.ts wires (the launch/accept appliers + preset cursor). */
 export interface NetPlannerActions {
   onSelectPreset(presetId: string): void;
+  /** §3.1 — the player DRAGGED a parameter slider to a normalized 0..1 position; main.ts maps it
+   * back to SI/radians, edits the draft, and re-runs previewLaunch (the live consequence). */
+  onEditDraft(field: NetDraftField, pos: number): void;
   onLaunch(): void;
   onAccept(): void;
   /** Act-2 — fire ONE batch launch of the suggested phased constellation (the §3.4 batch). */
@@ -112,6 +138,10 @@ export class NetPlanner implements PanelHandle {
   // --- PRESET buttons (built once) ---
   private presetHost: HTMLElement;
   private presetButtons = new Map<string, HTMLButtonElement>();
+
+  // --- §3.1 DRAFT sliders (the ceiling: altitude / inclination / phase / RAAN), built once ---
+  private draftSliders = new Map<NetDraftField, HTMLInputElement>();
+  private draftValues = new Map<NetDraftField, HTMLElement>();
 
   // --- PREVIEW (consequence-before-commit) ---
   private vCovered: HTMLElement;
@@ -144,12 +174,23 @@ export class NetPlanner implements PanelHandle {
     this.content.append(net);
 
     // GROUP: PRESET — the floor (GEO PARK default that already works) + LEO SWEEP. Buttons.
-    const presetGroup = group("PRESET");
+    const presetGroup = group("PRESET · FLOOR");
     this.presetHost = el("div", "net-presets");
     presetGroup.append(this.presetHost);
     this.content.append(presetGroup);
 
-    // GROUP: PREVIEW — the truthful consequence of the SELECTED preset before commit.
+    // GROUP: ORBIT — the CEILING (§3.1): the four DRAGGABLE parameters. Altitude + inclination are
+    // the first two that matter (§3.1: expose these first — the GEO/LEO axis + which latitudes you
+    // cover); phase + RAAN are the fine controls. Each is a range slider that fires onEditDraft as
+    // the player drags, re-running previewLaunch so the on-globe consequence updates live.
+    const orbitGroup = group("ORBIT · DRAG ME");
+    this.buildSlider(orbitGroup, "semiMajorM", "altitude", "ALTITUDE");
+    this.buildSlider(orbitGroup, "incRad", "inclination", "INCLINATION");
+    this.buildSlider(orbitGroup, "subLonRad", "phase", "PHASE");
+    this.buildSlider(orbitGroup, "raanRad", "raan", "RAAN");
+    this.content.append(orbitGroup);
+
+    // GROUP: PREVIEW — the truthful consequence of the LIVE EDITABLE DRAFT before commit.
     const preview = group("PREVIEW · BEFORE COMMIT");
     this.vCovered = valueOf(row(preview, "FOOTPRINT", "green"));
     this.vPeriod = valueOf(row(preview, "PERIOD"));
@@ -186,6 +227,37 @@ export class NetPlanner implements PanelHandle {
     this.content.append(commit);
   }
 
+  /**
+   * §3.1 — build ONE draggable parameter slider (a labelled row: NAME · value + a 0..1000 range
+   * input carrying the stable `[data-net="draft"][data-draft="<key>"]` selector). The slider fires
+   * onEditDraft with the normalized 0..1 position as the player drags (`input` event), so each drag
+   * re-runs previewLaunch and the on-globe consequence moves live. The value cell shows the human
+   * readout (km / degrees) painted from render(). Built once; the value updates per frame.
+   */
+  private buildSlider(parent: HTMLElement, field: NetDraftField, key: string, label: string): void {
+    const r = el("div", "net-slider");
+    const head = el("div", "row");
+    const lab = el("span", "label");
+    lab.textContent = label;
+    const v = el("span", "v cyan");
+    head.append(lab, v);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1000";
+    input.step = "1";
+    input.className = "net-range";
+    input.dataset.net = "draft";
+    input.dataset.draft = key;
+    input.addEventListener("input", () => {
+      this.actions.onEditDraft(field, Number(input.value) / 1000);
+    });
+    r.append(head, input);
+    parent.append(r);
+    this.draftSliders.set(field, input);
+    this.draftValues.set(field, v);
+  }
+
   render(state: NetPlannerRenderState): void {
     // WALLET — the headline € that visibly ticks up while the contract is served.
     setText(this.vBalance, fmtEuro(state.balanceEur));
@@ -216,7 +288,15 @@ export class NetPlanner implements PanelHandle {
     // PRESET buttons — built once, kept in id order; light the selected one.
     this.syncPresets(state.presets);
 
-    // PREVIEW — the truthful consequence of the selected preset draft.
+    // §3.1 — paint the four DRAFT sliders from the live draft (position + human readout). Skip the
+    // slider thumb while the player is actively dragging it (document.activeElement) so the render
+    // never fights the drag; the value cell always reflects the live draft.
+    this.syncSlider("semiMajorM", state.draft.altitude);
+    this.syncSlider("incRad", state.draft.inclination);
+    this.syncSlider("subLonRad", state.draft.phase);
+    this.syncSlider("raanRad", state.draft.raan);
+
+    // PREVIEW — the truthful consequence of the live editable draft.
     const p = state.preview;
     setText(this.vCovered, `${fmtPct(p.coveredFraction)} ${p.served ? "· covers" : "· gap"}`);
     setValueClass(this.vCovered, p.served && p.coveredFraction >= 0.999 ? "green" : "amber");
@@ -259,7 +339,10 @@ export class NetPlanner implements PanelHandle {
       setText(this.hint, `coverage MOVES — press PLACE SET to launch ${ph.count} phased sats, then add one to hold it`);
       this.hint.className = "net-hint";
     } else if (!state.launched) {
-      setText(this.hint, "press LAUNCH on the GEO PARK default — it parks over REGION-0");
+      setText(
+        this.hint,
+        "DRAG the ORBIT sliders — watch the footprint + ground-track move on the globe until the RED gap goes GREEN, then LAUNCH",
+      );
       this.hint.className = "net-hint";
     } else if (c && c.state === "offered") {
       setText(this.hint, "sat is up — press ACCEPT to start earning from REGION-0");
@@ -271,6 +354,20 @@ export class NetPlanner implements PanelHandle {
       setText(this.hint, "");
       this.hint.className = "net-hint";
     }
+  }
+
+  /** §3.1 — paint ONE draft slider from its {@link NetDraftParam}: set the range thumb to the
+   * normalized position (unless the player is actively dragging THIS slider, so render never fights
+   * the drag) + the value cell to the human readout. The slider can also be driven from arrow-key
+   * nudges in main.ts (the readout follows either input source). */
+  private syncSlider(field: NetDraftField, p: NetDraftParam): void {
+    const input = this.draftSliders.get(field);
+    if (input && document.activeElement !== input) {
+      const next = String(Math.round(p.pos * 1000));
+      if (input.value !== next) input.value = next;
+    }
+    const v = this.draftValues.get(field);
+    if (v) setText(v, p.label);
   }
 
   /** Build the preset buttons once (in render-order), then light the selected one. */

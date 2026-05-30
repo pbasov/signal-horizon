@@ -697,6 +697,48 @@ body {
 .net-hint.warn { color: var(--amber); }
 .net-hint.good { color: var(--green); }
 
+/* ---- net/ §3.1 ORBIT draft sliders (the ceiling — drag altitude/inclination/phase/RAAN) ------ */
+/* Each row: a NAME · value head over a full-width range input. The slider is the make-or-break
+   "drag the orbit" control; its value cell shows the live human readout (km / degrees). 1-bit
+   chrome, hard edges, cyan thumb (the SIGNAL the player is dragging the consequence). */
+.net-slider { margin: 2px 0 5px; }
+.net-slider .row { margin-bottom: 1px; }
+.net-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+.net-range::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--line-dim);
+  border: 1px solid var(--line-dim);
+}
+.net-range::-moz-range-track {
+  height: 3px;
+  background: var(--line-dim);
+  border: 1px solid var(--line-dim);
+}
+.net-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 9px;
+  height: 13px;
+  margin-top: -6px;
+  background: var(--cyan);
+  border: 1px solid var(--cyan);
+}
+.net-range::-moz-range-thumb {
+  width: 9px;
+  height: 13px;
+  background: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 0;
+}
+
 /* ---- net/ Act-2 AVAILABILITY sawtooth meter (the "motion is the antagonist" cue) -------- */
 /* A small block pinned over the orrery, lower-left, that SAWTOOTHS for a lone LEO / N<=3 and
    FLATTENS at the SLA bar for the N=4 constellation. 1-bit chrome, redundant tone+shape (the

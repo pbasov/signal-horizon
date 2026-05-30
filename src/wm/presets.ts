@@ -84,3 +84,53 @@ export const PRESET_SPECS: PresetSpec[] = [
     ],
   },
 ];
+
+/**
+ * net/ Act-1 — THE NET-MODE PRESET SET (the connectivity game's own layouts; design §3/§9). Net
+ * mode is a DIFFERENT game from the M1-cache / M2 / M3 economy, so it mounts ONLY net-relevant
+ * panels: the NET·LAUNCH planner (the verb), the FINANCE readout (the contract/wallet face), and
+ * SYSTEM.LOG (the truthful event stream + the Act-2/3/4 beat text). The MARS-CACHE TELEMETRY feeds,
+ * the M2 CONTRACTS board, and the FLEET tile DO NOT mount here — those belong to ?mode=cache. Keys
+ * 1–3 swap these three layouts exactly like the cache set; the toy globe is the hero throughout.
+ */
+export const NET_PRESET_SPECS: PresetSpec[] = [
+  {
+    // PLAY (key 1) — the net working screen + the default boot layout. The toy globe is the HERO
+    // (large + central — the make-or-break drag→consequence read), with the LAUNCH planner over
+    // SYSTEM.LOG on the right and the FINANCE/wallet readout beneath. ONLY net-relevant panels.
+    name: "PLAY",
+    columns: [
+      { weight: 0.66, rows: [{ weight: 1, host: "orrery" }] },
+      {
+        weight: 0.34,
+        rows: [
+          { weight: 1.7, host: "net-planner" },
+          { weight: 1.0, host: "system-log" },
+          { weight: 0.7, host: "finance" },
+        ],
+      },
+    ],
+  },
+  {
+    // MAP (key 2) — the MONUMENT, near-full-bleed: the toy globe alone so the footprint /
+    // ground-track / coverage-gap fill the frame as the player drags. Summon a side panel via
+    // the (net-scoped) rail to grow a second column.
+    name: "MAP",
+    columns: [{ weight: 1, rows: [{ weight: 1, host: "orrery" }] }],
+  },
+  {
+    // REVIEW (key 3) — at-rest analysis: THE PARSE wide on the left, with SYSTEM.LOG + FINANCE
+    // beside it (the same at-rest face as the cache set, minus the cache-only panels).
+    name: "REVIEW",
+    columns: [
+      { weight: 0.6, rows: [{ weight: 1, host: "parse" }] },
+      {
+        weight: 0.4,
+        rows: [
+          { weight: 1.4, host: "system-log" },
+          { weight: 1.0, host: "finance" },
+        ],
+      },
+    ],
+  },
+];

@@ -15,9 +15,21 @@ import {
 } from "./action";
 import { loadEphemeris } from "./system-data";
 import { C_LIGHT, AU_M } from "./ephemeris";
-import { NetSession, NET_RNG_SEED } from "./net/session";
+import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE } from "./net/session";
+import { SimRng } from "./rng";
 import { applyNetAction } from "./net/apply-action";
-import { GEO_PARK, LEO_SWEEP, MARS_RELAY, resolveOrbit, A1_LEO_PERIOD_S, A1_GEO_PERIOD_S } from "./net/world";
+import {
+  GEO_PARK,
+  LEO_SWEEP,
+  MARS_RELAY,
+  resolveOrbit,
+  A1_LEO_PERIOD_S,
+  A1_GEO_PERIOD_S,
+  launchCost,
+  launchCostBaseForPreset,
+  rollNetLaunch,
+  NET_LAUNCH_FAILURE_CHANCE,
+} from "./net/world";
 import { SLA_AXIS_ORDINAL, type SlaAxis } from "./net/contract";
 import {
   ACT1_CONTRACT_ID,
@@ -491,6 +503,7 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //   SD-40-C1b (act3a escalation in the fold)  314363620940498869n
 //   SD-40-C2  (act3b faults in the fold)      11632456535472871375n
 //   SD-40-D1  (act4 Mars teaser in the fold)  2578549558858135194n
+//   P0b       (launch CHARGE + failure roll)  10597504085086350891n
 // What moved it in SD-40-D1 (the MARS-TEASER re-pin, the SD-40 chained-re-pin pattern): the act4
 // beat (emitted INSIDE step when the act3b gate fires) now OFFERS the ONE Mars contract (MARS-1,
 // bodyId "mars", connectivity-only), and the golden log gained the ACT-4 player inputs — LAUNCH the
@@ -506,8 +519,23 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 // in the roster). The cursor STOPS on act4 (its gate is false forever — a read, not a gate; no win
 // screen). The two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-
 // byte UNTOUCHED (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
+//
+// RE-PINNED in P0b (the M1-remediation launch-economy increment — §3.5 "charge for launches"):
+// NET_REPLAY_GOLDEN 2578549558858135194n → 10597504085086350891n. Two things moved the fold:
+//   (1) session.launchSat now DEBITS the launch cost from the wallet (charged win OR lose, the m2
+//       convention) — so `balance` (folded first) drops by the scripted launches' capex (≈€11.6k);
+//       the opening balance was raised 5000 → 20000 (headroom for the §3.5 charges), which also
+//       moves the folded balance. (2) Each launched member now draws ONE double off the SEEDED
+//       SimRng for the FLAT per-launch failure roll (NET_LAUNCH_FAILURE_CHANCE = 0.05, the M2
+//       launch-roll pattern, NO new seed / NO new action) — advancing the rng state (folded) and
+//       SHIFTING the downstream Act-3b fault stream's draws. The canonical log's launches were
+//       VERIFIED to all CLEAR the 5% roll at this seed (the GEO, the N=4 LEO batch, the two act3a
+//       corridor LEOs, and the Mars relay all reach orbit), so the acts still gate deterministically
+//       (act1..act3b fire; the cursor reaches + STOPS on act4) and every behavioural invariant below
+//       holds. The two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n)
+//       are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 2578549558858135194n;
+const NET_REPLAY_GOLDEN = 10597504085086350891n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -1161,5 +1189,109 @@ describe("SD-40 D1 — act4 Mars teaser: light-delay (deterministic minutes), fr
     // Running well past the Mars actions does NOT advance the cursor (no gate fires past act4).
     const farther = replayTo(act4Log(), MAX_TICK_ACT4);
     expect(farther.session.cursor).toBe(4);
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// P0b — CHARGE FOR LAUNCHES (design §3.5) + the FLAT per-launch FAILURE RISK roll. The planner
+// already SHOWED the launch cost; P0b actually DEBITS it (charged win OR lose, the m2 convention),
+// and every launched member draws ONE double off the SEEDED SimRng for a low (~5%) failure roll
+// (the M2 launch-roll pattern — NO new seed, NO new action). A failed launch loses the sat (you ate
+// the cost) but the canonical golden log's launches were arranged to all CLEAR the roll at the seed,
+// so the acts still gate. These pins guard the economy + the deterministic, replay-safe failure.
+// ---------------------------------------------------------------------------
+describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure risk roll (deterministic, replay-safe)", () => {
+  const dt = GOLDEN_DT;
+
+  it("a successful launch DEBITS the wallet by exactly the previewed cost (the planner cost is now CHARGED, not just shown)", () => {
+    // A fresh session, no contracts: launch the parked GEO and assert the balance dropped by EXACTLY
+    // the cost the planner previews (launchCost over the resolved base + altitude term). The first
+    // roll at NET_RNG_SEED clears the 5% chance (verified), so the GEO reaches orbit.
+    const eph = buildEph();
+    const s = new NetSession();
+    const before = s.balance;
+    expect(before).toBe(NET_OPENING_BALANCE);
+    const action = netLaunch(
+      { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
+      0,
+    );
+    const res = applyNetAction(eph, s, action, dt)!;
+    expect(res.kind).toBe("sats_launched");
+    // The charged cost equals the planner's previewed cost: launchCost(base-resolved-from-preset).
+    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
+    expect(res.costEur).toBeCloseTo(expectedCost, 9);
+    expect(before - s.balance).toBeCloseTo(expectedCost, 9); // the WALLET actually dropped by the cost.
+    expect(s.sats.length).toBe(1); // the sat reached orbit.
+  });
+
+  it("a BATCH launch debits count× the per-member cost, charged win or lose (the §3.5 'you pay the provider')", () => {
+    const eph = buildEph();
+    const s = new NetSession();
+    const before = s.balance;
+    const count = ACT2_ZERO_GAP_N;
+    const action = netLaunch(
+      {
+        presetId: LEO_SWEEP.id,
+        semiMajorM: LEO_SWEEP.semiMajorM,
+        incRad: LEO_SWEEP.incRad,
+        subLonRad: LEO_SWEEP.subLonRad,
+        count,
+        phaseSpreadRad: TAU / count,
+      },
+      0,
+    );
+    const res = applyNetAction(eph, s, action, dt)!;
+    const perMember = launchCost({ semiMajorM: LEO_SWEEP.semiMajorM, costBaseEur: launchCostBaseForPreset(LEO_SWEEP.id) });
+    // EVERY member is charged (win or lose), so the debit is count× the per-member cost regardless of
+    // how many survived the roll; here the seed clears all four so the roster grows by count too.
+    expect(res.costEur).toBeCloseTo(perMember * count, 9);
+    expect(before - s.balance).toBeCloseTo(perMember * count, 9);
+    expect(s.sats.length).toBe(count);
+  });
+
+  it("a launch CAN FAIL deterministically off the seed: a session whose next roll is below the failure chance loses the sat (but is still charged), and the FAILURE is reproducible", () => {
+    // Find a seed whose FIRST failure roll lands BELOW the 5% chance (a failed launch) — deterministic
+    // off the splitmix64 stream, so the same seed always fails identically (replay-safe).
+    let failSeed: bigint | null = null;
+    for (let k = 1n; k < 200n; k++) {
+      if (!rollNetLaunch(new SimRng(k)).ok) { failSeed = k; break; }
+    }
+    expect(failSeed).not.toBeNull();
+    // Confirm the roll is genuinely below the chance (a real failure, not a fluke of the search).
+    expect(rollNetLaunch(new SimRng(failSeed!)).roll).toBeLessThan(NET_LAUNCH_FAILURE_CHANCE);
+
+    // Drive a real launch on a session seeded so the FIRST launch fails: the wallet is still charged
+    // (you pay the provider win or lose), but NO sat reaches orbit and the monotonic id is NOT consumed.
+    const eph = buildEph();
+    const s = new NetSession(NET_OPENING_BALANCE, failSeed!);
+    const before = s.balance;
+    const action = netLaunch(
+      { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
+      0,
+    );
+    const res = applyNetAction(eph, s, action, dt)!;
+    expect(res.kind).toBe("launch_failed"); // the whole launch failed (the only member lost the roll).
+    expect(res.satIds).toEqual([]); // nothing reached orbit.
+    expect(res.failedCount).toBe(1);
+    expect(s.sats.length).toBe(0); // the sat was LOST.
+    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
+    expect(before - s.balance).toBeCloseTo(expectedCost, 9); // charged anyway (the §3.5 minimum).
+    // The id was NOT consumed (a failed launch leaves the monotonic sequence stable): the NEXT
+    // (successful) launch takes NET-SAT-0, proving the failure did not burn an id.
+    const s2 = new NetSession(NET_OPENING_BALANCE, failSeed!);
+    applyNetAction(eph, s2, action, dt); // fails, consumes one roll, no id.
+    expect(s2.nextSatId()).toBe("NET-SAT-0");
+  });
+
+  it("EVERY canonical-log launch CLEARS the 5% roll at NET_RNG_SEED (so the scripted Act-1→Act-4 arc still gates deterministically)", () => {
+    // Replay the full canonical log: if any scripted launch had failed the roll, the roster would be
+    // short (a missing GEO/LEO/relay) and the gates would not all fire. Assert the full roster is
+    // intact (1 GEO + N=4 LEO + 2 act3a corridor LEOs + 1 Mars relay = 8 sats) and the cursor reached
+    // act4 — i.e. NO scripted launch was lost to the risk roll.
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    expect(r.session.sats.length).toBe(1 + ACT2_ZERO_GAP_N + 2 + 1);
+    expect(r.session.cursor).toBe(4); // all of act1..act3b gated; the cursor reached + stopped on act4.
+    // The MARS RELAY specifically reached orbit (its presence bridges the Mars leg — the act4 win).
+    expect(r.session.sats.some((sat) => sat.id.startsWith("MARS-RELAY"))).toBe(true);
   }, 60000);
 });

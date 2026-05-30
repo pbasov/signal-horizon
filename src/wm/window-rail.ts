@@ -45,6 +45,21 @@ export const RAIL_PANELS: RailPanel[] = [
   { host: "fleet", label: "FLEET" },
 ];
 
+/**
+ * net/ Act-1 — THE NET-MODE RAIL SET (design §3/§9). Net mode is the connectivity game, NOT the
+ * cache/M2/M3 economy — so the summon rail offers ONLY net-relevant panels: the toy globe, the
+ * truthful SYSTEM.LOG, the FINANCE/wallet readout, the NET·LAUNCH planner (the verb), and THE
+ * PARSE (at-rest record). The MARS-CACHE TELEMETRY feeds, the M2 CONTRACTS board, and the FLEET
+ * tile are NOT summonable here — they belong to ?mode=cache (where {@link RAIL_PANELS} is used).
+ */
+export const NET_RAIL_PANELS: RailPanel[] = [
+  { host: "orrery", label: "ORRERY" },
+  { host: "net-planner", label: "LAUNCH" },
+  { host: "system-log", label: "SYSTEM.LOG" },
+  { host: "finance", label: "FINANCE" },
+  { host: "parse", label: "PARSE" },
+];
+
 export class WindowRail {
   readonly element: HTMLElement;
   private buttons = new Map<string, HTMLButtonElement>();

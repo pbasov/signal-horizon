@@ -32,17 +32,28 @@ import {
 import type { NetSession } from "./session";
 import type { NetSat } from "./sat";
 import { standardLoadout } from "./sat";
-import { resolveOrbit, MARS_RELAY } from "./world";
+import { resolveOrbit, MARS_RELAY, launchCost, launchCostBaseForPreset } from "./world";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 
 /** The outcome of applying a net action (for the live caller's feedback + log). */
 export interface NetActionResult {
-  /** What happened: a launch, a contract accept, a prefer change, a cache placement, or rejected. */
-  kind: "sats_launched" | "contract_accepted" | "prefer_set" | "cache_placed" | "rejected";
-  /** The new sat ids when a launch added some (batch ⇒ one per `count`). */
+  /** What happened: a launch (≥1 sat reached orbit), a launch that wholly FAILED (every member
+   * lost the failure roll — nothing reached orbit), a contract accept, a prefer change, a cache
+   * placement, or rejected. */
+  kind:
+    | "sats_launched"
+    | "launch_failed"
+    | "contract_accepted"
+    | "prefer_set"
+    | "cache_placed"
+    | "rejected";
+  /** The new sat ids when a launch added some (a batch ⇒ one per surviving `count`; empty on a
+   * wholly-failed launch). */
   satIds?: string[];
-  /** € charged by this action (0 for accept/prefer; the launch cost for a launch). */
+  /** € charged by this action — the launch cost (charged win OR lose, per §3.5), 0 for accept/prefer. */
   costEur: number;
+  /** How many launched members FAILED the §3.5 risk roll this launch (0 when all reached orbit). */
+  failedCount?: number;
   /** For an accept/prefer: the affected contract id (for the live caller's feedback). */
   contractId?: string;
 }
@@ -69,6 +80,9 @@ export function applyNetAction(
     const semiMajorM = num(action.payload.semiMajorM);
     const incRad = num(action.payload.incRad);
     const subLonRad = num(action.payload.subLonRad);
+    // RAAN — the planner's fourth parameter (§3.1). Absent (= 0) ⇒ resolveOrbit's default 0, so an
+    // undragged launch is byte-identical to the pre-RAAN orbit (golden-safe).
+    const raanRad = num(action.payload.raanRad);
     // count is the batch size (1 in Act 1); clamp to ≥1 so a missing/0 count still launches one.
     const count = Math.max(1, Math.trunc(num(action.payload.count) || 1));
     // The even in-plane mean-anomaly spread between adjacent batch members (Act 2 §3.4). Absent
@@ -79,24 +93,43 @@ export function applyNetAction(
     // recognises it). Earth launches keep the monotonic NET-SAT-N id (byte-identical, golden-safe).
     const isRelay = action.payload.presetId === MARS_RELAY.id;
     const t = action.atTick * dt;
+    // THE LAUNCH COST (design §3.5 — "charge for launches"). The wire carries the preset id, not the
+    // cost, so the per-member cost is the base resolved from the preset (a custom/hand-dragged orbit
+    // falls back to the default base) + the altitude term — the SAME cost the planner previewed. Each
+    // batch member is charged this (count×perMember total); the cost is debited win OR lose.
+    const presetId = typeof action.payload.presetId === "string" ? action.payload.presetId : undefined;
+    const costBaseEur = launchCostBaseForPreset(presetId);
+    const perMemberCost = launchCost({ semiMajorM, costBaseEur });
     const satIds: string[] = [];
+    let charged = 0;
+    let failedCount = 0;
     for (let i = 0; i < count; i++) {
-      const id = isRelay ? session.nextRelaySatId() : session.nextSatId();
       // Each member is the SAME plane (a/inc/subLon), phase-shifted by i·phaseSpreadRad in mean
       // anomaly. resolveOrbit sets m0 = subLon + ω·t; the phase offset adds onto that m0, so one
       // launch places `count` evenly-phased sats — a constellation that hands off (§3.4). With
       // phaseSpreadRad = 0 the offset is 0 ⇒ bit-identical to the pre-Act-2 single launch.
-      const orbit = resolveOrbit({ semiMajorM, incRad, subLonRad }, t);
+      const orbit = resolveOrbit({ semiMajorM, incRad, subLonRad, raanRad }, t);
       orbit.m0Rad += i * phaseSpreadRad;
+      // The id is consumed ONLY by a SUCCESSFUL launch (session.launchSat advances launchedCount on
+      // success), so a failed member leaves the monotonic id sequence stable for the next launch.
+      const id = isRelay ? session.nextRelaySatId() : session.nextSatId();
       const sat: NetSat = {
         id,
         orbit,
         bus: "smallsat",
         loadout: standardLoadout(NET_REF_LINK_DISTANCE_M),
       };
-      satIds.push(session.launchSat(sat));
+      // CHARGE + ROLL inside the session (the wallet debit + the seeded failure roll, §3.5). A failed
+      // member loses the sat (no roster add) but was still charged.
+      const res = session.launchSat(sat, perMemberCost);
+      charged += perMemberCost;
+      if (res.ok && res.satId !== null) satIds.push(res.satId);
+      else failedCount++;
     }
-    return { kind: "sats_launched", satIds, costEur: 0 };
+    // The launch wholly FAILED only if EVERY member lost the roll (nothing reached orbit); otherwise
+    // the survivors launched. Either way the wallet was charged for all members.
+    const kind = satIds.length > 0 ? "sats_launched" : "launch_failed";
+    return { kind, satIds, costEur: charged, failedCount };
   }
   if (action.kind === KIND_NET_ACCEPT) {
     const id = typeof action.payload.contractId === "string" ? action.payload.contractId : "";

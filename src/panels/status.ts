@@ -53,7 +53,13 @@ export class StatusStrip {
   /** The trailing alarm cell, present in the DOM only while occulted. */
   private alarm: HTMLElement | null = null;
 
-  constructor() {
+  /**
+   * @param netMode — net/ Act-1: when true the bottom key-hint legend shows the CONNECTIVITY
+   * game's keymap (planner-drag + launch/accept/cache verbs), and the PREFETCH-policy cell is
+   * dropped (no prefetch economy in the net game). When false it is the M1-cache keymap, exactly
+   * as before (fix #2 — the bottom HUD must match the mode, not show "P prefetch · A policy").
+   */
+  constructor(private netMode = false) {
     this.element = document.createElement("div");
     this.element.className = "statusstrip";
 
@@ -98,26 +104,48 @@ export class StatusStrip {
     keys.append(" presets ");
     appendKeys(keys, "0");
     keys.append(" reset ");
-    appendKeys(keys, "C", "O", "S", "T");
+    appendKeys(keys, "E", "C", "O", "S", "T");
     keys.append(" cam ");
     appendKeys(keys, "R");
     keys.append(" reset ");
-    appendKeys(keys, "F");
-    keys.append(" focus ");
     appendKeys(keys, "Space");
     keys.append(" pause ");
     appendKeys(keys, ",", ".");
     keys.append(" speed ");
-    appendKeys(keys, "P");
-    keys.append(" prefetch ");
-    appendKeys(keys, "A");
-    keys.append(" policy ");
-    appendKeys(keys, "[", "]");
-    keys.append(" floor ");
-    appendKeys(keys, "G");
-    keys.append(" parse");
+    if (netMode) {
+      // net/ Act-1 — the CONNECTIVITY-game verbs: drag the orbit (the planner ceiling), then
+      // launch / accept / phase a constellation / place the Act-4 cache breadcrumb.
+      appendKeys(keys, "↑", "↓");
+      keys.append(" alt ");
+      appendKeys(keys, "←", "→");
+      keys.append(" inc ");
+      appendKeys(keys, "[", "]");
+      keys.append(" phase ");
+      appendKeys(keys, "L");
+      keys.append(" launch ");
+      appendKeys(keys, "K");
+      keys.append(" accept ");
+      appendKeys(keys, "C");
+      keys.append(" constln ");
+      appendKeys(keys, "P");
+      keys.append(" cache");
+    } else {
+      // M1-cache verbs (unchanged).
+      appendKeys(keys, "F");
+      keys.append(" focus ");
+      appendKeys(keys, "P");
+      keys.append(" prefetch ");
+      appendKeys(keys, "A");
+      keys.append(" policy ");
+      appendKeys(keys, "[", "]");
+      keys.append(" floor ");
+      appendKeys(keys, "G");
+      keys.append(" parse");
+    }
 
-    this.element.append(
+    // net/ Act-1 — the PREFETCH-policy cell is a CACHE-game readout (no prefetch economy in the
+    // net game), so it mounts only in cache mode (fix #2 — the strip carries only mode-relevant cells).
+    const cells: HTMLElement[] = [
       this.tabsCell,
       this.tiled.cell,
       this.play,
@@ -125,10 +153,10 @@ export class StatusStrip {
       this.em.cell,
       this.focus.cell,
       this.cam.cell,
-      this.policy.cell,
-      spacer,
-      keys,
-    );
+    ];
+    if (!netMode) cells.push(this.policy.cell);
+    cells.push(spacer, keys);
+    this.element.append(...cells);
   }
 
   /**
@@ -186,9 +214,12 @@ export class StatusStrip {
     // PREFETCH policy (E8 — the tame-it lever). MANUAL is the hand-crank baseline
     // (neutral); AUTO @ floor% is the autopilot ON (cyan = under control); the +BLK
     // suffix marks blackout pre-staging armed, and the cell flashes cyan-bright the
-    // step a pre-stage actually FIRES (the relief you can see).
+    // step a pre-stage actually FIRES (the relief you can see). Skipped in net mode —
+    // the cell is not mounted there (no prefetch economy in the connectivity game).
     const d = state.demand;
-    if (d.policyMode === "manual") {
+    if (this.netMode) {
+      // no prefetch cell in net mode.
+    } else if (d.policyMode === "manual") {
       setText(this.policy.val, "MANUAL");
       this.policy.val.className = "val";
     } else {

@@ -234,6 +234,35 @@ export interface NetRenderState {
      * cue the readout can flash. Render-derived in main.ts; never folded. */
     breadcrumbPlaced: boolean;
   } | null;
+  /**
+   * §3 — THE LIVE PLANNER DRAFT consequence, drawn on the globe AS THE PLAYER DRAGS (the spec's
+   * make-or-break UX: "you are not setting inclination to 53°, you are dragging the orbit until its
+   * ground-track covers the region that's currently dark"). A render-only projection of the pure
+   * {@link import("../sim/net/world").previewLaunch} outputs — NO geometry is recomputed here. Null
+   * when the planner is not the active focus (or net mode is off). Updates every frame the draft
+   * changes, so the footprint disc + ground-track arc + coverage-gap overlay move live with the
+   * sliders/arrow-keys. The committed launch is unaffected (this is preview-only). */
+  draft: {
+    /** The draft footprint disc (the would-be sat's nadir + its coverage angular radius) — the
+     * cyan-dashed "here's where it points right now" preview, distinct from a committed footprint. */
+    footprint: { centerPosM: Vec3; radiusRad: number } | null;
+    /** The draft GROUND-TRACK arc: the body-fixed sub-points over one period (GEO parks ⇒ a point;
+     * LEO walks ⇒ an arc), each already lifted to an earth-relative surface world point so the
+     * orrery rebases them like any body. Empty until a draft exists. */
+    groundTrack: Vec3[];
+    /** THE CONTRACT COVERAGE-GAP OVERLAY (§3.1): the region disc with the still-dark fraction painted
+     * RED and the covered fraction painted GREEN, so the player drags until the red shrinks. Null
+     * until a region is live. `coveredFraction` ∈ [0,1] is previewLaunch's truthful per-contract
+     * coverage of THIS draft. */
+    gap: { centerPosM: Vec3; radiusRad: number; coveredFraction: number } | null;
+  } | null;
+  /**
+   * §3 / Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam, drawn when a
+   * LAUNCHED sat currently bridges the active region to the ground network. Three earth-relative
+   * world points (region surface → sat → ground surface); the orrery draws a bright beam through
+   * them so "the signal reaches there" is visible on the globe (currently not drawn). Null when no
+   * launched sat serves the region. A render-only read of the SAME bridge the router uses. */
+  servedLink: { regionPosM: Vec3; satPosM: Vec3; groundPosM: Vec3 } | null;
 }
 
 export interface OrreryCtx {
@@ -300,6 +329,19 @@ const ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
  * ONLY when {@link Orrery.netRenderMode} is on — the off-mode de-squash is unchanged. */
 const NET_ORBIT_DESQUASH_LIFT_M = 1.2e5;
 const NET_ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
+/** NET-MODE GLOBE FRAMING (fix #1 — the make-or-break "the on-globe consequence must READ").
+ * At the cache-mode EARTH framing the toy Earth is a thumbnail and the draft footprint /
+ * ground-track / coverage-gap discs cluster sub-pixel, so "drag the orbit and watch the
+ * footprint cover the dark region" does not visually land. In net mode we (a) ZOOM the camera —
+ * a closer dist + narrower fov pulls the toy globe + its de-squashed LEO/GEO rings LARGE and
+ * CENTRAL — and (b) MAGNIFY the toy-globe billboard + every overlay disc by the SAME factor so
+ * the region / footprint / gap / ground-track read at that framing. Both are RENDER-ONLY (no
+ * sim, no de-squash math, no golden); applied ONLY when {@link Orrery.netRenderMode} is on, so
+ * every cache-mode framing is byte-identical. `DIST_SCALE` < 1 dollies in; `FOV_SCALE` < 1
+ * narrows the lens; `PX_SCALE` enlarges the billboard glyphs to match the dolly-in. */
+const NET_CAMERA_DIST_SCALE = 1.6;
+const NET_CAMERA_FOV_SCALE = 0.7;
+const NET_GLOBE_PX_SCALE = 4.4;
 /** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
  * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
 const PICK_TOLERANCE_PX = 26;
@@ -307,6 +349,9 @@ const PICK_TOLERANCE_PX = 26;
  * is a small set (the measured zero-gap N=4, plus headroom for over-build); only the on-screen
  * discs are capped, the served verdict itself is unbounded. */
 const MAX_NET_FOOTPRINTS = 12;
+/** §3 — the DRAFT ground-track dashed-line vertex cap (the previewLaunch ground-track is sampled
+ * at NET_GROUND_TRACK_SAMPLES=64 over one period; the line draws a dash per adjacent pair). */
+const NET_DRAFT_TRACK_SAMPLES = 64;
 /** Launched-sat orbit rings: samples per ring (matches the dataset ring density). */
 const SAT_RING_SAMPLES = 96;
 /** Max launched-sat orbit rings drawn at once (a pool; the roster sat count is small). */
@@ -408,8 +453,26 @@ export class Orrery {
    * radii log-fold to sub-pixel and the make-or-break Act-1 viz collapses. SCOPED STRICTLY:
    * when OFF (the default), the M1-cache / M2 / M3 framings are byte-identical to before this
    * flag existed (the de-squash reads the real radius exactly as it always did). Set by the
-   * net-game wiring (A4 human pass); default OFF so every existing framing is unaffected. */
-  netRenderMode = false;
+   * net-game wiring (A4 human pass); default OFF so every existing framing is unaffected.
+   *
+   * fix #1 — turning it ON (after construction, by the net boot) ALSO re-applies the active
+   * preset through the net-globe FRAMING ({@link Orrery.netFrame}) so the toy globe snaps LARGE
+   * and central; turning it off restores the cache framing. The backing field + setter keep this
+   * a single source of truth (the per-frame body/disc magnification also reads the flag). */
+  private _netRenderMode = false;
+  get netRenderMode(): boolean {
+    return this._netRenderMode;
+  }
+  set netRenderMode(on: boolean) {
+    if (this._netRenderMode === on) return;
+    this._netRenderMode = on;
+    // fix #2 — HIDE the M1-cache MARS-CACHE readout overlay in net mode (the net game has its
+    // own net-avail / net-mars overlays). The block stays painted (cheap) but is display:none.
+    if (this.readoutBox) this.readoutBox.style.display = on ? "none" : "";
+    // Re-target the camera through the (possibly net) framing so the toy globe is large + central
+    // the instant net mode is entered (the flag is set after construction). Render-only.
+    this.setPreset(this.activePreset);
+  }
 
   private bodyMeshes = new Map<string, THREE.Mesh>();
   private haloMesh?: THREE.Mesh;
@@ -440,6 +503,10 @@ export class Orrery {
   private roConjVal!: HTMLElement;
   private roConjFill!: HTMLElement;
   private roBlackout!: HTMLElement;
+  /** The MARS-CACHE glanceable readout block (the freshness / SLOTS / PREFETCH / feeds / FETCH-ETA
+   * / CONJUNCTION overlay). It belongs to the M1-cache game — HIDDEN in net mode (fix #2), where
+   * the net-avail meter + net-mars readout carry the connectivity-game overlay instead. */
+  private readoutBox!: HTMLElement;
 
   /** The live near-body de-squash for the current focus + animated orbit band (fix #1).
    * Rebuilt each frame by {@link refreshOrbitScale}; null = de-squash off (identity). */
@@ -558,6 +625,24 @@ export class Orrery {
   private netMarsFresh?: HTMLElement;
   private netMarsDelay?: HTMLElement;
   private netMarsHint?: HTMLElement;
+
+  // --- §3 LIVE PLANNER DRAFT consequence on the globe (the make-or-break planner) -------------
+  /** The DRAFT footprint disc — a distinct WARM-cyan wash over the would-be sat's nadir, drawn as
+   * the player drags so they see where the orbit points right now (set apart from a committed
+   * cool-cyan footprint). Built once + hidden; updateNetDraft positions/sizes it from previewLaunch. */
+  private netDraftFootprint?: THREE.Mesh;
+  /** THE COVERAGE-GAP OVERLAY (§3.1): two stacked region discs — a RED "still dark" disc under a
+   * GREEN "covered" disc whose radius scales with previewLaunch's coveredFraction. The player drags
+   * the orbit until the red ring vanishes (the region goes fully green). Built once + hidden. */
+  private netGapDark?: THREE.Mesh;
+  private netGapCovered?: THREE.Mesh;
+  /** The DRAFT GROUND-TRACK arc: a dashed line through the body-fixed sub-points over one period
+   * (a GEO parks ⇒ a tight knot; a LEO walks ⇒ a long arc). Render-only; positions rewritten each
+   * frame from the draft slice. Built once with a fixed sample cap. */
+  private netGroundTrack?: THREE.LineSegments;
+  /** Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam (a bright green dashed
+   * segment set through the three world points), drawn when a launched sat bridges the region. */
+  private netServedLink?: THREE.LineSegments;
 
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
@@ -693,6 +778,31 @@ export class Orrery {
     this.netMarsCrawler.renderOrder = 13;
     this.scene.add(this.netMarsCrawler);
     this.buildNetMarsReadout();
+
+    // §3 — THE LIVE PLANNER DRAFT overlay (the make-or-break planner). All four parts are render-
+    // only billboards/lines on the toy globe, built once + hidden; updateNetDraft shows + positions
+    // + tints them from previewLaunch's truthful outputs only in net render mode (off-mode dark).
+    //  (a) the draft footprint disc (warm-cyan), (b) the coverage-gap overlay (a RED still-dark
+    //  region disc under a GREEN covered disc), (c) the draft ground-track arc, (d) the served beam.
+    this.netGapDark = this.buildHaloDisc([1.0, 0.32, 0.3]); // RED: the still-dark region slice.
+    this.netGapDark.visible = false;
+    this.netGapDark.renderOrder = 6; // under the green covered disc + the footprint.
+    this.scene.add(this.netGapDark);
+    this.netGapCovered = this.buildHaloDisc([0.45, 1.0, 0.62]); // GREEN: the covered slice.
+    this.netGapCovered.visible = false;
+    this.netGapCovered.renderOrder = 7;
+    this.scene.add(this.netGapCovered);
+    this.netDraftFootprint = this.buildHaloDisc([0.5, 0.95, 1.0]); // warm-cyan: the live draft footprint.
+    this.netDraftFootprint.visible = false;
+    this.netDraftFootprint.renderOrder = 9; // over the gap discs so the pointing reads.
+    this.scene.add(this.netDraftFootprint);
+    this.netGroundTrack = this.buildPolyline(NET_DRAFT_TRACK_SAMPLES, 0x7df2ff, 0.7); // warm-cyan dashed arc.
+    this.netGroundTrack.visible = false;
+    this.scene.add(this.netGroundTrack);
+    this.netServedLink = this.buildPolyline(2, 0x8dffc6, 0.85); // green served beam (region→sat→ground).
+    this.netServedLink.visible = false;
+    this.netServedLink.renderOrder = 14; // above the discs so the beam reads on the globe.
+    this.scene.add(this.netServedLink);
 
     this.attachInput();
   }
@@ -1046,9 +1156,11 @@ export class Orrery {
   /** Map a region/footprint angular radius (radians) to a billboard px size on the toy
    * globe. The Earth billboard spans the toy globe diameter; a disc of angular radius ψ
    * spans ≈ sin(ψ) of the globe radius, so its diameter px ≈ EARTH_PX·sin(ψ), floored so a
-   * small region still reads. Pure presentation. */
+   * small region still reads. fix #1 — scaled by {@link NET_GLOBE_PX_SCALE} to track the
+   * magnified toy globe, so the region / footprint / coverage-gap discs stay PROPORTIONAL to
+   * the large hero Earth and read clearly (not sub-pixel) as the player drags. Pure presentation. */
   private netDiscPx(radiusRad: number): number {
-    return Math.max(10, EARTH_BILLBOARD_PX * Math.sin(Math.max(0, radiusRad)));
+    return NET_GLOBE_PX_SCALE * Math.max(10, EARTH_BILLBOARD_PX * Math.sin(Math.max(0, radiusRad)));
   }
 
   /**
@@ -1221,6 +1333,112 @@ export class Orrery {
     return line;
   }
 
+  /**
+   * §3 — a generic dashed POLYLINE buffer ({@link maxPoints} along the path, drawn as a dash per
+   * adjacent pair): the draft ground-track arc + the served region→sat→ground beam both reuse this.
+   * The geometry holds `maxPoints` segments (2 verts each); the per-frame writer fills only the
+   * in-use prefix + collapses the unused tail to a degenerate point. Built once; no per-frame alloc.
+   */
+  private buildPolyline(maxPoints: number, color: number, opacity: number): THREE.LineSegments {
+    const positions = new Float32Array(maxPoints * 2 * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+    const line = new THREE.LineSegments(geo, mat);
+    line.frustumCulled = false;
+    return line;
+  }
+
+  /**
+   * §3 — THE LIVE PLANNER DRAFT consequence ON THE GLOBE (the spec's most important UX principle):
+   * as the player drags altitude / inclination / phase / RAAN, draw — TRUTHFULLY, from the pure
+   * {@link import("../sim/net/world").previewLaunch} outputs main.ts feeds in (NO geometry recomputed
+   * here) — (a) the draft FOOTPRINT disc over the would-be sat's nadir, (b) the draft GROUND-TRACK
+   * arc across the spinning surface, (c) THE CONTRACT COVERAGE-GAP OVERLAY (the region disc with the
+   * still-dark fraction RED + the covered fraction GREEN), and (d) the SERVED region→sat→ground LINK
+   * beam when a launched sat bridges the region ("the signal reaches there"). Hidden when net mode is
+   * off or there is no draft. Render-only — no sim feedback; no per-frame allocation.
+   */
+  private updateNetDraft(focusAbs: Vec3, worldPerPx: number): void {
+    const fp = this.netDraftFootprint;
+    const dark = this.netGapDark;
+    const cov = this.netGapCovered;
+    const track = this.netGroundTrack;
+    const beam = this.netServedLink;
+    if (!fp || !dark || !cov || !track || !beam) return;
+    const ns = this.netRenderMode ? this.netState : null;
+    const draft = ns?.draft ?? null;
+
+    // (a) THE DRAFT FOOTPRINT — a warm-cyan wash over the would-be sat's nadir, live as it drags.
+    if (draft?.footprint) {
+      this.renderInto(this._rp, draft.footprint.centerPosM, focusAbs);
+      fp.position.copy(this._rp);
+      this.sizeBillboard(fp, this.netDiscPx(draft.footprint.radiusRad), worldPerPx);
+      fp.visible = true;
+    } else {
+      fp.visible = false;
+    }
+
+    // (b) THE COVERAGE-GAP OVERLAY — the region disc painted RED (still dark) with a GREEN disc on
+    // top whose radius scales with previewLaunch's truthful coveredFraction: drag until green fills
+    // it. coveredFraction is a fraction of the disc AREA, so the green radius ≈ √frac of the full
+    // radius (so 25% covered reads as a half-radius green spot, the honest area mapping).
+    if (draft?.gap) {
+      this.renderInto(this._rp, draft.gap.centerPosM, focusAbs);
+      const fullPx = this.netDiscPx(draft.gap.radiusRad);
+      dark.position.copy(this._rp);
+      this.sizeBillboard(dark, fullPx, worldPerPx);
+      dark.visible = draft.gap.coveredFraction < 0.999; // hide the red entirely once fully covered.
+      cov.position.copy(this._rp);
+      const frac = Math.max(0, Math.min(1, draft.gap.coveredFraction));
+      this.sizeBillboard(cov, Math.max(2, fullPx * Math.sqrt(frac)), worldPerPx);
+      cov.visible = frac > 0.001;
+    } else {
+      dark.visible = false;
+      cov.visible = false;
+    }
+
+    // (c) THE DRAFT GROUND-TRACK ARC — dashed warm-cyan through the body-fixed sub-points over one
+    // period (a GEO parks ⇒ a knot; a LEO walks ⇒ a long arc), each rebased + folded like a body.
+    const gt = draft?.groundTrack ?? [];
+    if (gt.length >= 2) {
+      const posAttr = track.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      const segCap = arr.length / 6;
+      const n = Math.min(gt.length, segCap);
+      let w = 0;
+      for (let i = 0; i < n; i++) {
+        const a = gt[i];
+        const b = gt[(i + 1) % gt.length];
+        w = this.writeRenderPoint(arr, w, a[0], a[1], a[2], focusAbs);
+        w = this.writeRenderPoint(arr, w, b[0], b[1], b[2], focusAbs);
+      }
+      // Collapse the unused tail to the last written point (a degenerate, invisible segment).
+      while (w < arr.length) arr[w++] = arr[w - 4] ?? 0;
+      posAttr.needsUpdate = true;
+      track.visible = true;
+    } else {
+      track.visible = false;
+    }
+
+    // (d) THE SERVED LINK BEAM — region→sat→ground, drawn when a LAUNCHED sat bridges the region
+    // (Act-1 "the signal reaches there"). Two dashes: region→sat and sat→ground.
+    const link = ns?.servedLink ?? null;
+    if (link) {
+      const posAttr = beam.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      let w = 0;
+      w = this.writeRenderPoint(arr, w, link.regionPosM[0], link.regionPosM[1], link.regionPosM[2], focusAbs);
+      w = this.writeRenderPoint(arr, w, link.satPosM[0], link.satPosM[1], link.satPosM[2], focusAbs);
+      w = this.writeRenderPoint(arr, w, link.satPosM[0], link.satPosM[1], link.satPosM[2], focusAbs);
+      w = this.writeRenderPoint(arr, w, link.groundPosM[0], link.groundPosM[1], link.groundPosM[2], focusAbs);
+      posAttr.needsUpdate = true;
+      beam.visible = true;
+    } else {
+      beam.visible = false;
+    }
+  }
+
   private buildOverlayCorners(): void {
     for (const cls of ["tl", "tr", "bl", "br"]) {
       const c = document.createElement("div");
@@ -1313,6 +1531,7 @@ export class Orrery {
     this.roConjVal = box.querySelector(".ro-conj .ro-val") as HTMLElement;
     this.roConjFill = box.querySelector(".ro-conjbar .ro-fill") as HTMLElement;
     this.roBlackout = box.querySelector(".ro-blackout") as HTMLElement;
+    this.readoutBox = box;
     return box;
   }
 
@@ -1363,8 +1582,29 @@ export class Orrery {
     this.activePreset = i;
     const p = CAMERA_PRESETS[i];
     this.focusId = p.focus;
-    this.tgt = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale, orbitBandM: p.orbitBandM ?? 0 };
+    this.tgt = this.netFrame(p);
     this.paintCameraButtons(); // keep the on-canvas active highlight in sync (click + hotkey).
+  }
+
+  /**
+   * fix #1 — project a {@link CameraPreset} into the camera target, applying the NET-MODE globe
+   * FRAMING when net render mode is on: dolly in ({@link NET_CAMERA_DIST_SCALE}) + narrow the lens
+   * ({@link NET_CAMERA_FOV_SCALE}) so the toy globe + its de-squashed LEO/GEO rings fill the frame
+   * (the drag→consequence read must not be sub-pixel). In cache mode this is the identity (the
+   * preset's own dist/fov) — every cache framing is byte-identical. Pure projection (no `this`
+   * mutation); the caller assigns the result. */
+  private netFrame(p: CameraPreset): typeof this.tgt {
+    const distScale = this._netRenderMode ? NET_CAMERA_DIST_SCALE : 1;
+    const fovScale = this._netRenderMode ? NET_CAMERA_FOV_SCALE : 1;
+    return {
+      az: p.az,
+      el: p.el,
+      dist: p.dist * distScale,
+      fov: p.fov * fovScale,
+      logK: p.logK,
+      logScale: p.logScale,
+      orbitBandM: p.orbitBandM ?? 0,
+    };
   }
 
   resetCamera(): void {
@@ -1443,10 +1683,22 @@ export class Orrery {
     const worldPerPx = (2 * Math.tan((this.cur.fov * DEG) / 2)) / this.h;
     for (const spec of BODIES) {
       const mesh = this.bodyMeshes.get(spec.id)!;
+      // fix #1 — in net mode the world is the TOY EARTH only: hide the Sun / Mars / Moon / dataset
+      // sat glyphs so the framing stays a clean toy globe (the Act-4 Mars teaser draws its own
+      // dedicated netMarsNode + relay + crawler, so Mars is still felt there). Cache mode draws all.
+      if (this._netRenderMode && spec.id !== "earth") {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.visible = true;
       const absBody = this.ctx.eph.position(spec.id, t);
       this.renderInto(this._rp, absBody, focusAbs);
       mesh.position.copy(this._rp);
-      this.sizeBillboard(mesh, spec.px, worldPerPx);
+      // fix #1 — MAGNIFY the toy Earth in net mode so it is the LARGE central hero the overlay
+      // discs read against (matched by the same NET_GLOBE_PX_SCALE on every overlay disc below).
+      // Render-only + scoped to the earth glyph in net mode; cache-mode sizing is unchanged.
+      const px = this._netRenderMode && spec.id === "earth" ? spec.px * NET_GLOBE_PX_SCALE : spec.px;
+      this.sizeBillboard(mesh, px, worldPerPx);
       if (spec.id === "mars") this.applyMarsFreshness(mesh, worldPerPx);
       if (spec.terminator) {
         // Sun direction from UNCOMPRESSED physical positions — the log-fold is a
@@ -1509,6 +1761,9 @@ export class Orrery {
     // net/ Act-1 — the region (lit/dim) + footprint discs, only in net render mode.
     this.netState = this.netRenderMode ? (this.ctx.net?.() ?? null) : null;
     this.updateNetOverlay(focusAbs, worldPerPx);
+    // §3 — the LIVE PLANNER DRAFT consequence (footprint + ground-track + coverage-gap overlay) +
+    // the served region→sat→ground beam, drawn on the globe as the player drags the orbit.
+    this.updateNetDraft(focusAbs, worldPerPx);
     // net/ Act-4 — the Mars frontier teaser: the desaturating Mars data node + the relay node +
     // the Earth↔Mars signal crawling at the real light delay (shown only at act4 in net mode).
     this.updateNetMars(t, focusAbs, worldPerPx);
@@ -1879,6 +2134,12 @@ export class Orrery {
         el.style.display = "none";
         continue;
       }
+      // fix #1 — net mode is the TOY EARTH world: hide the Sun / Mars / Moon / dataset-sat labels
+      // (their glyphs are hidden too) so only the toy globe is labelled. Cache mode labels all.
+      if (this._netRenderMode && spec.id !== "earth") {
+        el.style.display = "none";
+        continue;
+      }
       this.renderInto(this._rp, this.ctx.eph.position(spec.id, t), focusAbs);
       this.tmpV.copy(this._rp).project(this.camera);
       if (this.tmpV.z > 1 || this.tmpV.z < -1) {
@@ -1952,11 +2213,23 @@ export class Orrery {
     } else {
       set("bl", `drag orbit · wheel zoom · <span class="k">click</span> a body/asset to focus`);
     }
-    set(
-      "br",
-      `<span class="k">E C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus · <span class="k">click</span> select\n` +
-        `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch · <span class="k">M</span> datacenter`,
-    );
+    // br — THE KEYMAP HINT. In NET mode this is the connectivity game's keymap (the planner-
+    // drag + launch/accept/cache verbs); in cache mode it is the M2/M3 build keymap (heatmap /
+    // deploy / datacenter). The two games own DIFFERENT verbs, so the hint must match the mode —
+    // showing "B deploy · M datacenter" in net mode is the clutter fix #2 calls out.
+    if (this.netRenderMode) {
+      set(
+        "br",
+        `<span class="k">1-3</span> presets · <span class="k">E C O S T</span> camera · <span class="k">R</span> reset · <span class="k">click</span> select\n` +
+          `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch · <span class="k">K</span> accept · <span class="k">C</span> constellation · <span class="k">P</span> cache`,
+      );
+    } else {
+      set(
+        "br",
+        `<span class="k">E C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus · <span class="k">click</span> select\n` +
+          `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch · <span class="k">M</span> datacenter`,
+      );
+    }
   }
 
   /**

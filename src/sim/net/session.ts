@@ -54,6 +54,7 @@ import {
   ESCALATION_BANDWIDTH_AXIS_THRESHOLD,
 } from "./contract";
 import { NET_LINK_CAPACITY_UNITS } from "./link-budget";
+import { rollNetLaunch } from "./world";
 import { BREACH_GRACE_SECONDS as NET_BREACH_GRACE_SECONDS } from "../m2/contracts";
 import {
   type SolveResult,
@@ -111,9 +112,12 @@ const stepOfferedContract = m2StepOfferedContract as unknown as (
   nowS: number,
 ) => boolean;
 
-/** Opening € for a net session — enough that launching the GEO PARK default is affordable
- * and a served contract earns the capex back over a sitting. Placeholder. */
-export const NET_OPENING_BALANCE = 5000.0;
+/** Opening € for a net session — sized with HEADROOM for the §3.5 launch charges so the full
+ * scripted Act-1→Act-4 arc (the GEO + the N=4 LEO batch + the act3a corridor LEOs + the Mars relay,
+ * ≈€11.6k of launch capex) stays affordable AND a served contract earns the capex back over a
+ * sitting. (Overspending is ALLOWED — the wallet can dip negative, the build-vs-budget tension —
+ * but the canonical run is comfortably in the black.) Placeholder. */
+export const NET_OPENING_BALANCE = 20000.0;
 
 /** Seed for the net session's splitmix64 RNG (the determinism anchor; faults draw from it
  * in Act 3b — absent in Act 1). Distinct from the m1/m2 anchors. The replay golden (A3)
@@ -426,18 +430,30 @@ export class NetSession {
   // --- mutation surface (driven by applyNetAction; pure + deterministic) -----------
 
   /**
-   * LAUNCH a satellite into the given orbit at sim-time `t`, with a BROADCAST loadout. The
-   * sat joins the roster immediately (its coverage starts at `t`). Returns the new sat id.
-   * Act 1 has no failure roll (the default GEO PARK simply works); the seeded RNG is held
-   * for the Act-3b fault stream. Pure + deterministic.
+   * LAUNCH a satellite into the given orbit at sim-time `t`, with a BROADCAST loadout, CHARGING
+   * `costEur` to the wallet (design §3.5 — "charge for launches": you pay the launch provider
+   * win OR lose, mirroring the m2 build session) and rolling the FLAT per-launch FAILURE chance off
+   * the session's SEEDED splitmix64 RNG ({@link rollNetLaunch} — the M2 launch-roll pattern, NO new
+   * seed). On SUCCESS the sat joins the roster immediately (its coverage starts at `t`) and the
+   * monotonic id is consumed; on FAILURE nothing is added (you ate the loss) and no id is consumed.
+   * Returns `{ ok, satId, roll }`. Deterministic + replay-safe (the draw folds via the rng state).
    */
-  launchSat(sat: NetSat): string {
+  launchSat(sat: NetSat, costEur = 0): { ok: boolean; satId: string | null; roll: number } {
+    // Charge ALWAYS (win or lose) — the §3.5 "you pay the launch provider" convention (the m2
+    // build session debits the cost BEFORE the failure roll too). The wallet can go negative
+    // (the build-vs-budget tension); the planner shows the cost before commit.
+    this.walletBalance -= costEur;
+    const roll = rollNetLaunch(this.rng);
+    if (!roll.ok) {
+      // The launch FAILED: the sat is lost (no roster add, no id consumed, no topology change).
+      return { ok: false, satId: null, roll: roll.roll };
+    }
     this.satList.push(sat);
     this.launchedCount++;
     // A launch is a topology change: invalidate every cached router path so the next step
     // does a full re-search (the §2.4 launch/commit event).
     this.routerStates.clear();
-    return sat.id;
+    return { ok: true, satId: sat.id, roll: roll.roll };
   }
 
   /** The next launched-sat id (monotonic, stable across replay). */

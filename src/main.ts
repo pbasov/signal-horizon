@@ -62,9 +62,13 @@ import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
   previewLaunch,
+  draftToSat,
   A1_BODY_RADIUS_M,
+  A1_LEO_SEMI_MAJOR_M,
+  A1_GEO_SEMI_MAJOR_M,
   NET_PRESETS,
   MARS_RELAY_PRESET,
+  type LaunchDraft,
   type PreviewWorld,
 } from "./sim/net/world";
 import { surfacePointRelative } from "./sim/net/link-budget";
@@ -95,8 +99,8 @@ import {
 } from "./sim/m2/fleet";
 import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
-import { PRESET_SPECS, buildGrid } from "./wm/presets";
-import { WindowRail } from "./wm/window-rail";
+import { PRESET_SPECS, NET_PRESET_SPECS, buildGrid } from "./wm/presets";
+import { WindowRail, RAIL_PANELS, NET_RAIL_PANELS } from "./wm/window-rail";
 import { Orrery } from "./orrery/orrery";
 import { deriveReadout } from "./orrery/readout";
 import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audio/cue";
@@ -126,7 +130,16 @@ topbar.innerHTML =
 const wmCanvas = document.createElement("div");
 wmCanvas.className = "wm-canvas";
 
-const status = new StatusStrip();
+// APP MODE — resolved up-front (the single source of truth, read by the chrome + the sim wiring
+// below). Act 1 (net) is what BOOTS (the cold player sees + plays the connectivity game); the
+// M1-cache / M2 / M3 wiring stays instantiable behind ?mode=cache. The status strip's key-hint
+// legend + cells must match the active game, so it needs netMode at construction time (fix #2).
+type AppMode = "net" | "cache";
+const NET_QUERY = new URLSearchParams(window.location.search);
+const APP_MODE: AppMode = NET_QUERY.get("mode") === "cache" ? "cache" : "net";
+const netMode = APP_MODE === "net";
+
+const status = new StatusStrip(netMode);
 
 app.append(topbar, wmCanvas, status.element);
 
@@ -177,15 +190,11 @@ const build = new BuildSession();
 // applied via the SHARED applyNetAction in the SAME step-then-post-drain order the M2 build
 // session uses. Seeded with NET_RNG_SEED (4242424242424242n) so the live world == the golden.
 const netSession = new NetSession(undefined, NET_RNG_SEED);
-// APP MODE — Act 1 (net) is what BOOTS (the cold player sees + plays the connectivity game).
-// The existing M1-cache / M2 / M3 wiring stays instantiable behind ?mode=cache (the live loop
-// drives whichever world is active; net mode also flips orrery.netRenderMode so the toy globe
-// is visible). The net session is ALWAYS stepped so the scenario emits + the loop is live the
-// instant the mode is entered.
-type AppMode = "net" | "cache";
-const NET_QUERY = new URLSearchParams(window.location.search);
-const APP_MODE: AppMode = NET_QUERY.get("mode") === "cache" ? "cache" : "net";
-const netMode = APP_MODE === "net";
+// APP MODE is resolved up-front near the chrome scaffold (the single source of truth: `APP_MODE`
+// / `netMode` / `NET_QUERY`). Act 1 (net) is what BOOTS; the M1-cache / M2 / M3 wiring stays
+// instantiable behind ?mode=cache (the live loop drives whichever world is active; net mode also
+// flips orrery.netRenderMode so the toy globe is visible). The net session is ALWAYS stepped so
+// the scenario emits + the loop is live the instant the mode is entered.
 // net/ Act-4 — DEBUG-ONLY view seed (the headless-screenshot affordance, design §4.5 / §8). A
 // `?netview=mars` (or `?netact=4`) query param asks the BOOT to seed the live net session straight
 // at the act4 Mars state (the Mars opportunity on the board + the MARS RELAY launched + a Mars
@@ -195,8 +204,123 @@ const netMode = APP_MODE === "net";
 // and never reads this param, so the three goldens are PROVABLY untouched. Never reached in normal
 // play (the param is absent). Labelled DEBUG in SYSTEM.LOG so it can never be mistaken for real play.
 const netDebugView = netMode && (NET_QUERY.get("netview") === "mars" || NET_QUERY.get("netact") === "4");
-// The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps).
+// The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps). The
+// preset is the FLOOR (§3.1: one-click); it SETS the editable draft below. Dragging the draft is the
+// CEILING. -1 ⇒ no preset matches the current (hand-dragged) draft, so no preset button lights.
 let netPresetCursor = 0;
+
+// §3.1 — THE EDITABLE PLANNER DRAFT (the make-or-break: presets are the floor, parameters are the
+// ceiling). The player DRAGS altitude / inclination / phase / RAAN; each edit re-runs previewLaunch
+// (the truthful consequence). Seeded from the GEO PARK preset (the default that parks over REGION-0);
+// a preset click overwrites it wholesale, a slider/arrow nudges one field. RAAN starts undefined so
+// an undragged launch stays byte-identical (golden-safe — see netLaunch wire).
+let netDraft: LaunchDraft = cloneDraft(NET_PLANNER_PRESETS[0].draft);
+
+/** §3.1 — the draggable bounds + nudge steps for the four planner parameters (radians + SI metres),
+ * scoped to the toy world. Altitude rides from just above the toy surface (low LEO) past the GEO
+ * radius (so the player can drag through the whole LEO→GEO axis — §2 "altitude is the first
+ * parameter"); inclination 0..π (equatorial→polar→retrograde); phase + RAAN the full circle. */
+const NET_DRAFT_BOUNDS = {
+  semiMajorM: { min: A1_LEO_SEMI_MAJOR_M * 0.9, max: A1_GEO_SEMI_MAJOR_M * 1.15, step: A1_LEO_SEMI_MAJOR_M * 0.02 },
+  incRad: { min: 0, max: Math.PI, step: Math.PI / 180 },
+  subLonRad: { min: -Math.PI, max: Math.PI, step: Math.PI / 180 },
+  raanRad: { min: -Math.PI, max: Math.PI, step: Math.PI / 180 },
+} as const;
+
+/** Deep-copy a {@link LaunchDraft} (the loadout antennas are copied so a preset re-seed never aliases
+ * the preset's own loadout array). Pure. */
+function cloneDraft(d: LaunchDraft): LaunchDraft {
+  return {
+    semiMajorM: d.semiMajorM,
+    incRad: d.incRad,
+    subLonRad: d.subLonRad,
+    raanRad: d.raanRad,
+    loadout: d.loadout.map((a) => ({ ...a })),
+    count: d.count,
+  };
+}
+
+/** Clamp `v` into `[min,max]`. */
+function clampN(v: number, min: number, max: number): number {
+  return v < min ? min : v > max ? max : v;
+}
+
+/** §3.1 — re-seed the editable draft FROM a preset (the floor): a one-click setter that overwrites
+ * the whole draft, then lights that preset button. The player then drags from there (the ceiling). */
+function netSelectPreset(presetId: string): void {
+  const i = NET_PLANNER_PRESETS.findIndex((p) => p.id === presetId);
+  if (i < 0) return;
+  netPresetCursor = i;
+  netDraft = cloneDraft(NET_PLANNER_PRESETS[i].draft);
+}
+
+/** §3.1 — EDIT one draft parameter (a slider set or an arrow-key nudge). The value is clamped to the
+ * draggable bounds; editing clears the preset cursor unless the draft still matches a preset exactly
+ * (so a hand-dragged orbit lights no preset — "you left the floor"). Each call mutates `netDraft`, so
+ * the next netPlannerRenderState/netRenderState re-runs previewLaunch ⇒ the globe updates live. */
+function netEditDraft(field: "semiMajorM" | "incRad" | "subLonRad" | "raanRad", value: number): void {
+  const b = NET_DRAFT_BOUNDS[field];
+  netDraft = { ...netDraft, [field]: clampN(value, b.min, b.max), loadout: netDraft.loadout };
+  netPresetCursor = NET_PLANNER_PRESETS.findIndex((p) => draftMatchesPreset(netDraft, p.draft));
+}
+
+/** §3.1 — nudge a draft parameter by ±one step (the arrow-key ceiling control, for headless
+ * drivability). `dir` is +1/−1. */
+function netNudgeDraft(field: "semiMajorM" | "incRad" | "subLonRad" | "raanRad", dir: number): void {
+  const b = NET_DRAFT_BOUNDS[field];
+  const cur = field === "raanRad" ? (netDraft.raanRad ?? 0) : netDraft[field];
+  netEditDraft(field, cur + dir * b.step);
+}
+
+/** §3.1 — map a planner-draft NUDGE KEY to its field+direction (the headless-drivable ceiling): the
+ * arrows for the first-two-that-matter (altitude/inclination, §3.1) + the brackets for phase/RAAN.
+ * Returns true iff `k` was a draft key (so the caller swallows it). The step is bigger than one
+ * slider notch so a few presses visibly move the orbit on the globe (headless screenshots). */
+function netDraftNudgeKey(k: string): boolean {
+  // A coarse multi-step nudge so a handful of key presses visibly sweeps the orbit (vs a slider's
+  // fine notch) — the headless driver reaches a clearly-different orbit in a few keystrokes.
+  const STEP = 6;
+  switch (k) {
+    case "ArrowUp":
+      netNudgeDraft("semiMajorM", STEP);
+      return true;
+    case "ArrowDown":
+      netNudgeDraft("semiMajorM", -STEP);
+      return true;
+    case "ArrowRight":
+      netNudgeDraft("incRad", STEP);
+      return true;
+    case "ArrowLeft":
+      netNudgeDraft("incRad", -STEP);
+      return true;
+    case "]":
+      netNudgeDraft("subLonRad", STEP);
+      return true;
+    case "[":
+      netNudgeDraft("subLonRad", -STEP);
+      return true;
+    case "}":
+      netNudgeDraft("raanRad", STEP);
+      return true;
+    case "{":
+      netNudgeDraft("raanRad", -STEP);
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Does a draft's four orbit parameters match a preset's (within a hair)? Treats an undefined RAAN as
+ * 0. Pure — used to light the active preset button only while the draft IS that preset (the floor). */
+function draftMatchesPreset(d: LaunchDraft, p: LaunchDraft): boolean {
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
+  return (
+    near(d.semiMajorM, p.semiMajorM) &&
+    near(d.incRad, p.incRad) &&
+    near(d.subLonRad, p.subLonRad) &&
+    near(d.raanRad ?? 0, p.raanRad ?? 0)
+  );
+}
 // The coverage grid (built once) for the live coverage score. Same default level as the
 // session's internal grid, so cell ids align and scoring against the session's CURRENT
 // (M2e dynamic) demand — read via build.demandField — is well-keyed. Pure reads; nothing
@@ -612,9 +736,13 @@ function netPreviewWorld(): PreviewWorld {
  */
 function netPlannerRenderState(): NetPlannerRenderState {
   const t = clock.seconds;
-  const selected = NET_PLANNER_PRESETS[netPresetCursor % NET_PLANNER_PRESETS.length];
-  const preview = previewLaunch(eph, netPreviewWorld(), selected.draft, t, selected.costBaseEur);
-  // The selected preset's per-REGION-0 preview slice (its consequence on the Act-1 demand).
+  // The cost base is the preset's when the draft still matches a preset, else the GEO PARK base (a
+  // hand-dragged draft is no longer "a preset" but still has a base cost + the altitude term).
+  const costBaseEur = (NET_PLANNER_PRESETS[netPresetCursor] ?? NET_PLANNER_PRESETS[0]).costBaseEur;
+  // THE TRUTHFUL CONSEQUENCE of the LIVE EDITABLE DRAFT (not a fixed preset): re-run previewLaunch
+  // every frame so the panel readouts + the on-globe overlay update AS THE PLAYER DRAGS (§3.1).
+  const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t, costBaseEur);
+  // The draft's per-REGION-0 preview slice (its consequence on the Act-1 demand).
   const slice = preview.contracts.find((c) => c.contractId === ACT1_CONTRACT_ID) ?? null;
 
   const c = netSession.contractById(ACT1_CONTRACT_ID);
@@ -635,8 +763,19 @@ function netPlannerRenderState(): NetPlannerRenderState {
     presets: NET_PLANNER_PRESETS.map((p, i) => ({
       id: p.id,
       label: p.label,
-      selected: i === netPresetCursor % NET_PLANNER_PRESETS.length,
+      // The preset lights only while the draft IS that preset (the floor); a hand-dragged draft
+      // (netPresetCursor = −1) lights none — "you left the assist, you're on the ceiling now".
+      selected: i === netPresetCursor,
     })),
+    // §3.1 — the four DRAGGABLE parameters (altitude / inclination / phase / RAAN), each as a
+    // normalized 0..1 slider position + a human readout, so the panel paints range sliders the
+    // player drags (the ceiling). The orbit altitude reads as km above the toy surface.
+    draft: {
+      altitude: draftParam("semiMajorM", `${Math.round((netDraft.semiMajorM - A1_BODY_RADIUS_M) / 1000)} km`),
+      inclination: draftParam("incRad", `${Math.round(netDraft.incRad * (180 / Math.PI))}°`),
+      phase: draftParam("subLonRad", `${Math.round(netDraft.subLonRad * (180 / Math.PI))}°`),
+      raan: draftParam("raanRad", `${Math.round((netDraft.raanRad ?? 0) * (180 / Math.PI))}°`),
+    },
     preview: {
       coveredFraction: slice?.coveredFraction ?? 0,
       periodS: preview.periodS,
@@ -651,6 +790,19 @@ function netPlannerRenderState(): NetPlannerRenderState {
     // the viable-but-imperfect suggested set against the SAME router the live world runs.
     phasing: netPhasingReadout(t),
   };
+}
+
+/** §3.1 — project ONE draggable draft parameter into the panel's slider shape: its current value
+ * normalized to a 0..1 position within the draggable bounds + a human-readable label. The panel
+ * paints a range slider at `pos` and shows `label`; dragging it fires netEditDraft back. Pure read. */
+function draftParam(
+  field: "semiMajorM" | "incRad" | "subLonRad" | "raanRad",
+  label: string,
+): import("./panels/net-planner").NetDraftParam {
+  const b = NET_DRAFT_BOUNDS[field];
+  const v = field === "raanRad" ? (netDraft.raanRad ?? 0) : netDraft[field];
+  const pos = b.max > b.min ? clampN((v - b.min) / (b.max - b.min), 0, 1) : 0;
+  return { pos, label };
 }
 
 /**
@@ -703,12 +855,25 @@ function netConstellation(): void {
   );
   const res = applyAndRecordNetAction(action);
   if (res && res.kind === "sats_launched") {
+    const launched = res.satIds?.length ?? 0;
+    const failed = res.failedCount ?? 0;
     log.append({
       tSim: clock.seconds,
-      sev: "info",
+      sev: failed > 0 ? "warn" : "info",
       entity: "NET-CONSTELLATION",
-      value: `${sugg.count} sats`,
-      msg: `phased LEO set into one plane — coverage HANDS OFF (need ~${sugg.zeroGapN}; add one to hold the bar)`,
+      value: `${launched} sats · −€${Math.round(res.costEur)}`,
+      msg:
+        failed > 0
+          ? `phased LEO set into one plane (${failed} lost to a launch failure; €${Math.round(res.costEur)} charged) — coverage HANDS OFF (need ~${sugg.zeroGapN}; relaunch the lost members)`
+          : `phased LEO set into one plane (€${Math.round(res.costEur)} charged) — coverage HANDS OFF (need ~${sugg.zeroGapN}; add one to hold the bar)`,
+    });
+  } else if (res && res.kind === "launch_failed") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "warn",
+      entity: "NET-CONSTELLATION",
+      value: `LAUNCH FAILURE · −€${Math.round(res.costEur)}`,
+      msg: `the constellation batch LAUNCH FAILED — every member was lost; €${Math.round(res.costEur)} charged. Relaunch the set.`,
     });
   }
 }
@@ -835,7 +1000,16 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
   const c = currentNetContract();
-  if (c === null) return { region: null, footprints: [], availability: null, mars: netMarsSlice(t) };
+  if (c === null) {
+    return {
+      region: null,
+      footprints: [],
+      availability: null,
+      mars: netMarsSlice(t),
+      draft: netDraftSlice(t, add, null),
+      servedLink: null,
+    };
+  }
 
   const solve = netSession.lastSolveFor(c.id);
   const served = c.state === "active" && (solve?.served ?? false);
@@ -859,7 +1033,91 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     c.state === "active" && c.activeAxes.has("availability")
       ? { value: c.lastAvailability, bar: c.slaAvail, history: pushAvailHistory(c.id, c.lastAvailability) }
       : null;
-  return { region, footprints, availability, mars: netMarsSlice(t) };
+  // §3 — THE LIVE PLANNER DRAFT consequence (footprint + ground-track + coverage-gap) for THIS
+  // region, and the SERVED region→sat→ground beam when a launched sat bridges it ("signal reaches").
+  const draft = netDraftSlice(t, add, c);
+  const servedLink = netServedLinkSlice(c, t, add);
+  return { region, footprints, availability, mars: netMarsSlice(t), draft, servedLink };
+}
+
+/**
+ * §3 — build the LIVE PLANNER DRAFT slice for the orrery (the make-or-break planner ON THE GLOBE):
+ * the would-be sat's FOOTPRINT disc + its GROUND-TRACK arc + THE CONTRACT COVERAGE-GAP overlay
+ * (red still-dark / green covered) for the active region. All TRUTHFUL — fed from the SAME pure
+ * {@link previewLaunch} the panel uses (the ground-track + per-contract coveredFraction) and the
+ * SAME {@link draftToSat} the applier commits; NO geometry is recomputed in a private path here.
+ * Returns null only when the planner panel is not summoned (no point drawing a draft nobody edits).
+ */
+function netDraftSlice(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+  c: ReturnType<NetSession["contractById"]>,
+): import("./orrery/orrery").NetRenderState["draft"] {
+  // Only draw the draft while the LAUNCH PLANNER is on screen (it IS the planner's consequence view);
+  // off-planner the globe stays the clean monument view. Cheap visibleHosts read.
+  if (!shell.visibleHosts().includes("net-planner")) return null;
+  // The truthful preview of the live editable draft (the SAME call the panel makes).
+  const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t);
+  // The draft sat's NADIR footprint (the would-be sat built the SAME way the applier builds it).
+  const sat = draftToSat(netDraft, t);
+  const satRel = solveOrbit(sat.orbit, t);
+  const r = Math.hypot(satRel[0], satRel[1], satRel[2]);
+  const footprint =
+    r > 0
+      ? {
+          centerPosM: add([
+            (satRel[0] * A1_BODY_RADIUS_M) / r,
+            (satRel[1] * A1_BODY_RADIUS_M) / r,
+            (satRel[2] * A1_BODY_RADIUS_M) / r,
+          ]),
+          // The disc size hint: the active region's angular radius (matches coveringFootprints'
+          // sizing), so the draft footprint reads at the same scale as a committed footprint.
+          radiusRad: (c?.region.radiusRad ?? 0.4) * 1.15,
+        }
+      : null;
+  // The ground-track arc: previewLaunch's body-fixed sub-points lifted to earth-relative surface
+  // world points (surfacePointRelative re-applies the spin so each reads at its inertial place at t).
+  const groundTrack = preview.groundTrack.map((p) => add(surfacePointRelative(p.latRad, p.lonRad, t)));
+  // THE COVERAGE-GAP OVERLAY: the active region disc + previewLaunch's truthful per-contract
+  // coveredFraction (red shrinks / green grows as the player drags). Null when no region is live.
+  const gap =
+    c !== null
+      ? {
+          centerPosM: add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
+          radiusRad: c.region.radiusRad,
+          coveredFraction:
+            preview.contracts.find((pc) => pc.contractId === c.id)?.coveredFraction ?? 0,
+        }
+      : null;
+  return { footprint, groundTrack, gap };
+}
+
+/**
+ * §3 / Act-1 "the signal reaches there" — the SERVED region→sat→ground LINK beam: when a LAUNCHED
+ * sat currently bridges the active region's centre to a ground station, return the three world
+ * points (region surface → that sat → that ground) so the orrery draws the beam. A render-only read
+ * of the SAME {@link bridgeForPoint} the router runs; null when no launched sat serves the region.
+ */
+function netServedLinkSlice(
+  c: NonNullable<ReturnType<NetSession["contractById"]>>,
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): import("./orrery/orrery").NetRenderState["servedLink"] {
+  if (c.state !== "active") return null;
+  const grounds = [...netSession.grounds];
+  if (grounds.length === 0 || netSession.sats.length === 0) return null;
+  const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
+  const sats = [...netSession.sats];
+  const bridge = bridgeForPoint(eph, point, grounds, sats, t);
+  if (bridge.satId === null) return null;
+  const sat = sats.find((s) => s.id === bridge.satId);
+  const ground = grounds.find((g) => g.id === bridge.groundId);
+  if (sat === undefined || ground === undefined) return null;
+  return {
+    regionPosM: add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
+    satPosM: add(satPositionRelative(eph, sat, t)),
+    groundPosM: add(surfacePointRelative(ground.latRad, ground.lonRad, t)),
+  };
 }
 
 /**
@@ -1010,25 +1268,46 @@ function netBuildRenderState(): BuildRenderState {
  * default GEO PARK already parks over REGION-0 — pressing LAUNCH on it wins Act 1.
  */
 function netLaunch(): void {
-  const preset = NET_PLANNER_PRESETS[netPresetCursor % NET_PLANNER_PRESETS.length];
+  // LAUNCH the LIVE EDITABLE DRAFT (§3.1) — the orbit the player dragged, not a fixed preset. The
+  // presetId is recorded only while the draft still matches a preset (for the readout); a hand-
+  // dragged orbit carries no preset id. RAAN crosses the wire only when dragged off 0 (golden-safe).
+  const preset = netPresetCursor >= 0 ? NET_PLANNER_PRESETS[netPresetCursor] : null;
+  const label = preset ? preset.label : "CUSTOM ORBIT";
   const action = netLaunchAction(
     {
-      presetId: preset.id,
-      semiMajorM: preset.draft.semiMajorM,
-      incRad: preset.draft.incRad,
-      subLonRad: preset.draft.subLonRad,
-      count: preset.draft.count,
+      presetId: preset?.id,
+      semiMajorM: netDraft.semiMajorM,
+      incRad: netDraft.incRad,
+      subLonRad: netDraft.subLonRad,
+      raanRad: netDraft.raanRad,
+      count: netDraft.count,
     },
     clock.tick,
   );
   const res = applyAndRecordNetAction(action);
   if (res && res.kind === "sats_launched") {
+    // Some members may still have been lost to the §3.5 failure roll (a partial-loss batch): note the
+    // survivors + the cost, and warn about any failures so the wallet hit is legible.
+    const failed = res.failedCount ?? 0;
     log.append({
       tSim: clock.seconds,
-      sev: "info",
+      sev: failed > 0 ? "warn" : "info",
       entity: "NET-LAUNCH",
-      value: preset.label,
-      msg: `${preset.label} reached orbit — footprint ${preset.id === "GEO_PARK" ? "parks over" : "sweeps past"} REGION-0`,
+      value: `${label} · −€${Math.round(res.costEur)}`,
+      msg:
+        failed > 0
+          ? `${label} reached orbit (${failed} lost to a launch failure — €${Math.round(res.costEur)} charged) — drag the orbit so its ground-track covers the dark region`
+          : `${label} reached orbit (€${Math.round(res.costEur)} charged) — drag the orbit so its ground-track covers the dark region`,
+    });
+  } else if (res && res.kind === "launch_failed") {
+    // THE LAUNCH WHOLLY FAILED (every member lost the §3.5 risk roll): the sat/batch is lost, but you
+    // PAID the launch provider anyway (the cost is charged win or lose). Surface it in SYSTEM.LOG.
+    log.append({
+      tSim: clock.seconds,
+      sev: "warn",
+      entity: "NET-LAUNCH",
+      value: `LAUNCH FAILURE · −€${Math.round(res.costEur)}`,
+      msg: `${label} LAUNCH FAILED — the vehicle was lost; €${Math.round(res.costEur)} charged (you pay the provider win or lose). Try again.`,
     });
   }
 }
@@ -1144,9 +1423,12 @@ function applyAndRecordNetAction(action: SimAction): ReturnType<typeof applyNetA
   return res;
 }
 
-/** Cycle the selected planner preset (GEO PARK ↔ LEO SWEEP) for the next LAUNCH. */
+/** Cycle the selected planner preset (GEO PARK ↔ LEO SWEEP) — a one-click setter that RE-SEEDS the
+ * editable draft from the preset (the floor); the player drags from there (the ceiling). */
 function cycleNetPreset(): void {
-  netPresetCursor = (netPresetCursor + 1) % NET_PLANNER_PRESETS.length;
+  // From a hand-dragged draft (cursor −1) the cycle lands on the first preset; else it advances.
+  const next = netPresetCursor < 0 ? 0 : (netPresetCursor + 1) % NET_PLANNER_PRESETS.length;
+  netSelectPreset(NET_PLANNER_PRESETS[next].id);
   const p = NET_PLANNER_PRESETS[netPresetCursor];
   log.append({
     tSim: clock.seconds,
@@ -1270,9 +1552,13 @@ const fleetPanel = new FleetPanel();
 // main.ts hands it a per-frame NetPlannerRenderState and wires the buttons to the net loop
 // (the launch/accept appliers + the preset cursor). Summonable via the LAUNCH rail button.
 const netPlannerPanel = new NetPlanner({
-  onSelectPreset: (id) => {
-    const i = NET_PLANNER_PRESETS.findIndex((p) => p.id === id);
-    if (i >= 0) netPresetCursor = i;
+  // A preset click SETS the draft (the floor, §3.1); the player drags from there (the ceiling).
+  onSelectPreset: (id) => netSelectPreset(id),
+  // §3.1 — a slider drag EDITS one draft parameter to a normalized 0..1 position; each edit re-runs
+  // previewLaunch so the on-globe consequence (footprint + ground-track + coverage gap) moves live.
+  onEditDraft: (field, pos) => {
+    const b = NET_DRAFT_BOUNDS[field];
+    netEditDraft(field, b.min + pos * (b.max - b.min));
   },
   onLaunch: () => netLaunch(),
   onAccept: () => netAccept(),
@@ -1331,7 +1617,10 @@ const shell = new Shell(wmCanvas, registry);
 // into the focused tile LIVE (the owner's core ask). Built once; it wires itself to
 // shell.onActivePanelsChange for its active-state repaint (event-driven, never per-frame).
 // On a summon that brings THE PARSE in, fold the run-so-far so the record is fresh.
-const windowRail = new WindowRail(shell, undefined, (host, changed) => {
+// net/ Act-1 — net mode offers ONLY the net-relevant rail set (NET_RAIL_PANELS: globe, LAUNCH,
+// SYSTEM.LOG, FINANCE, PARSE) so the cache/M2/M3 panels (TELEMETRY feeds, the M2 CONTRACTS board,
+// FLEET) are not summonable here. Cache mode keeps the full RAIL_PANELS.
+const windowRail = new WindowRail(shell, netMode ? NET_RAIL_PANELS : RAIL_PANELS, (host, changed) => {
   if (host === "parse" && changed) refreshParse(true);
 });
 wmCanvas.appendChild(windowRail.element);
@@ -1340,7 +1629,11 @@ wmCanvas.appendChild(windowRail.element);
 shell.setReservedRight(34);
 
 // --- WM presets -------------------------------------------------------------
-const presets = PRESET_SPECS.map((spec) => ({ name: spec.name, grid: buildGrid(spec) }));
+// net/ Act-1 — net mode is a DIFFERENT game from the cache/M2/M3 economy, so it uses its OWN
+// preset set (NET_PRESET_SPECS): the layouts mount ONLY net-relevant panels (the NET·LAUNCH
+// planner, the FINANCE/wallet readout, SYSTEM.LOG) — NOT the MARS-CACHE feeds / M2 CONTRACTS
+// board / FLEET tile. Cache mode keeps the original PRESET_SPECS, byte-for-byte unchanged.
+const presets = (netMode ? NET_PRESET_SPECS : PRESET_SPECS).map((spec) => ({ name: spec.name, grid: buildGrid(spec) }));
 let wmPresetName = presets[0].name;
 
 function setWmPreset(i: number): void {
@@ -1384,13 +1677,11 @@ function refreshParse(force = false): void {
 
 status.setPresetTabs(presets.map((p) => p.name));
 setWmPreset(0); // PLAY (the default working layout)
-// net/ Act-1 — BOOT INTO NET MODE: surface the LAUNCH planner so the cold player sees the
-// Act-1 game (orrery hero on the left, the planner on the right where CONTRACTS sits). We
-// swap the CONTRACTS tile for the net planner via the SAME shell summon the rail uses, then
-// re-focus the orrery so the player starts on the globe. The cache-mode boot is unchanged.
+// net/ Act-1 — BOOT INTO NET MODE: the net PLAY preset already mounts the net-relevant set
+// (orrery hero + NET·LAUNCH planner + SYSTEM.LOG + FINANCE) — no cache/M2/M3 panels — so we just
+// focus the orrery so the cold player starts on the large central toy globe. The cache-mode boot
+// is unchanged (its PRESET_SPECS PLAY layout keeps the M2 CONTRACTS board).
 if (netMode) {
-  shell.setFocus("contracts");
-  shell.summonPanel("net-planner");
   shell.setFocus("orrery");
 }
 
@@ -1430,6 +1721,15 @@ if (import.meta.env.DEV) {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   const k = e.key;
+  // §3.1 — THE PLANNER DRAFT NUDGE KEYS (net mode, the headless-drivable ceiling control): the
+  // arrow keys nudge the two parameters that matter first (§3.1) — Up/Down = ALTITUDE (the GEO/LEO
+  // axis), Left/Right = INCLINATION (which latitudes you reach); `[`/`]` nudge PHASE and `{`/`}`
+  // (shift-bracket) nudge RAAN. Each re-runs previewLaunch so the on-globe footprint + ground-track
+  // + coverage gap move live. Gated to net mode so cache mode keeps its `[`/`]` freshness controls.
+  if (netMode && netDraftNudgeKey(k)) {
+    e.preventDefault();
+    return;
+  }
   if (k >= "1" && k <= "3") setWmPreset(Number(k) - 1);
   else if (k === "0") shell.reset();
   else if (k === "g" || k === "G") {
@@ -1462,18 +1762,20 @@ window.addEventListener("keydown", (e) => {
   else if (k === "r" || k === "R") orrery.resetCamera();
   else if (k === "f") orrery.cycleFocus(1);
   else if (k === "F") orrery.cycleFocus(-1);
-  else if (k === "h" || k === "H") {
+  else if (!netMode && (k === "h" || k === "H")) {
     // M2b — TOGGLE THE COVERAGE HEATMAP (GDD §5 view #2, the monument's first
-    // visible cell). Render-only: it reads sat positions off the ephemeris and
-    // never touches the sim/replay path, so the M1 golden is unaffected.
+    // visible cell). CACHE MODE ONLY — the heatmap belongs to the M2 build economy,
+    // not the net connectivity game (the toy globe carries the net coverage cue via
+    // the region/footprint/gap overlay instead). Render-only: it never touches the sim.
     orrery.toggleHeatmap();
-  } else if (k === "d" || k === "D") {
+  } else if (!netMode && (k === "d" || k === "D")) {
     // M2b — CYCLE the heatmap's information dimension (connectivity → bandwidth →
-    // latency). A free key beside the camera controls; render-only.
+    // latency). CACHE MODE ONLY (rides the heatmap). Render-only.
     orrery.cycleDimension();
-  } else if (k === "b" || k === "B") {
+  } else if (!netMode && (k === "b" || k === "B")) {
     // M2c — DEPLOY a ground station at the next candidate site (the cheap, instant
-    // coverage lever). Recorded + applied via the shared applier; the web grows.
+    // coverage lever). CACHE MODE ONLY — ground-station deploy is the M2 build verb, not
+    // a net-game verb. Recorded + applied via the shared applier; the web grows.
     deployGroundStation();
   } else if (k === "l" || k === "L") {
     // net/ Act-1 — in NET mode L LAUNCHES the selected planner preset (the parked GEO
@@ -1495,13 +1797,15 @@ window.addEventListener("keydown", (e) => {
         msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
       });
     }
-  } else if (k === "m" || k === "M") {
+  } else if (!netMode && (k === "m" || k === "M")) {
     // M3a — PLACE an ORBITAL DATACENTER at the selected candidate site (GDD §4.5: compute as
-    // infrastructure, a force-multiplier on the loop). Recorded + applied via the shared applier;
+    // infrastructure, a force-multiplier on the loop). CACHE MODE ONLY — the orbital-DC compute
+    // economy is M3, not the net connectivity game. Recorded + applied via the shared applier;
     // it lifts served revenue in its edge-compute footprint, bounded by its power+thermal compute.
     placeDatacenter();
-  } else if (k === "'") {
+  } else if (!netMode && k === "'") {
     // M3a — cycle the selected DC candidate site (Earth regions → Moon → Mars) for the next M.
+    // CACHE MODE ONLY (pairs with the M datacenter verb above).
     dcSiteCursor = (dcSiteCursor + 1) % DC_CANDIDATES.length;
     log.append({
       tSim: clock.seconds,
@@ -1510,17 +1814,18 @@ window.addEventListener("keydown", (e) => {
       value: DC_CANDIDATES[dcSiteCursor].label,
       msg: `selected · press M to place an orbital datacenter`,
     });
-  } else if (k === "n" || k === "N") {
+  } else if (!netMode && (k === "n" || k === "N")) {
     // M2d — CYCLE the selected contract (the accept/decline target) among the live
-    // offered + active ones. UI cursor only (no sim mutation, no logged action).
+    // offered + active ones. CACHE MODE ONLY (the M2 contracts board); UI cursor only.
     cycleSelectedContract(k === "N" ? -1 : 1);
   } else if (k === "k" || k === "K") {
     // net/ Act-1 — in NET mode K ACCEPTS the REGION-0 contract (close the serve→pay loop);
     // in cache mode K accepts the targeted M2d offered contract.
     if (netMode) netAccept();
     else acceptSelectedContract();
-  } else if (k === "j" || k === "J") {
-    // M2d — DECLINE the targeted OFFERED contract (it leaves the board, not taken).
+  } else if (!netMode && (k === "j" || k === "J")) {
+    // M2d — DECLINE the targeted OFFERED contract (it leaves the board, not taken). CACHE MODE
+    // ONLY (the M2 contracts board has no decline verb in the single-contract net game).
     declineSelectedContract();
   }
   else if (k === " ") {
@@ -1555,9 +1860,10 @@ window.addEventListener("keydown", (e) => {
         if (mission.packet === null) mission.launch(clock.seconds);
       }
     }
-  } else if (k === "a" || k === "A") {
+  } else if (!netMode && (k === "a" || k === "A")) {
     // E8 — CYCLE the prefetch policy mode: manual → freshness → freshness_blackout
-    // → manual. Switching it on is the tame-it lever: the autopilot takes over the
+    // → manual. CACHE MODE ONLY (the M1 prefetch autopilot — no prefetch economy in the
+    // net game). Switching it on is the tame-it lever: the autopilot takes over the
     // hand-cranking. The change is the logged player intent.
     const i = POLICY_CYCLE.indexOf(session.policy.mode);
     const next = POLICY_CYCLE[(i + 1) % POLICY_CYCLE.length];
