@@ -119,7 +119,8 @@
 
 ## Milestones 2–6 (headlines only — detail after M1 PASS)
 
-- [ ] **M2 — Earth tycoon vertical slice:** coverage grid, coverage field, link budget, placeable assets, launch market, contracts state machine, escalation engine, emergent-event generator v1, one coverage heatmap.
+- [~] **M2 — Earth tycoon vertical slice:** coverage grid, coverage field, link budget, placeable assets, launch market, contracts state machine, escalation engine, emergent-event generator v1, one coverage heatmap.
+  - [x] **M2a — geodesic coverage grid + coverage field (GDD §4.2 "The Heart", SD-27).** Pure, standalone `src/sim/coverage/`: roll-your-own subdivided-icosahedron grid (`grid.ts`, triangular faces, 20·4^level, default level 2 → 320 cells, symmetric degree-3 adjacency, areas sum to 4π), deterministic placeholder demand field (`demand.ts`, lat-band + fixed hotspots, no RNG), `coverageOf(cell, assets, t)` over the §4.2 dimensions connectivity/bandwidth/latency with the LoS-horizon + inverse-square/min-elevation link budget reusing the ephemeris (`field.ts`), and the demand-weighted multi-axis scoring stub (`score.ts`). NOT wired into M1Session → replay golden `544847093270497462n` untouched. M2b renders it.
 - [ ] **M3 — Cislunar on-ramp:** Moon + L-points, first orbital datacenter, basic autonomy policies, observation contracts, light-delay teaching beat, DC thermal model.
 - [ ] **M4 — Interplanetary (the game becomes itself):** Mars + synodic windows, patched-conic planner, conjunction blackouts, full caching/prefetch/coherence, edge-processing DCs, autonomy tiers, constrained brokering.
 - [-] **M5 — Outer system + DTN** *(post-1.0)*
