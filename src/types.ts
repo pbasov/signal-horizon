@@ -100,6 +100,53 @@ export interface DemandReadout {
   autoBlackoutPrestage: boolean;
 }
 
+/**
+ * M2d — one contract's render row (a pure projection of a sim Contract, kept
+ * dependency-free so the panel reads it without the sim layer). The € figures + the
+ * served fraction are computed in main.ts from the live BuildSession + roster coverage.
+ */
+export interface ContractReadout {
+  id: string;
+  /** The metro region the contract serves (its target). */
+  label: string;
+  /** Lifecycle state. */
+  state: "offered" | "active" | "completed" | "failed";
+  /** Region size: how many grid cells the target spans. */
+  cellCount: number;
+  /** € per sim-second at FULL service (the tariff). */
+  tariffPerSecond: number;
+  /** The contract term (sim-seconds). */
+  termSeconds: number;
+  /** Served fraction ∈ [0,1] right now (ACTIVE: live; else 0). */
+  servedFraction: number;
+  /** Sim-seconds of service delivered so far / the term (ACTIVE progress). */
+  servedSecondsAccum: number;
+  /** Consecutive sim-seconds in breach (ACTIVE; a warning as it nears the grace). */
+  breachSecondsAccum: number;
+  /** € earned by this contract so far. */
+  earnedEur: number;
+  /** Sim-seconds left on the OFFER before it auto-expires (OFFERED only; else 0). */
+  offerSecondsLeft: number;
+  /** True iff this is the currently SELECTED contract (the accept/decline target). */
+  selected: boolean;
+}
+
+/** M2d — the contracts panel's per-frame render state (the offer board + the earn). */
+export interface ContractsRenderState {
+  /** Every live contract (offered/active/completed/failed), in offer order. */
+  contracts: ContractReadout[];
+  /** Count currently OFFERED (open board slots in use). */
+  offeredCount: number;
+  /** Count currently ACTIVE (serving + earning). */
+  activeCount: number;
+  /** Summed € revenue RATE (per sim-second) across all active contracts right now. */
+  revenueRatePerSecond: number;
+  /** Total € earned across all contracts this session (the wallet's contract income). */
+  totalEarnedEur: number;
+  /** On-hand build-session € balance (the wallet that earns + pays capex). */
+  balanceEur: number;
+}
+
 /** Per-frame snapshot the panels render from. */
 export interface FrameState {
   /**

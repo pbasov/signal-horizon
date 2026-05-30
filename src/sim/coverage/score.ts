@@ -85,6 +85,56 @@ export function scoreCoverage(
 }
 
 /**
+ * M2d — the SERVED FRACTION of a SUBSET of cells (a contract's target region) at a
+ * minimum CONNECTIVITY quality, from PRECOMPUTED asset world positions. This is the
+ * coverage truth a contract's revenue is keyed on (GDD §4.9 "demand met × quality"):
+ * of the region's demand, what fraction sits in a cell currently covered at/above the
+ * quality bar. Reuses the SAME allocation-free gates as the heatmap render
+ * ({@link coverageDimsAt}), so the € a contract earns matches the cells the heatmap
+ * lights over its region.
+ *
+ * Returns demand-weighted [0,1]: Σ(demand of served region cells) / Σ(demand of region
+ * cells). When the region has zero demand (degenerate) it falls back to the unweighted
+ * served-cell fraction so a contract always has a meaningful denominator. Pure.
+ *
+ * `cellIds` are indices into `grid.cells` (a contract's sorted region). `out` is an
+ * optional single reusable {@link CellCoverage} scratch (this evaluates one cell at a
+ * time, so one scratch suffices — no per-cell allocation).
+ */
+export function servedFractionAt(
+  grid: GeodesicGrid,
+  demand: DemandField,
+  cellIds: number[],
+  qualityThreshold: number,
+  assetEirps: number[],
+  assetPositions: Vec3[],
+  bodyCenter: Vec3,
+  bodyRadiusM: number,
+  out?: CellCoverage,
+): number {
+  const scratch: CellCoverage =
+    out ?? { cellId: -1, connectivity: 0, bandwidth: 0, latencyS: Infinity, links: [] };
+  let regionDemand = 0;
+  let servedDemand = 0;
+  let regionCells = 0;
+  let servedCells = 0;
+  for (let i = 0; i < cellIds.length; i++) {
+    const cell = grid.cells[cellIds[i]];
+    if (cell === undefined) continue;
+    const w = demand.of(cell.id);
+    regionDemand += w;
+    regionCells++;
+    coverageDimsAt(cell, assetEirps, assetPositions, bodyCenter, bodyRadiusM, scratch);
+    if (scratch.connectivity >= qualityThreshold) {
+      servedDemand += w;
+      servedCells++;
+    }
+  }
+  if (regionCells === 0) return 0;
+  return regionDemand > 0 ? servedDemand / regionDemand : servedCells / regionCells;
+}
+
+/**
  * M2c — score a whole grid from PRECOMPUTED asset world positions (not the
  * ephemeris). This is the score the M2c BUILD ROSTER uses: a launched sat's orbit
  * is not in the ephemeris, so its world position is computed by the roster's pure

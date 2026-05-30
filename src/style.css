@@ -429,6 +429,37 @@ body {
   text-transform: uppercase;
 }
 
+/* ---- CONTRACTS (M2d — the coverage-revenue board, GDD §4.9 / §3) ----------
+   Reuses the .telem 1-bit chrome housing; only the data carries colour, every
+   distinction redundant on a word/glyph (§8 CVD-safe). */
+.contract-list { margin-top: 2px; }
+.contract-empty { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; padding: 2px 0; }
+.contract-card {
+  border-top: 1px dashed var(--line-dim);
+  padding: 3px 4px 3px 2px;
+}
+.contract-card:first-child { border-top: 0; }
+/* the SELECTED contract (accept/decline target): a left rule + faint wash — a
+   position/contrast channel independent of colour. */
+.contract-card.sel {
+  border-left: 2px solid var(--cyan);
+  padding-left: 4px;
+  background: rgba(70, 214, 201, 0.06);
+}
+.contract-head { display: flex; gap: 6px; align-items: baseline; }
+.contract-mark { color: var(--cyan); flex: 0 0 auto; width: 8px; }
+.contract-label { color: var(--fg); flex: 1 1 auto; letter-spacing: 0.04em; }
+.contract-state { flex: 0 0 auto; font-size: 11px; }
+.contract-state.cyan  { color: var(--cyan); }
+.contract-state.green { color: var(--green); }
+.contract-state.amber { color: var(--amber); }
+.contract-state.red   { color: var(--red); font-weight: 700; }
+.contract-detail { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+.contract-detail.cyan  { color: var(--cyan); }
+.contract-detail.green { color: var(--green); }
+.contract-detail.amber { color: var(--amber); }
+.contract-detail.red   { color: var(--red); }
+
 /* ---- bottom status strip (always visible) -------------------------------- */
 .statusstrip {
   height: var(--statusbar-h);

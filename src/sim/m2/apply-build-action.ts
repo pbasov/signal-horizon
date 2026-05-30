@@ -6,10 +6,12 @@
  * applySessionAction holds for prefetch/policy.
  *
  * ORDERING: like the M1 prefetch, a build action is applied AFTER the tick it is
- * recorded at (post-drain — where main.ts's keypress fires). The build session has
- * no per-tick step() of its own (it is event-driven: state changes only on a logged
- * action), so "post-drain at atTick" simply means "apply at this tick", and live +
- * replay both apply it at the same `atTick` instant.
+ * recorded at (post-drain — where main.ts's keypress fires). M2d added a per-tick
+ * {@link BuildSession.step} (the contract economy), so the ordering is now: each tick
+ * step(t) runs first (offers/expires contracts + accrues revenue), THEN any build
+ * action recorded at that tick applies post-step. Both the live loop and the replay
+ * driver follow that same "step then post-drain action at atTick" order, so a
+ * deploy/launch/accept/decline lands at the same instant on both paths.
  *
  * PURE + DETERMINISTIC: a function of (eph, session, action). The launch's failure
  * roll is drawn from the session's SEEDED splitmix64 PRNG (advanced by exactly one
@@ -18,7 +20,13 @@
  */
 
 import type { Ephemeris } from "../ephemeris";
-import { KIND_DEPLOY_GROUND, KIND_LAUNCH_SAT, type SimAction } from "../action";
+import {
+  KIND_ACCEPT_CONTRACT,
+  KIND_DECLINE_CONTRACT,
+  KIND_DEPLOY_GROUND,
+  KIND_LAUNCH_SAT,
+  type SimAction,
+} from "../action";
 import type { BuildSession, BuildActionResult } from "./session";
 
 /**
@@ -41,6 +49,16 @@ export function applyBuildAction(
   if (action.kind === KIND_LAUNCH_SAT) {
     const presetId = typeof action.payload.presetId === "string" ? action.payload.presetId : "";
     return session.launchSat(presetId, action.atTick * dt);
+  }
+  if (action.kind === KIND_ACCEPT_CONTRACT) {
+    const id = typeof action.payload.contractId === "string" ? action.payload.contractId : "";
+    // The activation timestamp is the recorded instant (atTick·dt), the SAME sim-time
+    // main.ts accepts at live — so the contract begins its term at a reproducible t.
+    return session.acceptContract(id, action.atTick * dt);
+  }
+  if (action.kind === KIND_DECLINE_CONTRACT) {
+    const id = typeof action.payload.contractId === "string" ? action.payload.contractId : "";
+    return session.declineContract(id);
   }
   return null;
 }

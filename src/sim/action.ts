@@ -62,6 +62,21 @@ export const KIND_DEPLOY_GROUND = "deploy_ground";
  * `atTick` so the recorded roll + outcome replay bit-identically.
  */
 export const KIND_LAUNCH_SAT = "launch_sat";
+/**
+ * M2d — the player ACCEPTS an OFFERED contract (the build-the-monument loop earns,
+ * GDD §3/§4.9). Payload carries the contract id; the session moves that contract
+ * OFFERED → ACTIVE at `atTick` so it begins accruing revenue from the live coverage of
+ * its target region. Applied via the shared applier so live + replay agree. The offer
+ * GENERATOR (which offers + auto-expires contracts) is deterministic in the session's
+ * per-tick step() and needs no action — only the accept/decline are logged player intent.
+ */
+export const KIND_ACCEPT_CONTRACT = "accept_contract";
+/**
+ * M2d — the player DECLINES an OFFERED contract. Payload carries the contract id; the
+ * session retires that offer (OFFERED → FAILED, i.e. not taken) at `atTick`. Logged so
+ * the offer board state reproduces on replay.
+ */
+export const KIND_DECLINE_CONTRACT = "decline_contract";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -148,6 +163,23 @@ export function deployGround(siteIndex: number, atTick = 0): SimAction {
  */
 export function launchSat(presetId: string, atTick = 0): SimAction {
   return simAction(KIND_LAUNCH_SAT, atTick, { presetId });
+}
+
+/**
+ * M2d — ACCEPT an offered contract by id, at a tick. The contract id round-trips
+ * through the payload; the session moves it OFFERED → ACTIVE at `atTick` so live +
+ * replay begin accruing its coverage revenue at the same instant.
+ */
+export function acceptContract(contractId: string, atTick = 0): SimAction {
+  return simAction(KIND_ACCEPT_CONTRACT, atTick, { contractId });
+}
+
+/**
+ * M2d — DECLINE an offered contract by id, at a tick. The session retires the offer at
+ * `atTick` (it leaves the open-offer board), so the board state replays from the log.
+ */
+export function declineContract(contractId: string, atTick = 0): SimAction {
+  return simAction(KIND_DECLINE_CONTRACT, atTick, { contractId });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

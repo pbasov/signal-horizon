@@ -2,13 +2,15 @@
  * Entry point — builds the chrome scaffold, wires the sim → view loop, and routes
  * keyboard control. Everything runs on SIM time from one SimClock.
  *
- * Keys:  1–6 WM preset (6 = PARSE) · 0 reset layout · C/O/S/T camera presets ·
- *        R reset camera · F cycle focus · Space pause · , / . time scale ·
+ * Keys:  1–7 WM preset (6 = PARSE · 7 = CONTRACTS) · 0 reset layout · C/O/S/T camera
+ *        presets · R reset camera · F cycle focus · Space pause · , / . time scale ·
  *        P prefetch (pre-position fresh data into the Mars cache) · A policy ·
  *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record) ·
  *        H toggle the COVERAGE HEATMAP · D cycle its dimension (M2b) ·
  *        B deploy a ground station · L launch a satellite · ; cycle launch preset
- *        (M2c — the build-the-monument loop: the heatmap reads the LIVE roster)
+ *        (M2c — the build-the-monument loop: the heatmap reads the LIVE roster) ·
+ *        N cycle the selected contract · K accept it · J decline it
+ *        (M2d — contracts + coverage revenue: serve a region's coverage to EARN €)
  *
  * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
  * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
@@ -35,6 +37,8 @@ import {
   setPrefetchPolicy,
   deployGround as deployGroundAction,
   launchSat as launchSatAction,
+  acceptContract as acceptContractAction,
+  declineContract as declineContractAction,
 } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
 import { applyBuildAction } from "./sim/m2/apply-build-action";
@@ -56,8 +60,9 @@ import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
 import { ParsePanel } from "./panels/parse";
+import { Contracts } from "./panels/contracts";
 import { StatusStrip } from "./panels/status";
-import type { FrameState } from "./types";
+import type { ContractReadout, ContractsRenderState, FrameState } from "./types";
 
 applyDither();
 
@@ -121,6 +126,10 @@ let buildScratchPos: Vec3[] = [];
 let deploySiteCursor = 0;
 // The launch-preset cursor: L launches into the selected preset; ; cycles it.
 let launchPresetCursor = 0;
+// M2d — the selected contract id (the accept/decline target). N cycles it among the
+// live contracts; K accepts the selected offer; J declines it. Tracked by id (not
+// index) so it survives the board changing as offers come + go.
+let selectedContractId: string | null = null;
 
 /**
  * M2c — build the orrery's per-frame {@link BuildRenderState}: the roster's pure
@@ -268,6 +277,115 @@ function launchSatellite(): void {
   }
 }
 
+/**
+ * M2d — CYCLE the selected contract among the live (OFFERED + ACTIVE) ones, so the
+ * accept/decline keys have a clear target. Pure UI bookkeeping (no sim mutation, no
+ * logged action): selection is a live cursor, not part of the deterministic state.
+ */
+function cycleSelectedContract(dir: number): void {
+  const live = build.contracts.filter((c) => c.state === "offered" || c.state === "active");
+  if (live.length === 0) {
+    selectedContractId = null;
+    return;
+  }
+  const cur = live.findIndex((c) => c.id === selectedContractId);
+  const next = ((cur < 0 ? 0 : cur + dir) % live.length + live.length) % live.length;
+  selectedContractId = live[next].id;
+}
+
+/** M2d — resolve the current accept/decline target: the selected contract if it is
+ * still OFFERED, else the first OFFERED contract (so K/J always act on something sane). */
+function targetOfferedContract(): string | null {
+  const sel = build.contracts.find((c) => c.id === selectedContractId);
+  if (sel && sel.state === "offered") return sel.id;
+  const firstOffer = build.contracts.find((c) => c.state === "offered");
+  return firstOffer ? firstOffer.id : null;
+}
+
+/**
+ * M2d — ACCEPT the targeted OFFERED contract: recorded + applied via the SHARED
+ * applyBuildAction at the current tick (live + replay agree), moving it OFFERED →
+ * ACTIVE so it starts accruing coverage revenue. Logs a NOTICE so the deal is felt.
+ */
+function acceptSelectedContract(): void {
+  const id = targetOfferedContract();
+  if (id === null) return;
+  const action = acceptContractAction(id, clock.tick);
+  const res = applyBuildAction(eph, build, action, DT);
+  if (res && res.kind === "contract_accepted" && res.contract) {
+    addAction(save, action);
+    selectedContractId = id;
+    const c = res.contract;
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "CONTRACT",
+      value: `+€${Math.round(c.tariffPerSecond * 3600)}/hr`,
+      msg: `accepted ${c.label} — serve the region to earn (term ${Math.round(c.termSeconds / 3600)}h)`,
+    });
+  }
+}
+
+/** M2d — DECLINE the targeted OFFERED contract: recorded + applied via the shared
+ * applier at the current tick. The offer leaves the board (it was not taken). */
+function declineSelectedContract(): void {
+  const id = targetOfferedContract();
+  if (id === null) return;
+  const action = declineContractAction(id, clock.tick);
+  const res = applyBuildAction(eph, build, action, DT);
+  if (res && res.kind === "contract_declined" && res.contract) {
+    addAction(save, action);
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "CONTRACT",
+      msg: `declined ${res.contract.label} — offer retired`,
+    });
+  }
+}
+
+/**
+ * M2d — build the CONTRACTS panel's per-frame {@link ContractsRenderState}: project the
+ * build session's live contracts into render rows + the network earn summary. PURE reads
+ * of the build session (the served fraction is the live roster coverage); computed here
+ * in main.ts (orchestration) so the panel stays a thin painter. Allocates a small array
+ * per frame (a handful of contracts) — only consumed while the panel is on screen.
+ */
+function contractsRenderState(): ContractsRenderState {
+  const t = clock.seconds;
+  const list = build.contracts;
+  let offeredCount = 0;
+  let activeCount = 0;
+  let totalEarnedEur = 0;
+  const contracts: ContractReadout[] = list.map((c) => {
+    if (c.state === "offered") offeredCount++;
+    else if (c.state === "active") activeCount++;
+    totalEarnedEur += c.earnedEur;
+    return {
+      id: c.id,
+      label: c.label,
+      state: c.state,
+      cellCount: c.cellIds.length,
+      tariffPerSecond: c.tariffPerSecond,
+      termSeconds: c.termSeconds,
+      servedFraction: c.state === "active" ? c.lastServedFraction : 0,
+      servedSecondsAccum: c.servedSecondsAccum,
+      breachSecondsAccum: c.breachSecondsAccum,
+      earnedEur: c.earnedEur,
+      offerSecondsLeft: c.state === "offered" ? Math.max(0, c.offerExpiresAtS - t) : 0,
+      selected: c.id === selectedContractId,
+    };
+  });
+  return {
+    contracts,
+    offeredCount,
+    activeCount,
+    revenueRatePerSecond: build.contractRevenueRatePerSecond(eph, t),
+    totalEarnedEur,
+    balanceEur: build.balance,
+  };
+}
+
 // --- audio (M1-11) ----------------------------------------------------------
 // The one-way cue bus: tickSim (orchestration, NOT the pure sim) emits semantic
 // cues on demand-state transitions; the frame loop drains them into AudioCue.
@@ -293,6 +411,11 @@ function tickSim(t: number): void {
   // TRUTHFUL sim event stream (session.events), rendered each frame below.
   mission.update(t);
   demand = session.step(eph, t);
+  // M2d — drive the BUILD session's per-tick contract economy on the SAME fixed tick:
+  // offer/expire contracts deterministically + accrue coverage revenue into the build
+  // wallet (DT-invariant, summed once per step). This is what CLOSES the §3 loop — the
+  // coverage the player built now EARNS € back. Same shared step() the replay drives.
+  build.step(eph, t, DT);
   // The Mission's single Earth→Mars packet represents the AGGREGATE in-flight
   // wait (all feeds share the same geometry); the orrery draws a packet PER feed
   // in flight from the per-feed readout. Launch the packet whenever any leg is
@@ -348,6 +471,10 @@ const finance = new Finance();
 // no sim state; refreshParse() folds the truthful event log into a RunParse and
 // hands it over whenever the player opens the PARSE view (preset 6 / key G).
 const parse = new ParsePanel();
+// M2d — THE CONTRACTS BOARD (GDD §4.9 / §3): the coverage-revenue loop made glanceable.
+// Holds no sim state; main.ts hands it a per-frame ContractsRenderState projected from
+// the live BuildSession (offers + active served% + the earn).
+const contractsPanel = new Contracts();
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
@@ -388,6 +515,7 @@ const registry = new Map<string, PanelHandle>([
   ["telemetry", telemetry],
   ["finance", finance],
   ["parse", parse],
+  ["contracts", contractsPanel],
 ]);
 
 const shell = new Shell(wmCanvas, registry);
@@ -463,7 +591,7 @@ if (import.meta.env.DEV) {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   const k = e.key;
-  if (k >= "1" && k <= "6") setWmPreset(Number(k) - 1);
+  if (k >= "1" && k <= "7") setWmPreset(Number(k) - 1);
   else if (k === "0") shell.reset();
   else if (k === "g" || k === "G") {
     // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record): open the PARSE preset,
@@ -504,6 +632,17 @@ window.addEventListener("keydown", (e) => {
       value: LAUNCH_PRESETS[launchPresetCursor].label,
       msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
     });
+  } else if (k === "n" || k === "N") {
+    // M2d — CYCLE the selected contract (the accept/decline target) among the live
+    // offered + active ones. UI cursor only (no sim mutation, no logged action).
+    cycleSelectedContract(k === "N" ? -1 : 1);
+  } else if (k === "k" || k === "K") {
+    // M2d — ACCEPT the targeted OFFERED contract (it goes ACTIVE + starts earning from
+    // the live coverage of its region). Recorded + applied via the shared applier.
+    acceptSelectedContract();
+  } else if (k === "j" || k === "J") {
+    // M2d — DECLINE the targeted OFFERED contract (it leaves the board, not taken).
+    declineSelectedContract();
   }
   else if (k === " ") {
     e.preventDefault();
@@ -638,6 +777,9 @@ function frame(now: number): void {
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);
+  // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
+  // the live build session each frame; the panel rebuilds its rows only on a change.
+  contractsPanel.render(contractsRenderState());
   // E10c — while THE PARSE view is up, keep the reviewable record live (a read-only
   // re-fold of the truthful log; it never mutates sim state). Only when that preset
   // is shown, so the per-frame full rebuild is paid for only when it is on screen.

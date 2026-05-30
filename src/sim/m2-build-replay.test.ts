@@ -5,8 +5,12 @@ import { saveGame, addAction, saveFromJSON, saveToJSON } from "./save";
 import {
   deployGround,
   launchSat,
+  acceptContract,
+  declineContract,
   KIND_DEPLOY_GROUND,
   KIND_LAUNCH_SAT,
+  KIND_ACCEPT_CONTRACT,
+  KIND_DECLINE_CONTRACT,
   type SimAction,
 } from "./action";
 import { BuildSession } from "./m2/session";
@@ -17,50 +21,78 @@ import { scoreCoverageAt } from "./coverage/score";
 import type { Vec3 } from "./ephemeris";
 
 /**
- * M2c BUILD-LOOP DETERMINISM REPLAY (the placeable-asset roster + launch market).
+ * M2 BUILD-LOOP DETERMINISM REPLAY (placeable-asset roster + launch market + M2d
+ * contracts + coverage revenue — the loop CLOSES here).
  *
  * --- WHAT THIS GUARDS -------------------------------------------------------
- * The M2c build session is a SEPARATE world from the M1 cache/economy session, so
- * it carries its OWN replay golden — the M1 golden 544847093270497462n is UNTOUCHED
- * (m1-session-replay.test.ts still pins it). This proves the build-the-monument
- * loop is deterministic via the action log: replay the same seed + dt + a log of
- * DEPLOY + LAUNCH actions through a BuildSession, and the ROSTER (every ground
- * station's lat/lon + every launched sat's orbit), the € BALANCE, and the launch
- * PRNG state reproduce bit-identically — INCLUDING a launch FAILURE (the failure
- * roll is drawn from the seeded splitmix64 PRNG, so it replays).
+ * The M2 build session is a SEPARATE world from the M1 cache/economy session, so it
+ * carries its OWN replay golden — the M1 golden 544847093270497462n is UNTOUCHED
+ * (m1-session-replay.test.ts still pins it). This proves the WHOLE build-the-monument
+ * loop is deterministic via the action log + the per-tick economy step:
+ *   - DEPLOY + LAUNCH (incl. a seeded launch FAILURE) reproduce the ROSTER + the
+ *     launch PRNG state bit-identically (the M2c guarantee, preserved);
+ *   - M2d: the per-tick BuildSession.step() OFFERS contracts deterministically off the
+ *     SAME seeded PRNG, accrues coverage revenue into the wallet (DT-invariant), and
+ *     advances each contract's state machine — so the CONTRACTS + the BALANCE + the
+ *     generator cursor all fold into the replay hash.
  *
- * The build session has no per-tick step(); it is event-driven (state changes only
- * on a logged action), so the replay applies each build action at its recorded tick
- * via the SHARED applyBuildAction — the SAME code path main.ts uses live.
- *
- * Plus the COVERAGE-GROWS invariant: the covered-demand fraction at the end of the
- * build sequence is strictly greater than at the start (the monument grew).
+ * ORDERING (live == replay): each tick step(t) runs first (offers/expires + accrues),
+ * THEN any build/contract action recorded at that tick applies post-step — the SAME
+ * "step then post-drain action" order main.ts uses live.
  */
 
-const SEED = 1234567n;
 const GOLDEN_DT = 1 / 60;
 
-/** The recorded build sequence: deploy three stations + launch four sats (LEO/MEO/
- * GEO), at increasing ticks. One launch is engineered to FAIL on this PRNG stream
- * (asserted below) so the failure path is exercised in the golden. */
+/** Sim-time the golden replay runs to: past the FIRST deterministic offer on this PRNG
+ * stream (after the launch rolls) — c0 @ t≈1800 s — with a margin to ACCEPT it and let
+ * the per-tick economy accrue real coverage revenue. In ticks: t/DT. (DECLINE is
+ * exercised in a dedicated test below so the golden window stays fast; the second offer
+ * c1 only fires ~t12254 s, far past this window.) */
+const MAX_T_SECONDS = 7000;
+const MAX_TICK = Math.round(MAX_T_SECONDS / GOLDEN_DT);
+
+const TICK_DEPLOY_1 = 100;
+const TICK_DEPLOY_SA = 150; // SOUTH AMERICA — covers c0's target region (see below)
+const TICK_DEPLOY_2 = 200;
+const TICK_DEPLOY_NA = 250; // NORTH AMERICA — broadens the western coverage
+const TICK_LAUNCH_1 = 300;
+const TICK_DEPLOY_3 = 400;
+const TICK_LAUNCH_2 = 500;
+const TICK_LAUNCH_3 = 600;
+const TICK_LAUNCH_4 = 700;
+/** Accept c0 shortly after the first offer (t≈1800 s) — the deterministic first offer
+ * this seed's stream produces with the launches. c0 targets SOUTH AMERICA (RNG-chosen);
+ * the build deploys a station over it (site 6) so the accepted contract is genuinely
+ * SERVED and EARNS across the window. */
+const TICK_ACCEPT = Math.round(1850 / GOLDEN_DT);
+
+/**
+ * The recorded build sequence: deploy stations over real demand (incl. SOUTH AMERICA +
+ * NORTH AMERICA so the accepted contract's region is covered) + launch four sats
+ * (LEO/MEO/GEO, one engineered to FAIL on this PRNG stream), then — once the
+ * deterministic offer generator has put c0 on the board — ACCEPT it (which then accrues
+ * real coverage revenue across the window).
+ */
 function buildLog() {
-  const sg = saveGame(SEED, GOLDEN_DT, { system: "data/system.json" });
-  addAction(sg, deployGround(1, 100)); // SOUTH ASIA
-  addAction(sg, deployGround(3, 200)); // NORTH ATLANTIC EU
-  addAction(sg, launchSat("leo_53", 300));
-  addAction(sg, deployGround(5, 400)); // SUB-SAHARAN AFRICA
-  addAction(sg, launchSat("meo_63", 500));
-  addAction(sg, launchSat("geo_eq", 600));
-  addAction(sg, launchSat("leo_53", 700));
+  const sg = saveGame(1234567n, GOLDEN_DT, { system: "data/system.json" });
+  addAction(sg, deployGround(1, TICK_DEPLOY_1)); // SOUTH ASIA
+  addAction(sg, deployGround(6, TICK_DEPLOY_SA)); // SOUTH AMERICA (serves c0)
+  addAction(sg, deployGround(3, TICK_DEPLOY_2)); // NORTH ATLANTIC EU
+  addAction(sg, deployGround(2, TICK_DEPLOY_NA)); // NORTH AMERICA
+  addAction(sg, launchSat("leo_53", TICK_LAUNCH_1));
+  addAction(sg, deployGround(5, TICK_DEPLOY_3)); // SUB-SAHARAN AFRICA
+  addAction(sg, launchSat("meo_63", TICK_LAUNCH_2));
+  addAction(sg, launchSat("geo_eq", TICK_LAUNCH_3));
+  addAction(sg, launchSat("leo_53", TICK_LAUNCH_4));
+  addAction(sg, acceptContract("c0", TICK_ACCEPT));
   return sg;
 }
 
 /**
  * Fold the build session's mutable state into a u64 (reusing the state-hash
- * primitives). In a fixed order: balance (double) + launchedCount (int) + the PRNG
- * state (u64) + per-asset, in roster order, a kind tag + every numeric field (the
- * lat/lon for a ground station, the orbital elements for a sat). Everything folded
- * is bit-stable across runs.
+ * primitives). Order: balance + launchedCount + PRNG state + roster (every numeric
+ * field per asset) + the M2d contract economy (generator cursor + every contract's
+ * state/accums/earned). Everything folded is bit-stable across runs.
  */
 function buildStateHash(s: BuildSession): bigint {
   const snap = s.snapshot();
@@ -92,6 +124,26 @@ function buildStateHash(s: BuildSession): bigint {
       acc = mixFloat(acc, a.eirp);
     }
   }
+  // M2d — the contract economy.
+  acc = mixFloat(acc, snap.lastStepS);
+  acc = mixFloat(acc, snap.generator.nextOfferAtS);
+  acc = mixInt(acc, BigInt(snap.generator.offeredCount));
+  acc = mixInt(acc, BigInt(snap.contracts.length));
+  for (const c of snap.contracts) {
+    acc = mixString(acc, c.id);
+    acc = mixString(acc, c.state);
+    acc = mixInt(acc, BigInt(c.cellIds.length));
+    for (const id of c.cellIds) acc = mixInt(acc, BigInt(id));
+    acc = mixFloat(acc, c.regionDemand);
+    acc = mixFloat(acc, c.tariffPerSecond);
+    acc = mixFloat(acc, c.termSeconds);
+    acc = mixFloat(acc, c.offeredAtS);
+    acc = mixFloat(acc, c.offerExpiresAtS);
+    acc = mixFloat(acc, c.activatedAtS);
+    acc = mixFloat(acc, c.servedSecondsAccum);
+    acc = mixFloat(acc, c.breachSecondsAccum);
+    acc = mixFloat(acc, c.earnedEur);
+  }
   return acc;
 }
 
@@ -102,29 +154,38 @@ interface ReplayResult {
 }
 
 /**
- * Replay a build action log through a BuildSession: apply each DEPLOY/LAUNCH action
- * at its recorded tick via the SHARED applyBuildAction (same path as main.ts).
- * Returns the folded state + the session itself.
+ * Replay a build action log through a BuildSession by STEPPING every fixed tick from 0
+ * to MAX_TICK at `sg.dt`: on each tick run step(t) FIRST (the per-tick contract economy
+ * — offers/expires + revenue accrual), THEN apply any build/contract action recorded at
+ * that tick post-step via the SHARED applyBuildAction (the SAME path main.ts uses live).
  */
 function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
   const eph = loadEphemeris();
   const session = new BuildSession();
-  // Index build actions by tick, applied in log order at that tick.
   const byTick = new Map<number, SimAction[]>();
-  let maxTick = 0;
   for (const a of sg.actions) {
-    if (a.kind === KIND_DEPLOY_GROUND || a.kind === KIND_LAUNCH_SAT) {
+    if (isBuildKind(a.kind)) {
       const list = byTick.get(a.atTick) ?? [];
       list.push(a);
       byTick.set(a.atTick, list);
-      if (a.atTick > maxTick) maxTick = a.atTick;
     }
   }
-  for (let tick = 0; tick <= maxTick; tick++) {
+  for (let tick = 0; tick <= MAX_TICK; tick++) {
+    const t = tick * sg.dt;
+    session.step(eph, t, sg.dt);
     const list = byTick.get(tick);
     if (list !== undefined) for (const a of list) applyBuildAction(eph, session, a, sg.dt);
   }
   return { hash: buildStateHash(session), balance: session.balance, session };
+}
+
+function isBuildKind(kind: string): boolean {
+  return (
+    kind === KIND_DEPLOY_GROUND ||
+    kind === KIND_LAUNCH_SAT ||
+    kind === KIND_ACCEPT_CONTRACT ||
+    kind === KIND_DECLINE_CONTRACT
+  );
 }
 
 /** Covered-demand fraction of a session's LIVE roster at sim-time t (the monument size). */
@@ -140,15 +201,16 @@ function coveredFraction(session: BuildSession, t: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// PINNED M2c build-loop replay golden (deploy + launch + failure, roster + €).
-// SEPARATE from the M1 golden 544847093270497462n (a different world). Bootstrapped
-// by running the replay once; pinned here as the regression guard. Any change to
-// the roster shape, the launch presets, the deploy sites, the launch PRNG draw, or
-// the starter roster moves this value.
+// PINNED M2 build-loop replay golden (deploy + launch + failure + M2d contracts +
+// coverage revenue). SEPARATE from the M1 golden 544847093270497462n (a different
+// world). Bootstrapped by running the replay once; pinned here as the regression
+// guard. Any change to the roster shape, the launch presets/sites, the launch PRNG
+// draw, the starter roster, the contract model, the offer generator, or the revenue
+// math moves this value.
 // ---------------------------------------------------------------------------
-const BUILD_REPLAY_GOLDEN = 2503511112643458855n;
+const BUILD_REPLAY_GOLDEN = 5706799219860839795n;
 
-describe("m2c build-loop replay golden — deploy + launch market + roster", () => {
+describe("m2 build-loop replay golden — deploy + launch + M2d contracts + revenue", () => {
   it("pins the build-session replay state hash for the golden build log (regression guard)", () => {
     const r = replay(buildLog());
     expect(r.hash).toBe(BUILD_REPLAY_GOLDEN);
@@ -162,13 +224,22 @@ describe("m2c build-loop replay golden — deploy + launch market + roster", () 
     expect(a.session.snapshot()).toEqual(b.session.snapshot());
   });
 
-  it("LIVE == REPLAY: applying the same actions directly reproduces the scheduler-style replay", () => {
+  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay", () => {
     const eph = loadEphemeris();
     const live = new BuildSession();
+    const byTick = new Map<number, SimAction[]>();
     for (const a of buildLog().actions) {
-      if (a.kind === KIND_DEPLOY_GROUND || a.kind === KIND_LAUNCH_SAT) {
-        applyBuildAction(eph, live, a, GOLDEN_DT);
+      if (isBuildKind(a.kind)) {
+        const list = byTick.get(a.atTick) ?? [];
+        list.push(a);
+        byTick.set(a.atTick, list);
       }
+    }
+    for (let tick = 0; tick <= MAX_TICK; tick++) {
+      const t = tick * GOLDEN_DT;
+      live.step(eph, t, GOLDEN_DT);
+      const list = byTick.get(tick);
+      if (list !== undefined) for (const a of list) applyBuildAction(eph, live, a, GOLDEN_DT);
     }
     const replayed = replay(buildLog());
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
@@ -176,8 +247,6 @@ describe("m2c build-loop replay golden — deploy + launch market + roster", () 
   });
 
   it("the build log exercises a launch FAILURE deterministically (the seeded-PRNG risk)", () => {
-    // Drive the launches through a fresh session, recording each outcome, and assert
-    // at least one launch FAILED (and that the same seed gives the same outcomes).
     const eph = loadEphemeris();
     const s1 = new BuildSession();
     const s2 = new BuildSession();
@@ -203,13 +272,107 @@ describe("m2c build-loop replay golden — deploy + launch market + roster", () 
     const startFrac = coveredFraction(start, t);
     const r = replay(buildLog());
     const endFrac = coveredFraction(r.session, t);
-    // Building deployed stations + launched sats, so the covered-demand fraction at
-    // the end is strictly greater than the starter roster's (the web grew).
     expect(endFrac).toBeGreaterThan(startFrac);
     expect(endFrac).toBeGreaterThan(0);
   });
 
-  it("a build action only mutates on a build kind; an unknown action is a no-op", () => {
+  it("M2d — the LOOP CLOSES: an accepted contract goes ACTIVE, accrues €, and the wallet EARNS it back", () => {
+    const r = replay(buildLog());
+    const accepted = r.session.contracts.find((c) => c.id === "c0");
+    expect(accepted).toBeDefined();
+    // c0 was accepted → active (or completed if its term elapsed in-window).
+    expect(["active", "completed"]).toContain(accepted!.state);
+    // The accepted contract served real coverage and EARNED € (the loop pays back).
+    expect(accepted!.servedSecondsAccum).toBeGreaterThan(0);
+    expect(accepted!.earnedEur).toBeGreaterThan(2000);
+    // THE LOOP CLOSES: the build spent ~€5,600 of capex (six deploys + four launches,
+    // one of which FAILED — € lost), bottoming the wallet near −€600; the accepted
+    // contract's sustained coverage revenue lifted it back to clearly SOLVENT (> €1,500
+    // and climbing) over the window — build → serve → REVENUE offsetting the capex.
+    expect(r.balance).toBeGreaterThan(1500);
+    // And the contract revenue exceeds the M2c capex it offsets (earned > a launch's €).
+    expect(accepted!.earnedEur).toBeGreaterThan(1800);
+  });
+
+  it("M2d — DECLINE: an offered contract declined via the shared applier retires (live==replay)", () => {
+    // Step a fresh session to the first offer, then DECLINE it through applyBuildAction
+    // (the SAME path main.ts uses) and assert it leaves the open-offer board.
+    const eph = loadEphemeris();
+    const drive = () => {
+      const s = new BuildSession();
+      let declineTick = -1;
+      for (let tick = 0; tick <= MAX_TICK; tick++) {
+        const t = tick * GOLDEN_DT;
+        s.step(eph, t, GOLDEN_DT);
+        if (declineTick < 0 && s.contracts.some((c) => c.state === "offered")) {
+          declineTick = tick + 1; // decline on the next tick (post-step, like a keypress)
+        }
+        if (tick === declineTick) {
+          const offered = s.contracts.find((c) => c.state === "offered")!;
+          const res = applyBuildAction(eph, s, declineContract(offered.id, tick), GOLDEN_DT);
+          expect(res!.kind).toBe("contract_declined");
+        }
+      }
+      return s;
+    };
+    const a = drive();
+    const b = drive();
+    // The declined contract is retired (failed = not taken) and the result reproduces.
+    expect(a.contracts.some((c) => c.state === "failed")).toBe(true);
+    expect(a.snapshot()).toEqual(b.snapshot()); // deterministic
+  });
+
+  it("M2d — DT-INVARIANT revenue: stepping to the same sim-time at 1× vs a coarse dt yields the same €", () => {
+    const eph = loadEphemeris();
+    // A built session with one ACTIVE contract; accrue to the SAME sim-time two ways.
+    const make = () => {
+      const s = new BuildSession();
+      // Deploy + launch coverage at t=0 so the region is served from the start.
+      s.deployGround(1);
+      s.deployGround(3);
+      s.deployGround(5);
+      s.launchSat("leo_53", 0);
+      s.launchSat("meo_63", 0);
+      s.launchSat("geo_eq", 0);
+      return s;
+    };
+    const T = 7200; // 2 sim-hours — well within a contract term, no completion.
+    // FINE: step at DT for the whole window (offers fire + we accept the first).
+    const fine = make();
+    let acceptedFine = false;
+    for (let tick = 0; tick * GOLDEN_DT <= T; tick++) {
+      const t = tick * GOLDEN_DT;
+      fine.step(eph, t, GOLDEN_DT);
+      if (!acceptedFine && fine.contracts.some((c) => c.state === "offered")) {
+        const first = fine.contracts.find((c) => c.state === "offered")!;
+        fine.acceptContract(first.id, t);
+        acceptedFine = true;
+      }
+    }
+    // COARSE: step in big 60 s chunks to the same T, accepting the same first offer.
+    const coarse = make();
+    let acceptedCoarse = false;
+    const DT_COARSE = 60;
+    for (let t = 0; t <= T; t += DT_COARSE) {
+      coarse.step(eph, t, DT_COARSE);
+      if (!acceptedCoarse && coarse.contracts.some((c) => c.state === "offered")) {
+        const first = coarse.contracts.find((c) => c.state === "offered")!;
+        coarse.acceptContract(first.id, t);
+        acceptedCoarse = true;
+      }
+    }
+    // Both accepted the SAME deterministic first offer (same id) and served the same
+    // sim-time of coverage, so the earned € + balance match to a tight tolerance
+    // (independent of the tick rate — the SD-20 DT-invariance contract).
+    const cf = fine.contracts.find((c) => c.state === "active")!;
+    const cc = coarse.contracts.find((c) => c.state === "active")!;
+    expect(cc.id).toBe(cf.id);
+    expect(cc.earnedEur).toBeCloseTo(cf.earnedEur, 2);
+    expect(coarse.balance).toBeCloseTo(fine.balance, 2);
+    expect(cf.earnedEur).toBeGreaterThan(0);
+  });
+
+  it("a build/contract action only mutates on a known kind; an unknown action is a no-op", () => {
     const eph = loadEphemeris();
     const session = new BuildSession();
     const before = session.snapshot();
@@ -224,6 +387,7 @@ describe("m2c build-loop replay golden — deploy + launch market + roster", () 
     expect(reloaded).not.toBeNull();
     expect(reloaded!.actions.some((a) => a.kind === KIND_LAUNCH_SAT)).toBe(true);
     expect(reloaded!.actions.some((a) => a.kind === KIND_DEPLOY_GROUND)).toBe(true);
+    expect(reloaded!.actions.some((a) => a.kind === KIND_ACCEPT_CONTRACT)).toBe(true);
     const a = replay(sg);
     const b = replay(reloaded!);
     expect(b.hash).toBe(a.hash);

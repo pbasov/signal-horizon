@@ -20,6 +20,11 @@
  * wide left column (study the post-run record) with the live log + finance beside
  * it, so the optimiser can open the legible record and grind the gap (§4.12 "slow-
  * loop friendly — reviewable at rest, not only glanceable in the heat of play").
+ *
+ * CONTRACTS (key 7) is the M2d build-the-monument earning preset (GDD §4.9 / §3): the
+ * orrery (heatmap up → the coverage web you serve) in the wide left column, with the
+ * CONTRACTS board (the offers + the served% + the earn) and FINANCE/the build wallet
+ * beside it — so you watch the balance CLIMB as coverage serves the accepted contracts.
  */
 import type { ZoneGrid } from "./zonegrid";
 
@@ -114,6 +119,23 @@ export const PRESET_SPECS: PresetSpec[] = [
         weight: 0.4,
         rows: [
           { weight: 1.4, host: "system-log" },
+          { weight: 1.0, host: "finance" },
+        ],
+      },
+    ],
+  },
+  {
+    // CONTRACTS (key 7) — the M2d coverage-revenue preset. The orrery (toggle the
+    // heatmap with H to see the served web) takes the wide left column; the CONTRACTS
+    // board + FINANCE sit beside it so the offers, the served%, and the climbing
+    // balance are all on one screen (the §3 build → serve → REVENUE loop, made visible).
+    name: "CONTRACTS",
+    columns: [
+      { weight: 0.6, rows: [{ weight: 1, host: "orrery" }] },
+      {
+        weight: 0.4,
+        rows: [
+          { weight: 1.6, host: "contracts" },
           { weight: 1.0, host: "finance" },
         ],
       },
