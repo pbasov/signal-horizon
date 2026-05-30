@@ -62,10 +62,20 @@ export interface PrefetchPolicy {
  * (a probe over the shipped 5-feed/3-slot roster put the net-balance peak at
  * ≈0.70, beating both lower floors — wasted fetches — and higher floors —
  * eviction churn), so when the player switches the autopilot on it starts at a
- * good value to then tune around. PLACEHOLDER — re-tune if the rates change.
+ * good value to then tune around.
+ *
+ * E10b retunes blackoutLeadS 1200 → 1800. The old 1200 s lead was SHORTER than the
+ * Earth↔Mars one-way light time near conjunction (≈1300 s at the window edge,
+ * peaking ≈1308 s over the approach), so a default-mode pre-stage launched at the
+ * forecast boundary (enter − lead) landed at enter + ~100 s — AFTER the gap had
+ * already opened, missing the light-gap it was meant to beat (the E10a minor). A
+ * 1800 s lead EXCEEDS the worst one-way over the whole approach by ≈500 s, so the
+ * earliest pre-stage now lands ≈500 s BEFORE the blackout opens and genuinely
+ * serves through it (proven in scenario.test.ts). PLACEHOLDER — keep lead > the
+ * max one-way light at the window edge if the epoch/corridor changes.
  */
 export function defaultPolicy(): PrefetchPolicy {
-  return { mode: "manual", freshnessFloor: 0.7, blackoutLeadS: 1200, maxConcurrentAuto: 3 };
+  return { mode: "manual", freshnessFloor: 0.7, blackoutLeadS: 1800, maxConcurrentAuto: 3 };
 }
 
 /** The minimal per-feed view {@link selectAutoPrefetches} needs (decoupled from Demand). */

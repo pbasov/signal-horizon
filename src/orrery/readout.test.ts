@@ -59,6 +59,7 @@ const demand = (over: Partial<DemandReadout> = {}): DemandReadout => ({
 
 const frame = (over: Partial<FrameState> = {}): FrameState => ({
   simSeconds: 0,
+  missionElapsedSeconds: 0,
   scaleLabel: "1×",
   paused: false,
   wmPreset: "OVERVIEW",

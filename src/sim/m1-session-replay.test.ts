@@ -263,7 +263,13 @@ function liveDrive(
 // HERE as the regression guard. Any change to the economy fold, the session
 // loop, the prefetch action, the rng, or the scheduler moves this value.
 // ---------------------------------------------------------------------------
-const REPLAY_GOLDEN = 8072561960299808504n;
+// E10b re-pin: the default policy's blackoutLeadS retuned 1200 → 1800 (so a
+// default-mode pre-stage beats the Earth↔Mars light-gap near conjunction). The
+// session boots with defaultPolicy(), and the replay fold folds policy.blackoutLeadS,
+// so the golden moves by exactly that field. Determinism is unchanged — the
+// same-log-twice, scale/frame-slicing, and LIVE==REPLAY tests still pass; only
+// the pinned value moved. (Prior E10a golden: 8072561960299808504n.)
+const REPLAY_GOLDEN = 544847093270497462n;
 
 describe("m1-session replay golden — action-driven economy + cache + fetch (E3)", () => {
   it("pins the M1-session replay state hash for the golden SaveGame (regression guard)", () => {

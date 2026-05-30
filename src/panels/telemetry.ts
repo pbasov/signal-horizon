@@ -59,7 +59,9 @@ export class Telemetry implements PanelHandle {
 
     // GROUP: CLOCK
     const clock = group("CLOCK");
-    this.vSim = valueOf(row(clock, "SIM"));
+    // MET = Mission Elapsed Time (since the scenario epoch t0) — not the raw J2000
+    // sim-time, which boots at ~168 days. See scenario.ts / FrameState.
+    this.vSim = valueOf(row(clock, "MET"));
     this.vScale = valueOf(row(clock, "SCALE", "cyan"));
 
     // GROUP: EARTH→MARS
@@ -96,8 +98,9 @@ export class Telemetry implements PanelHandle {
   update(state: FrameState): void {
     this.occulted = state.losOcculted;
 
-    // --- CLOCK ---
-    setText(this.vSim, fmtClock(state.simSeconds));
+    // --- CLOCK --- (MISSION-ELAPSED, not the raw J2000 epoch offset — E10b: the
+    // sim clock boots at the scenario epoch t0, so show time-since-start.)
+    setText(this.vSim, fmtClock(state.missionElapsedSeconds));
     setText(this.vScale, state.scaleLabel);
 
     // --- EARTH→MARS ---

@@ -20,6 +20,7 @@ import { oneWaySeconds } from "./sim/delay";
 import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
 import { M1Session, type SessionRenderState } from "./sim/m1/session";
+import { SCENARIO, missionElapsedSeconds } from "./sim/m1/scenario";
 import { saveGame, addAction } from "./sim/save";
 import { setTimeScale, prefetch as prefetchAction, setPrefetchPolicy } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
@@ -59,6 +60,12 @@ app.append(topbar, wmCanvas, status.element);
 // --- sim --------------------------------------------------------------------
 const eph = loadEphemeris();
 const clock = new SimClock();
+// E10b — BOOT AT THE SCENARIO EPOCH. The sim clock IS ephemeris time; the M1
+// scenario starts ≈10.87 days before the real Earth↔Mars conjunction so the whole
+// strain → relief → approach → BLACKOUT arc fits a ~30-min sitting (GDD §9). The
+// readout shows MISSION-ELAPSED time (missionElapsedSeconds), so the clock reads
+// 0d at boot despite the non-zero J2000 epoch. See sim/m1/scenario.ts.
+clock.setTick(SCENARIO.tick0);
 const mission = new Mission(eph);
 // The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
 // loop. When it starts a fetch, we launch the Mission packet to render the wait.
@@ -241,12 +248,15 @@ setWmPreset(0); // OVERVIEW
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
 
-// E10a — DEV-ONLY time seek so the screenshot harness can jump to the real
-// Earth↔Mars conjunction blackout (t ≈ 15.73e6 s ≈ 182 days), which is far past
-// any reachable wall-clock time even at 1000×. Stripped from production builds
-// (import.meta.env.DEV), so it never bloats the shipped shell. Seeks the clock
-// to `tSeconds`, pauses, and re-primes the session by stepping once at that time
-// so the CONJUNCTION/BLACKOUT readout reflects the seeked geometry immediately.
+// E10a/E10b — DEV-ONLY time seek so the screenshot harness can jump to a precise
+// ephemeris instant. With the E10b scenario epoch (boot at t0 = 14.5e6 s) the
+// arc is now reachable in-session by playing at 1000×, but the seek still lets a
+// shot land EXACTLY on a beat: the approach (e.g. WATCH at t ≈ 15.07e6 s, margin
+// 9 Rsun) or the conjunction blackout (window enter ≈ 15.44e6 s, conj ≈ 15.73e6
+// s). NOTE seekSim takes ABSOLUTE ephemeris-seconds (not mission-elapsed).
+// Stripped from production builds (import.meta.env.DEV), so it never bloats the
+// shipped shell. Seeks the clock to `tSeconds`, pauses, and re-primes the session
+// by stepping once at that time so the CONJUNCTION/BLACKOUT readout reflects it.
 if (import.meta.env.DEV) {
   (window as unknown as { seekSim?: (tSeconds: number) => void }).seekSim = (tSeconds: number) => {
     clock.setTick(Math.round(tSeconds / DT));
@@ -337,6 +347,7 @@ function frame(now: number): void {
 
   const fs: FrameState = {
     simSeconds: t,
+    missionElapsedSeconds: missionElapsedSeconds(t),
     scaleLabel: clock.scaleLabel,
     paused: clock.paused,
     wmPreset: wmPresetName,

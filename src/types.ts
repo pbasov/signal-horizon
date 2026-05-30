@@ -102,7 +102,17 @@ export interface DemandReadout {
 
 /** Per-frame snapshot the panels render from. */
 export interface FrameState {
+  /**
+   * Absolute sim-time in ephemeris-seconds since J2000 (the sim clock IS ephemeris
+   * time — E10b boots it at the scenario epoch t0). Geometry/LOS reads use this.
+   */
   simSeconds: number;
+  /**
+   * MISSION-ELAPSED seconds since the scenario epoch (simSeconds − t0, clamped ≥0).
+   * The CLOCK readout shows THIS so a non-zero start epoch reads "0d 00:00:00" at
+   * boot rather than the raw ~168-day J2000 offset (E10b).
+   */
+  missionElapsedSeconds: number;
   scaleLabel: string;
   paused: boolean;
   wmPreset: string;
