@@ -124,6 +124,19 @@ export class EventGenerator {
   private emittedCount = 0;
 
   /**
+   * ANCHOR the schedule cursor to a session that STARTS at sim-time `startS` (rather than near
+   * t=0). The session calls this ONCE, on its first step, with the sim-time it actually booted at.
+   * The first event then lands at `startS + FIRST_EVENT_AT_SECONDS`, NOT a `startS`-second backlog
+   * — so a session that boots at the M1 scenario epoch (≈14.5M s) does not fire its whole timeline
+   * at once on the first step (the live epoch-mismatch bug). When `startS === 0` (the golden replay
+   * path) this re-sets the cursor to EXACTLY its constructor value, so the t=0 fold is byte-identical.
+   * Idempotent shape: call once before any draw has happened (emittedCount === 0). Pure; no RNG.
+   */
+  anchorAt(startS: number): void {
+    this.nextEventAtS = startS + FIRST_EVENT_AT_SECONDS;
+  }
+
+  /**
    * Advance the schedule to sim-time `nowS`, returning the ordered list of {@link EmitPlan}s that
    * came due this step (usually 0; rarely 1; more only if a huge dt jumped several intervals). For
    * each, draw the type + payload from `rng` and re-arm the cursor with an RNG-jittered interval.

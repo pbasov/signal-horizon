@@ -164,6 +164,12 @@ const FOCUS_ORDER = ["sun", "earth", "mars", "moon"];
 
 /** The body the coverage grid sits on. */
 const COVERAGE_BODY_ID = "earth";
+/** DEMAND·GROWTH readout guard: the minimum SANE baseline-demand denominator (below this the
+ * ratio is meaningless) and the maximum SANE growth % to render. The escalation engine bounds
+ * total demand at the global carrying cap (≈3× baseline ⇒ +200%), so anything beyond this is a
+ * sim blow-up, not a real readout — we omit the segment rather than paint scientific notation. */
+const DEMAND_GROWTH_EPSILON = 1e-9;
+const DEMAND_GROWTH_MAX_PCT = 1000;
 /** Max placed-asset markers the orrery draws at once (the marker pool size). The
  * coverage sweep itself is unbounded; only the on-screen marker glyphs are capped. */
 const MAX_BUILD_MARKERS = 48;
@@ -1109,9 +1115,16 @@ export class Orrery {
       // the baseline it started from (the "I solved this, and now it's bigger" cue). Rises as
       // served regions' demand balloons; the covered % erodes against it under fixed capacity.
       let escalation = "";
-      if (b && b.baselineDemand > 0) {
-        const growthPct = Math.round((b.totalDemand / b.baselineDemand - 1) * 100);
-        escalation = ` · DEMAND·GROWTH <span class="k">+${growthPct}%</span>`;
+      if (b && b.baselineDemand > DEMAND_GROWTH_EPSILON) {
+        const ratio = b.totalDemand / b.baselineDemand;
+        const growthPct = Math.round((ratio - 1) * 100);
+        // Guard the readout (belt-and-suspenders): only render when the ratio is finite + sane. A
+        // degenerate ratio (NaN/Inf from a bad denominator, or an absurd value from a sim blow-up)
+        // would otherwise paint scientific notation ("+6.5e39%") in the chrome. In the degenerate
+        // case we OMIT the segment rather than show nonsense — the sim, not the readout, is wrong.
+        if (Number.isFinite(growthPct) && growthPct >= 0 && growthPct <= DEMAND_GROWTH_MAX_PCT) {
+          escalation = ` · DEMAND·GROWTH <span class="k">+${growthPct}%</span>`;
+        }
       }
       // M3a — the ORBITAL-DATACENTER readout (GDD §4.5): the first DC's power / thermal /
       // compute / the bounded force-multiplier it applies. A new line so the §4.5 physics

@@ -95,6 +95,18 @@ export class ContractGenerator {
   private offeredCount = 0;
 
   /**
+   * ANCHOR the offer cursor to a session that STARTS at sim-time `startS` (rather than near t=0).
+   * The session calls this ONCE, on its first step, with the sim-time it actually booted at, so the
+   * first offer lands at `startS + FIRST_OFFER_AT_SECONDS` rather than `startS` seconds overdue (the
+   * live epoch-mismatch bug — a session booting at the M1 scenario epoch ≈14.5M s would otherwise
+   * have a huge backlog the instant it steps). When `startS === 0` (the golden replay path) this
+   * re-sets the cursor to EXACTLY its constructor value, so the t=0 fold is byte-identical. Pure; no RNG.
+   */
+  anchorAt(startS: number): void {
+    this.nextOfferAtS = startS + FIRST_OFFER_AT_SECONDS;
+  }
+
+  /**
    * Advance the schedule to sim-time `nowS`. While an offer is DUE and there is a free
    * offer slot (fewer than {@link MAX_OPEN_OFFERS} currently OFFERED), draw + push a
    * new OFFERED contract onto `contracts` and re-arm the cursor with an RNG-jittered

@@ -87,6 +87,15 @@ export const BUILD_RNG_SEED = 7n;
  * lucrative-but-time-pressured opportunity the story beat creates. Placeholder. */
 export const RELAY_FAILURE_TARIFF_BONUS = 1.6;
 
+/** M2f — the HARD CEILING on the COMPOUNDED per-cell shock multiplier in {@link BuildSession.applyShockOverlay}.
+ * Each active demand shock contributes a multiplier ≥ 1.0 to its cells, and overlapping shocks COMPOUND
+ * (their product). Bounding that product means no pathological overlap of shocks can blow a cell's demand
+ * to Infinity/absurdity (belt-and-suspenders next to the schedule anchor: even if a future bug re-introduced
+ * a burst of concurrent shocks, demand stays sane). 4× is comfortably above a single shock's peak
+ * ({@link import("./event-generator").SHOCK_MULTIPLIER_MAX} = 2.6) so normal overlaps are unclamped — it
+ * only bites a degenerate pile-up. Deterministic (a pure Math.min). */
+export const MAX_SHOCK_MULTIPLIER = 4.0;
+
 /** M2f — an ACTIVE demand shock the session is riding: a region's cells, a peak multiplier, and a
  * lifetime. The per-step shock overlay is the peak DECAYING LINEARLY to 1.0 over [startS, startS +
  * durationS), so coverage/contracts react to the spike then it cleanly returns to baseline (no
@@ -221,6 +230,13 @@ export class BuildSession {
 
   /** Sim-time the session has been STEPPED to (for snapshot-resume continuity). */
   private lastStepS = 0;
+  /** Whether the lazy first-step schedule ANCHOR has run. The schedulers (event/offer generators +
+   * the demand-growth cadence) are initialised near t=0 in their constructors, but a LIVE session
+   * boots at the M1 scenario epoch (≈14.5M s). On the FIRST step() we re-anchor every cursor RELATIVE
+   * to the session's start t, so a large-epoch boot schedules its first event at start+offset (not a
+   * start-second backlog that fires its whole timeline at once). When start === 0 (the golden replay
+   * path) the re-anchor reproduces the EXACT constructor values, so the t=0 fold is byte-identical. */
+  private anchored = false;
   /** Reusable scratch for served-fraction reads + a single CellCoverage (no per-step
    * allocation once the roster has settled). */
   private scratchPos: Vec3[] = [];
@@ -426,6 +442,18 @@ export class BuildSession {
    * call it once per fixed tick with that tick's dt (mirrors the M1 session's step()).
    */
   step(eph: Ephemeris, t: number, dtSeconds: number): void {
+    // (0) LAZY FIRST-STEP ANCHOR. The schedulers are initialised near t=0 in their constructors, but
+    // a LIVE session boots at the M1 scenario epoch (≈14.5M s). Re-anchor every schedule cursor RELATIVE
+    // to the sim-time this session actually starts at, so a large-epoch boot schedules its first event/
+    // offer/growth-step at start+offset — NOT start-seconds overdue (which would fire the whole backlog
+    // at once: the live epoch-mismatch bug). When start === 0 (the golden replay path) each cursor is
+    // re-set to its EXACT constructor value, so the t=0 fold stays byte-identical. A restored session is
+    // already past its anchor (restore() sets `anchored`), so this never re-fires on resume.
+    if (!this.anchored) {
+      this.anchorSchedulers(t);
+      this.anchored = true;
+    }
+
     // (1) Advance the offer generator (offer/expire contracts deterministically). It
     // reads the CURRENT (dynamic) demand, so an offer over a region that has grown is
     // priced off the bigger demand — the §4.9 + §3b coupling.
@@ -529,6 +557,21 @@ export class BuildSession {
       // flow, so a single fire suffices).
       while (this.nextGrowthAtS <= t) this.nextGrowthAtS += GROWTH_INTEGRATION_SECONDS;
     }
+  }
+
+  /**
+   * Re-anchor every schedule cursor RELATIVE to the sim-time `startT` the session actually starts at
+   * (the lazy first-step anchor — see {@link step}). The two generators expose `anchorAt`; the demand-
+   * growth cadence is owned here. When `startT === 0` this reproduces the EXACT constructor values
+   * (event cursor = FIRST_EVENT_AT_SECONDS, offer cursor = FIRST_OFFER_AT_SECONDS, lastGrowthAtS = 0,
+   * nextGrowthAtS = GROWTH_INTEGRATION_SECONDS), so the golden replay (which steps from t=0) is byte-
+   * identical. Pure; no RNG; no side effects beyond the cursors. Called once, before any draw.
+   */
+  private anchorSchedulers(startT: number): void {
+    this.generator.anchorAt(startT);
+    this.eventGenerator.anchorAt(startT);
+    this.lastGrowthAtS = startT;
+    this.nextGrowthAtS = startT + GROWTH_INTEGRATION_SECONDS;
   }
 
   // --- M2f: the emergent-event coupling --------------------------------------
@@ -648,6 +691,14 @@ export class BuildSession {
         const m = 1 + (s.multiplier - 1) * (1 - frac); // peak at start → 1.0 at end (linear decay).
         for (const id of s.cellIds) this.shockMulScratch[id] *= m;
       }
+      // CLAMP the compounded per-cell multiplier (belt-and-suspenders next to the schedule anchor).
+      // Each shock's m ≥ 1, so overlapping shocks compound their PRODUCT; a pathological pile-up of
+      // concurrent shocks on one cell could otherwise run the product up without bound and blow demand
+      // to Infinity/absurdity. Bounding it at {@link MAX_SHOCK_MULTIPLIER} keeps demand sane no matter
+      // how many shocks overlap (normal overlaps sit well under the cap, so this is a no-op in practice).
+      for (let i = 0; i < n; i++) {
+        if (this.shockMulScratch[i] > MAX_SHOCK_MULTIPLIER) this.shockMulScratch[i] = MAX_SHOCK_MULTIPLIER;
+      }
     }
     this.demand.setShockMultipliers(this.shockMulScratch);
   }
@@ -718,6 +769,9 @@ export class BuildSession {
     this.economy.balance = s.balance;
     this.rng.state = BigInt(s.rngState);
     this.launchedCount = s.launchedCount;
+    // A restored session is already past its first-step anchor: its cursors come from the snapshot
+    // below, so step() must NOT re-anchor (which would discard them). Mark it anchored here.
+    this.anchored = true;
     this.contractList.length = 0;
     if (s.contracts) for (const c of s.contracts) this.contractList.push(cloneContract(c));
     if (s.generator) this.generator.restore(s.generator);
