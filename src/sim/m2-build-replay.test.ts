@@ -149,6 +149,29 @@ function buildStateHash(s: BuildSession): bigint {
     acc = mixFloat(acc, c.breachSecondsAccum);
     acc = mixFloat(acc, c.earnedEur);
   }
+  // M2f — the EMERGENT-EVENT GENERATOR's cursor + the live active shocks + the surfaced world-event
+  // stream, folded so the event TIMELINE + its WORLD EFFECTS (shocks, spawned contracts) are IN the
+  // replay hash. Any change to the generator cadence/draws, the shock model, or the rival coupling
+  // moves this value.
+  acc = mixFloat(acc, snap.eventGenerator.nextEventAtS);
+  acc = mixInt(acc, BigInt(snap.eventGenerator.emittedCount));
+  acc = mixInt(acc, BigInt(snap.spawnedContractCount));
+  acc = mixInt(acc, BigInt(snap.activeShocks.length));
+  for (const sh of snap.activeShocks) {
+    acc = mixFloat(acc, sh.multiplier);
+    acc = mixFloat(acc, sh.startS);
+    acc = mixFloat(acc, sh.durationS);
+    acc = mixInt(acc, BigInt(sh.cellIds.length));
+    for (const id of sh.cellIds) acc = mixInt(acc, BigInt(id));
+  }
+  acc = mixInt(acc, BigInt(snap.events.nextSeq));
+  acc = mixInt(acc, BigInt(snap.events.events.length));
+  for (const ev of snap.events.events) {
+    acc = mixString(acc, ev.kind);
+    acc = mixInt(acc, BigInt(ev.seq));
+    acc = mixInt(acc, BigInt(ev.tick));
+    acc = mixFloat(acc, ev.tSim);
+  }
   return acc;
 }
 
@@ -225,14 +248,15 @@ function avgCoveredFraction(session: BuildSession, t0: number, t1: number, n: nu
 
 // ---------------------------------------------------------------------------
 // PINNED M2 build-loop replay golden (deploy + launch + failure + M2d contracts +
-// coverage revenue + M2e ESCALATION-ENGINE demand growth). SEPARATE from the M1 golden
-// 544847093270497462n (a different world). Bootstrapped by running the replay once; pinned
-// here as the regression guard. Any change to the roster shape, the launch presets/sites,
-// the launch PRNG draw, the starter roster, the contract model, the offer generator, the
-// revenue math, OR the M2e demand-growth law/cadence (now folded into the state hash via
-// the per-cell dynamic demand) moves this value.
+// coverage revenue + M2e ESCALATION-ENGINE demand growth + M2f EMERGENT EVENTS). SEPARATE
+// from the M1 golden 544847093270497462n (a different world). Bootstrapped by running the
+// replay once; pinned here as the regression guard. Any change to the roster shape, the launch
+// presets/sites, the launch PRNG draw, the starter roster, the contract model, the offer
+// generator, the revenue math, the M2e demand-growth law/cadence, OR the M2f emergent-event
+// generator cadence/draws / shock model / rival coupling (all now folded into the state hash)
+// moves this value.
 // ---------------------------------------------------------------------------
-const BUILD_REPLAY_GOLDEN = 15734905161678697793n;
+const BUILD_REPLAY_GOLDEN = 6225853297339560787n;
 
 /** A generous per-test timeout for the heavy multi-replay tests: M2e advances the
  * ESCALATION-ENGINE demand growth on a per-tick whole-grid coverage sweep, so a single

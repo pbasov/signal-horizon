@@ -90,18 +90,30 @@ export const GROWTH_INTEGRATION_SECONDS = 60.0;
 export class DynamicDemand {
   /** The immutable baseline field (the M2a static surface) — the per-cell floor. */
   private readonly baseline: DemandField;
-  /** current[cellId] — the LIVE demand units (starts at baseline, grows under service). */
+  /** current[cellId] — the LIVE growth demand units (starts at baseline, grows under service).
+   * This is the GROWTH state ONLY (bounded by {@link cap}); a transient M2f shock multiplier
+   * rides ON TOP at read time without ever inflating this — see {@link shockMul}. */
   readonly current: number[];
   /** Per-cell carrying capacity = baseline · {@link CAPACITY_MULTIPLIER} (logistic ceiling). */
   private readonly cap: number[];
-  /** Σ current — the live denominator for covered-demand fraction (kept in sync). */
+  /** Σ (current · shockMul) — the live denominator for covered-demand fraction (kept in sync). */
   private runningTotal: number;
+  /**
+   * M2f — the TEMPORARY demand-shock multiplier per cell (default 1.0 = no shock). A DEMAND_SHOCK
+   * event (a dust storm / flagship launch) bumps a region's cells here, and the multiplier DECAYS
+   * back to 1.0 as the shock expires (the session recomputes this each step from its active-shock
+   * list). It is a READ-TIME overlay: {@link of}/{@link total} return `current · shockMul`, so a
+   * shock ripples cleanly through every scorer/contract, but {@link step}'s growth reads the raw
+   * `current` (so a shock can never permanently inflate the growth state — no drift, clean expiry).
+   */
+  private readonly shockMul: number[];
 
   private constructor(baseline: DemandField, current: number[], cap: number[], total: number) {
     this.baseline = baseline;
     this.current = current;
     this.cap = cap;
     this.runningTotal = total;
+    this.shockMul = current.map(() => 1.0);
   }
 
   /** Build a dynamic overlay for a grid: current = baseline, cap = baseline · multiplier. */
@@ -112,14 +124,34 @@ export class DynamicDemand {
     return new DynamicDemand(base, current, cap, base.total);
   }
 
-  /** Current demand weight of a cell by id (the LIVE value coverage/contracts read). */
+  /** Current demand weight of a cell by id (the LIVE value coverage/contracts read) — the
+   * grown value times any active M2f shock multiplier on that cell. */
   of(cellId: number): number {
-    return this.current[cellId];
+    return this.current[cellId] * this.shockMul[cellId];
   }
 
-  /** Σ current demand over all cells (the live covered-demand-fraction denominator). */
+  /** Σ effective demand (current · shock) over all cells (the live covered-demand-fraction
+   * denominator) — reflects active shocks so the covered FRACTION reacts to a spike. */
   get total(): number {
     return this.runningTotal;
+  }
+
+  /**
+   * M2f — RESET-AND-SET the per-cell shock multipliers from the session's live shock overlay.
+   * `mul` is indexed by cell id (1.0 = no shock; > 1 = an active spike on that cell). Cells not
+   * present in `mul` reset to 1.0 (a shock that expired returns its cells to baseline — clean,
+   * no residue). Recomputes the running total so {@link total} stays in sync. Pure mutation in
+   * place; no RNG. Called by {@link import("../m2/session").BuildSession.step} each step.
+   */
+  setShockMultipliers(mul: number[]): void {
+    const n = this.shockMul.length;
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      const m = mul[i] ?? 1.0;
+      this.shockMul[i] = m;
+      total += this.current[i] * m;
+    }
+    this.runningTotal = total;
   }
 
   /** The immutable baseline demand of a cell (the floor it decays toward) — for readouts. */
@@ -169,7 +201,7 @@ export class DynamicDemand {
         next = b + (d - b) * Math.exp(-DECAY_RATE_PER_S * dtSeconds);
       }
       cur[i] = next;
-      total += next;
+      total += next * this.shockMul[i];
     }
     this.runningTotal = total;
   }
@@ -179,13 +211,15 @@ export class DynamicDemand {
     return this.current.slice();
   }
 
-  /** Restore the live demand state from a snapshot; recomputes the running total. */
+  /** Restore the live growth state from a snapshot; resets the shock overlay to 1.0 (the session
+   * re-applies its active-shock list on the next step) and recomputes the running total. */
   restore(current: number[]): void {
     const n = this.current.length;
     let total = 0;
     for (let i = 0; i < n; i++) {
       const v = current[i] ?? this.baseline.of(i);
       this.current[i] = v;
+      this.shockMul[i] = 1.0;
       total += v;
     }
     this.runningTotal = total;

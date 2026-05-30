@@ -779,6 +779,11 @@ function frame(now: number): void {
   // E9 — paint the truthful SYSTEM.LOG: drain the new tail of the sim event stream
   // (incremental, by seq) into the panel. The log IS the surfaced sim record.
   log.render(session.events);
+  // M2f — interleave the truthful M2 WORLD-event stream (demand shocks / rival actions / news) into
+  // the same ledger: emergent story beats surface in SYSTEM.LOG, §8-highlighted (rivals in their
+  // faction hue). Incremental drain by the M2 seq cursor; the events are REAL world changes (a shock
+  // line means the demand actually bumped; a relay-failure line means a contract was spawned).
+  log.renderM2(build.events);
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);

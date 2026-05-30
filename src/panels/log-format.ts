@@ -16,6 +16,8 @@
  * the same thing everywhere.
  */
 import type { M1Event, EventSeverity } from "../sim/m1/eventlog";
+import type { M2Event } from "../sim/m2/events";
+import { rivalById } from "../sim/m2/rivals";
 import { fmtTs, fmtDuration, fmtEuro, fmtPct } from "../format";
 
 /** A freshness warmth bucket → a CSS class on the freshness/value token (§8 ramp). */
@@ -24,10 +26,11 @@ export type Warmth = "good" | "watch" | "warn" | "dead";
 /** One highlighted token in a rendered log row. `cls` is an extra CSS modifier. */
 export interface LogToken {
   text: string;
-  /** Which token slot: drives the base colour (ts/sev/ent/val/msg). */
-  slot: "ts" | "sev" | "ent" | "val" | "msg";
-  /** Optional modifier class (a freshness warmth, or "stale" for a cooled time). */
-  cls?: Warmth | "stale";
+  /** Which token slot: drives the base colour (ts/sev/ent/val/msg/faction). */
+  slot: "ts" | "sev" | "ent" | "val" | "msg" | "faction";
+  /** Optional modifier class: a freshness warmth, "stale" for a cooled time, or — on a
+   * `faction` token — the rival's §8 identity-hue class (style.css `.faction.<cls>`). */
+  cls?: Warmth | "stale" | string;
 }
 
 /** A fully-tokenised log row ready to paint: severity (for the row class) + tokens. */
@@ -224,6 +227,84 @@ export function formatEvent(ev: M1Event): LogRow {
             text: ev.edge === "enter" ? `LINK LOST · conjunction blackout` : `link reacquired`,
             slot: "msg",
           },
+        ],
+      };
+    }
+  }
+}
+
+/** A rival action kind → a scannable verb + a severity (the relay_failure is the consequential one). */
+function rivalKindProse(kind: string): { verb: string; sev: EventSeverity } {
+  switch (kind) {
+    case "undercut":
+      return { verb: "undercuts your tariff in", sev: "warn" };
+    case "peer":
+      return { verb: "opens a peering interconnect over", sev: "info" };
+    case "relay_failure":
+      return { verb: "RELAY FAILURE over", sev: "error" };
+    default:
+      return { verb: "active over", sev: "info" };
+  }
+}
+
+/**
+ * M2f — format an {@link M2Event} (a world event from the emergent-event generator) into a
+ * {@link LogRow}, §8-highlighted per token. TRUTHFUL: every token is derived from the event's own
+ * payload (a demand_shock line shows the real multiplier the demand was bumped by; a rival relay
+ * failure that spawned a contract says so). A RIVAL_ACTION paints the operator's NAME in its §8
+ * faction identity colour (the `faction` slot + the rival's hue class). Pure — same event → same row.
+ */
+export function formatM2Event(ev: M2Event): LogRow {
+  const ts: LogToken = { text: fmtTs(ev.tSim), slot: "ts" };
+  switch (ev.kind) {
+    case "demand_shock": {
+      // A real demand bump → a WARN line (a spike strains capacity). The multiplier + region are truthful.
+      const sev: EventSeverity = "warn";
+      return {
+        seq: ev.seq,
+        sev,
+        tokens: [
+          ts,
+          { text: GLYPH[sev], slot: "sev" },
+          { text: ev.regionLabel, slot: "ent" },
+          { text: `×${ev.multiplier.toFixed(1)}`, slot: "val", cls: "warn" },
+          {
+            text: `${ev.cause} — demand SPIKE · ${Math.round(ev.durationS / 3600)}h`,
+            slot: "msg",
+          },
+        ],
+      };
+    }
+    case "rival_action": {
+      const rival = rivalById(ev.rivalId);
+      const name = rival ? rival.name : ev.rivalId.toUpperCase();
+      const factionCls = rival ? rival.hue.cls : "";
+      const { verb, sev } = rivalKindProse(ev.kind2);
+      const tail =
+        ev.spawnedContractId !== null
+          ? ` — their customers come knocking (offer ${ev.spawnedContractId})`
+          : "";
+      return {
+        seq: ev.seq,
+        sev,
+        tokens: [
+          ts,
+          { text: GLYPH[sev], slot: "sev" },
+          { text: name, slot: "faction", cls: factionCls },
+          { text: `${verb} ${ev.regionLabel}${tail}`, slot: "msg" },
+        ],
+      };
+    }
+    case "news": {
+      const sev = ev.severity;
+      return {
+        seq: ev.seq,
+        sev,
+        tokens: [
+          ts,
+          { text: GLYPH[sev], slot: "sev" },
+          { text: "NEWS", slot: "ent" },
+          { text: ev.text, slot: "msg" },
         ],
       };
     }

@@ -19,9 +19,10 @@
  */
 import type { LogEntry, Severity } from "../types";
 import type { EventSeverity, EventLog } from "../sim/m1/eventlog";
+import type { M2EventLog } from "../sim/m2/events";
 import type { PanelHandle } from "../wm/shell";
 import { fmtTs } from "../format";
-import { formatEvent, type LogRow } from "./log-format";
+import { formatEvent, formatM2Event, type LogRow } from "./log-format";
 
 const MAX_LINES = 400;
 const STATUS_WINDOW = 12;
@@ -40,8 +41,11 @@ export class SystemLog implements PanelHandle {
   private scroll: HTMLElement;
   private lineCount = 0;
 
-  /** Highest event seq already painted; the incremental cursor (drain only the new tail). */
+  /** Highest M1 event seq already painted; the incremental cursor (drain only the new tail). */
   private lastSeq = -1;
+  /** M2f — highest M2 WORLD-event seq already painted (a separate cursor; the M2 event stream is
+   * its own seq space, drained incrementally like the M1 one). */
+  private lastM2Seq = -1;
 
   /** Fixed-size ring of recent severities feeding status(). */
   private sevRing: Severity[] = new Array(STATUS_WINDOW);
@@ -72,6 +76,22 @@ export class SystemLog implements PanelHandle {
       if (ev.seq <= this.lastSeq) continue;
       this.lastSeq = ev.seq;
       this.appendRow(formatEvent(ev));
+    }
+  }
+
+  /**
+   * M2f — paint the truthful M2 WORLD-event stream (demand shocks / rival actions / news) into the
+   * SAME SYSTEM.LOG, interleaved with the M1 feed. Drains only the NEW tail by the M2 seq cursor
+   * (incremental, zero work on a quiet frame), §8-highlighted via {@link formatM2Event} — a rival
+   * action paints the operator's name in its faction identity hue. The two streams have independent
+   * seq spaces but share the one scrolling ledger; both are timestamped so the order reads true.
+   */
+  renderM2(log: M2EventLog): void {
+    const tail = log.readSince(this.lastM2Seq + 1);
+    for (const ev of tail) {
+      if (ev.seq <= this.lastM2Seq) continue;
+      this.lastM2Seq = ev.seq;
+      this.appendRow(formatM2Event(ev));
     }
   }
 

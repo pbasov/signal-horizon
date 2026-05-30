@@ -23,6 +23,7 @@
   --orange-red: #ff6a3d;  /* error */
   --red: #ff5247;         /* critical / occult */
   --violet: #8e84ff;      /* infrastructure / non-active */
+  --faction-blue: #5aa9ff; /* M2f — PALE BLUE NET rival identity hue (§8 faction colours) */
 
   /* Dither tiles are generated at runtime (canvas → data-URL) and injected
      here by main.ts so tone comes from ordered Bayer stipple, not flat grey. */
@@ -344,6 +345,13 @@ body {
 .log-line .val.watch { color: var(--cyan); }
 .log-line .val.warn  { color: var(--amber); }
 .log-line .val.dead  { color: var(--grey); }
+/* M2f — §8 FACTION identity colours: a rival operator's name in the SYSTEM.LOG is painted
+   in that faction's signature hue (so "whose event is this" reads at a glance), chosen apart
+   from the freshness/coverage ramps so a faction hue is never mistaken for a data value. */
+.log-line .faction { flex: 0 0 auto; font-weight: 700; color: var(--fg); }
+.log-line .faction.helix    { color: var(--violet); }
+.log-line .faction.meridian { color: var(--orange); }
+.log-line .faction.paleblue { color: var(--faction-blue); }
 .log-line.info .sev { color: var(--cyan); }
 .log-line.warn .sev,
 .log-line.warn .msg { color: var(--orange); }

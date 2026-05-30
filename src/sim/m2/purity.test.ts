@@ -8,6 +8,9 @@ import sitesSrc from "./sites.ts?raw";
 import applySrc from "./apply-build-action.ts?raw";
 import contractsSrc from "./contracts.ts?raw";
 import generatorSrc from "./contract-generator.ts?raw";
+import eventsSrc from "./events.ts?raw";
+import eventGeneratorSrc from "./event-generator.ts?raw";
+import rivalsSrc from "./rivals.ts?raw";
 
 /**
  * Purity guard for the M2c build-loop module group (AGENTS.md §5 / the sim/render
@@ -26,6 +29,9 @@ const SOURCES: Array<[string, string]> = [
   ["apply-build-action.ts", applySrc],
   ["contracts.ts", contractsSrc],
   ["contract-generator.ts", generatorSrc],
+  ["events.ts", eventsSrc],
+  ["event-generator.ts", eventGeneratorSrc],
+  ["rivals.ts", rivalsSrc],
 ];
 
 describe("m2 build modules are pure (no three / DOM / wall-clock / unseeded RNG)", () => {

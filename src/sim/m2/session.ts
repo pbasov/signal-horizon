@@ -52,13 +52,21 @@ import {
 } from "./launch";
 import {
   type Contract,
+  type ContractTarget,
   cloneContract,
   contractRevenueRatePerSecond,
+  offerContract,
   recordEarned,
+  resolveTargetCells,
   stepActiveContract,
   stepOfferedContract,
+  DEFAULT_TARGET_RADIUS_DEG,
+  DEFAULT_TERM_SECONDS,
+  DEFAULT_OFFER_WINDOW_SECONDS,
 } from "./contracts";
 import { ContractGenerator, type GeneratorSnapshot } from "./contract-generator";
+import { EventGenerator, type EventGeneratorSnapshot, type EmitPlan } from "./event-generator";
+import { M2EventLog, type M2Event } from "./events";
 
 /** Opening € for a build session — enough to deploy a few stations + buy a launch
  * or two, little enough that building is a budget choice (the build-vs-budget
@@ -70,6 +78,22 @@ export const BUILD_OPENING_BALANCE = 5000.0;
  * replays). Distinct from the M1 session's anchor. Chosen so the golden build log's
  * launches hit BOTH a success and a deterministic FAILURE (exercising the risk). */
 export const BUILD_RNG_SEED = 7n;
+
+/** M2f — the € TARIFF MULTIPLIER on a contract spawned by a rival RELAY_FAILURE ("their customers
+ * come knocking"): the desperate hand-off pays a premium over a normal offer, so it is the
+ * lucrative-but-time-pressured opportunity the story beat creates. Placeholder. */
+export const RELAY_FAILURE_TARIFF_BONUS = 1.6;
+
+/** M2f — an ACTIVE demand shock the session is riding: a region's cells, a peak multiplier, and a
+ * lifetime. The per-step shock overlay is the peak DECAYING LINEARLY to 1.0 over [startS, startS +
+ * durationS), so coverage/contracts react to the spike then it cleanly returns to baseline (no
+ * permanent drift — when t passes the end the shock drops out of the list entirely). */
+export interface ActiveShock {
+  cellIds: number[];
+  multiplier: number;
+  startS: number;
+  durationS: number;
+}
 
 /** The outcome of applying a build action (for the live caller's feedback + log). */
 export interface BuildActionResult {
@@ -114,6 +138,16 @@ export interface BuildSnapshot {
    * save/restore resumes the escalation engine on the exact same cadence). */
   lastGrowthAtS: number;
   nextGrowthAtS: number;
+  /** M2f — the emergent-event generator's schedule cursor (next-event time + emitted counter). */
+  eventGenerator: EventGeneratorSnapshot;
+  /** M2f — the active demand shocks the session is riding (region cells + peak + lifetime). They
+   * apply a temporary multiplier to the dynamic demand that decays to baseline + expires cleanly. */
+  activeShocks: ActiveShock[];
+  /** M2f — monotonic counter for rival-failure-spawned contract ids (`r{N}`). */
+  spawnedContractCount: number;
+  /** M2f — the surfaced world-event stream (demand shocks / rival actions / news), folded so a
+   * restored game shows the same history + reproduces the same state-hash. */
+  events: { events: M2Event[]; nextSeq: number };
 }
 
 export class BuildSession {
@@ -153,6 +187,25 @@ export class BuildSession {
   private readonly contractList: Contract[] = [];
   /** The deterministic offer generator (draws targets/terms/intervals from {@link rng}). */
   private readonly generator = new ContractGenerator();
+
+  // --- M2f: the emergent-event generator (the story layer) -------------------
+  /** The deterministic emergent-event generator (draws type/region/multiplier/rival/headline
+   * from the SAME seeded {@link rng} — same seed ⇒ same event timeline). Advanced in {@link step}. */
+  private readonly eventGenerator = new EventGenerator();
+  /** The surfaced world-event stream (demand shocks / rival actions / news) — the truthful M2 feed
+   * the SYSTEM.LOG renders. Folds into the snapshot/state-hash (the events ARE saved state). */
+  private readonly eventLog = new M2EventLog();
+  /** The active demand shocks (each: region cells + peak multiplier + lifetime). The per-step
+   * overlay decays each to baseline and drops it when expired — applied via the dynamic demand's
+   * {@link DynamicDemand.setShockMultipliers}. Reconstructed on restore from the snapshot. */
+  private activeShocks: ActiveShock[] = [];
+  /** Reusable per-cell shock-multiplier scratch (grown to the grid size once; rebuilt each step
+   * from {@link activeShocks} — no per-step allocation after the first grow). */
+  private shockMulScratch: number[] = [];
+  /** Monotonic counter for rival-failure-spawned contract ids (`r0`, `r1`… — distinct from the
+   * ContractGenerator's `c{N}` stream so the two never collide). */
+  private spawnedContractCount = 0;
+
   /** Sim-time the session has been STEPPED to (for snapshot-resume continuity). */
   private lastStepS = 0;
   /** Reusable scratch for served-fraction reads + a single CellCoverage (no per-step
@@ -332,6 +385,22 @@ export class BuildSession {
     // priced off the bigger demand — the §4.9 + §3b coupling.
     this.generator.step(this.contractList, this.rng, this.grid, this.demand, t);
 
+    // (1a) M2f — THE EMERGENT-EVENT GENERATOR (the story layer, §3 / Risk-7). Advance off the SAME
+    // seeded RNG (fixed draw order AFTER the offer generator ⇒ deterministic), then turn each due
+    // EmitPlan into reality: a DEMAND_SHOCK registers a temporary region multiplier on the demand,
+    // a rival RELAY_FAILURE spawns a lucrative contract offer ("customers come knocking"), every
+    // event is surfaced as a TRUTHFUL log line. Usually 0 plans; rarely 1.
+    for (const plan of this.eventGenerator.step(this.rng, t)) {
+      this.executeEmitPlan(plan, t, dtSeconds);
+    }
+
+    // (1b) M2f — apply the ACTIVE-SHOCK overlay to the dynamic demand at t: each shock's multiplier
+    // DECAYS LINEARLY to 1.0 over its lifetime, expired shocks are dropped (clean return to
+    // baseline — no permanent drift). Done BEFORE revenue accrual so the shocked demand is what
+    // contracts/coverage/score read THIS step (the world coupling: a shock over a region you serve
+    // spikes its value + strains capacity). Cheap; runs every step so an expired shock resets.
+    this.applyShockOverlay(t);
+
     // (1b) Expire stale OFFERS (cheap — no coverage needed) and note any ACTIVE ones.
     let anyActive = false;
     for (const c of this.contractList) {
@@ -408,6 +477,127 @@ export class BuildSession {
     }
   }
 
+  // --- M2f: the emergent-event coupling --------------------------------------
+
+  /** A read-only view of the surfaced world-event stream (the panel/log reads this). */
+  get events(): M2EventLog {
+    return this.eventLog;
+  }
+
+  /**
+   * M2f — turn ONE {@link EmitPlan} into reality at sim-time `t`: a DEMAND_SHOCK becomes a live
+   * region-multiplier shock + a truthful shock log line; a RIVAL_ACTION becomes a faction-coloured
+   * log line (and a relay_failure ALSO spawns a lucrative contract offer); a NEWS becomes a headline
+   * line. Every push is TRUTHFUL — the shock log line is emitted only AFTER the shock is registered,
+   * so the line reflects real state (the §4.12 honesty precondition). Pure given (plan, t, the
+   * resolved region cells) — no RNG here (the generator already drew everything).
+   */
+  private executeEmitPlan(plan: EmitPlan, t: number, dtSeconds: number): void {
+    // The integer fixed-step tick this event lands on (metadata; tSim is the canonical timestamp).
+    // A fixed-step caller hits t = tick·dt exactly, so round(t/dt) recovers the tick bit-stably.
+    const tick = dtSeconds > 0 ? Math.round(t / dtSeconds) : 0;
+    if (plan.kind === "demand_shock" && plan.region) {
+      const target: ContractTarget = {
+        label: plan.region.label,
+        latRad: plan.region.latRad,
+        lonRad: plan.region.lonRad,
+        radiusRad: DEFAULT_TARGET_RADIUS_DEG * (Math.PI / 180),
+      };
+      const { cellIds } = resolveTargetCells(this.grid, this.demand, target);
+      const multiplier = plan.multiplier ?? 1.5;
+      const durationS = plan.durationS ?? 3600;
+      // Register the live shock FIRST (so the log line below reflects real applied state).
+      this.activeShocks.push({ cellIds: cellIds.slice(), multiplier, startS: t, durationS });
+      this.eventLog.push((seq) => ({
+        kind: "demand_shock",
+        seq,
+        tick,
+        tSim: t,
+        regionLabel: plan.region!.label,
+        latRad: plan.region!.latRad,
+        lonRad: plan.region!.lonRad,
+        cellIds: cellIds.slice(),
+        multiplier,
+        durationS,
+        cause: plan.region!.shockCause,
+      }));
+      return;
+    }
+    if (plan.kind === "rival_action" && plan.region && plan.rivalId && plan.rivalKind) {
+      // A relay_failure spawns a lucrative CONTRACT OFFER over the region ("customers come knocking").
+      let spawnedContractId: string | null = null;
+      if (plan.rivalKind === "relay_failure") {
+        spawnedContractId = this.spawnRelayFailureContract(plan.region, t);
+      }
+      this.eventLog.push((seq) => ({
+        kind: "rival_action",
+        seq,
+        tick,
+        tSim: t,
+        rivalId: plan.rivalId!,
+        kind2: plan.rivalKind!,
+        regionLabel: plan.region!.label,
+        spawnedContractId,
+      }));
+      return;
+    }
+    if (plan.kind === "news" && plan.newsText) {
+      this.eventLog.push((seq) => ({
+        kind: "news",
+        seq,
+        tick,
+        tSim: t,
+        text: plan.newsText!,
+        severity: plan.newsSeverity ?? "info",
+      }));
+    }
+  }
+
+  /**
+   * M2f — spawn the lucrative CONTRACT OFFER a rival RELAY_FAILURE creates: a normal offer over the
+   * region (resolved from the live demand) with a PREMIUM tariff ({@link RELAY_FAILURE_TARIFF_BONUS})
+   * and a tighter offer window (it is a time-pressured hand-off). Pushed onto the contract board with
+   * an `r{N}` id (distinct from the ContractGenerator's `c{N}`), so it appears as a real accept-able
+   * offer. Returns the spawned id. Deterministic + pure (the region cells/demand are deterministic).
+   */
+  private spawnRelayFailureContract(region: { label: string; latRad: number; lonRad: number }, t: number): string {
+    const target: ContractTarget = {
+      label: region.label,
+      latRad: region.latRad,
+      lonRad: region.lonRad,
+      radiusRad: DEFAULT_TARGET_RADIUS_DEG * (Math.PI / 180),
+    };
+    const id = `r${this.spawnedContractCount++}`;
+    const c = offerContract(id, this.grid, this.demand, target, t, DEFAULT_TERM_SECONDS, DEFAULT_OFFER_WINDOW_SECONDS);
+    c.tariffPerSecond *= RELAY_FAILURE_TARIFF_BONUS; // the premium for taking the rival's stranded customers.
+    this.contractList.push(c);
+    return id;
+  }
+
+  /**
+   * M2f — recompute the per-cell shock multiplier overlay at sim-time `t` and push it into the
+   * dynamic demand. Each active shock contributes `1 + (peak − 1)·(1 − elapsed/duration)` on its
+   * cells (a LINEAR decay from peak back to 1.0); multiple shocks on the same cell COMPOUND. A
+   * shock whose lifetime has elapsed is DROPPED from {@link activeShocks} entirely (clean expiry —
+   * its cells return to 1.0). Runs every step so an expired shock resets even with no new event.
+   * Pure mutation in place; no RNG; no allocation after the scratch has grown to the grid size.
+   */
+  private applyShockOverlay(t: number): void {
+    const n = this.demand.current.length;
+    if (this.shockMulScratch.length !== n) this.shockMulScratch = new Array(n).fill(1.0);
+    else this.shockMulScratch.fill(1.0);
+    // Drop expired shocks, then fold the live ones into the per-cell multiplier.
+    if (this.activeShocks.length > 0) {
+      this.activeShocks = this.activeShocks.filter((s) => t < s.startS + s.durationS);
+      for (const s of this.activeShocks) {
+        const frac = s.durationS > 0 ? Math.max(0, Math.min(1, (t - s.startS) / s.durationS)) : 1;
+        const m = 1 + (s.multiplier - 1) * (1 - frac); // peak at start → 1.0 at end (linear decay).
+        for (const id of s.cellIds) this.shockMulScratch[id] *= m;
+      }
+    }
+    this.demand.setShockMultipliers(this.shockMulScratch);
+  }
+
   /** The summed € revenue RATE (per sim-second) of all ACTIVE contracts at sim-time t,
    * from the live coverage — the FINANCE readout (the network's current earn rate). */
   contractRevenueRatePerSecond(eph: Ephemeris, t: number): number {
@@ -456,6 +646,10 @@ export class BuildSession {
       demand: this.demand.snapshot(),
       lastGrowthAtS: this.lastGrowthAtS,
       nextGrowthAtS: this.nextGrowthAtS,
+      eventGenerator: this.eventGenerator.snapshot(),
+      activeShocks: this.activeShocks.map((s) => ({ ...s, cellIds: s.cellIds.slice() })),
+      spawnedContractCount: this.spawnedContractCount,
+      events: this.eventLog.snapshot(),
     };
   }
 
@@ -472,6 +666,12 @@ export class BuildSession {
     if (s.demand) this.demand.restore(s.demand);
     this.lastGrowthAtS = s.lastGrowthAtS ?? 0;
     this.nextGrowthAtS = s.nextGrowthAtS ?? GROWTH_INTEGRATION_SECONDS;
+    // M2f — restore the emergent-event state. The shock overlay is reconstructed on the next step()
+    // (applyShockOverlay re-derives the per-cell multiplier from activeShocks at t).
+    if (s.eventGenerator) this.eventGenerator.restore(s.eventGenerator);
+    this.activeShocks = (s.activeShocks ?? []).map((sh) => ({ ...sh, cellIds: sh.cellIds.slice() }));
+    this.spawnedContractCount = s.spawnedContractCount ?? 0;
+    if (s.events) this.eventLog.restore(s.events);
   }
 
   /**
