@@ -114,8 +114,12 @@ export interface FrameState {
   oneWaySeconds: number;
   /** Sun-centre miss distance of the Earth→Mars segment, in solar radii */
   losMarginSolarRadii: number;
-  /** true when the solar disk intersects the Earth→Mars line of sight */
+  /** the live solar-interference corridor threshold in Rsun (the blackout edge) */
+  losCorridorRsun: number;
+  /** true when the solar disk (1 Rsun) intersects the Earth→Mars line of sight */
   losOcculted: boolean;
+  /** true when the LOS is inside the solar-interference corridor (link blacked out) */
+  losInCorridor: boolean;
   packet: PacketState | null;
   /** M1-05 standing-demand resolve readout (the live cache loop). */
   demand: DemandReadout;

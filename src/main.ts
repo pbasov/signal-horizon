@@ -204,14 +204,15 @@ const telemetry = new Telemetry();
 const finance = new Finance();
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
-// titlebar lamp (it is the panel drawing the blocked link).
-let lastOcculted = false;
+// titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
+// not only when the physical disk occults (which never happens in this eph).
+let lastBlackedOut = false;
 
 const orreryHandle: PanelHandle = {
   title: "ORRERY",
   content: orrery.host,
   subtitle: () => `· ${orrery.subtitle()}`,
-  status: () => (lastOcculted ? "crit" : "ok"),
+  status: () => (lastBlackedOut ? "crit" : "ok"),
   onResize: (w, h) => orrery.resize(w, h),
 };
 
@@ -239,6 +240,21 @@ setWmPreset(0); // OVERVIEW
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
+
+// E10a — DEV-ONLY time seek so the screenshot harness can jump to the real
+// Earth↔Mars conjunction blackout (t ≈ 15.73e6 s ≈ 182 days), which is far past
+// any reachable wall-clock time even at 1000×. Stripped from production builds
+// (import.meta.env.DEV), so it never bloats the shipped shell. Seeks the clock
+// to `tSeconds`, pauses, and re-primes the session by stepping once at that time
+// so the CONJUNCTION/BLACKOUT readout reflects the seeked geometry immediately.
+if (import.meta.env.DEV) {
+  (window as unknown as { seekSim?: (tSeconds: number) => void }).seekSim = (tSeconds: number) => {
+    clock.setTick(Math.round(tSeconds / DT));
+    if (!clock.paused) clock.togglePause();
+    session.step(eph, clock.seconds, DT);
+    tickSim(clock.seconds);
+  };
+}
 
 // --- keyboard ---------------------------------------------------------------
 window.addEventListener("keydown", (e) => {
@@ -317,7 +333,7 @@ function frame(now: number): void {
   const dist = eph.distanceBetween("earth", "mars", t);
   const ow = oneWaySeconds(dist);
   const los = earthMarsLos(eph, t);
-  lastOcculted = los.occulted;
+  lastBlackedOut = los.inCorridor;
 
   const fs: FrameState = {
     simSeconds: t,
@@ -329,7 +345,9 @@ function frame(now: number): void {
     earthMarsDistanceM: dist,
     oneWaySeconds: ow,
     losMarginSolarRadii: los.marginSolarRadii,
+    losCorridorRsun: los.corridorRsun,
     losOcculted: los.occulted,
+    losInCorridor: los.inCorridor,
     packet: mission.packet,
     demand: {
       feeds: demand.feeds.map((f) => ({

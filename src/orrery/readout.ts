@@ -16,15 +16,22 @@
 import type { FrameState } from "../types";
 
 /**
- * Conjunction-approach band, in solar radii of Sun-centre miss distance:
- *  - at/below WATCH the gauge starts filling (the link is getting tight);
- *  - at/below CRIT it is in the alarm zone (a blackout is imminent);
- *  - occulted clamps approach to 1 (full).
- * The Earth→Mars LOS only grazes the Sun near a real conjunction, so these are
- * deliberately generous so the cue leads the event (you see it coming).
+ * Conjunction-approach band, in solar radii of Sun-centre miss distance.
+ *
+ * E10a — the bands are now keyed off the live solar-interference CORRIDOR
+ * threshold (links.SOLAR_CORRIDOR_RSUN, carried per-frame as
+ * `losCorridorRsun`), so the gauge always foreshadows the REAL blackout the
+ * resolver fires:
+ *  - the gauge starts filling at WATCH_FACTOR × corridor (the link is getting
+ *    tight — you see it coming from across the room);
+ *  - at/inside the corridor (margin ≤ corridor) it is FULL/alarm and the link is
+ *    blacked out;
+ *  - occulted/in-corridor clamps approach to 1.
+ * The Earth→Mars LOS only tightens near a real conjunction, so the WATCH factor
+ * is generous (the cue leads the event — pre-staging is a visible skill).
  */
-export const CONJUNCTION_WATCH_RSUN = 8;
-export const CONJUNCTION_CRIT_RSUN = 2;
+/** Watch band opens at this multiple of the corridor threshold (foreshadowing lead). */
+export const CONJUNCTION_WATCH_FACTOR = 1.8;
 
 /** A demand-freshness band for the redundant (CVD-safe) shape/dither channel. */
 export type FreshnessBand = "fresh" | "stale" | "empty";
@@ -72,11 +79,15 @@ export interface Readout {
   blackout: boolean;
   /** Sun-centre miss distance of the Earth→Mars segment, in solar radii. */
   marginSolarRadii: number;
+  /** The live solar-interference corridor threshold in Rsun (the blackout edge). */
+  corridorRsun: number;
   /** True once the solar disk actually intersects the line of sight. */
   occulted: boolean;
-  /** Conjunction approach in [0,1]: 0 wide-open, 1 imminent/occulted blackout. */
+  /** True once the LOS is INSIDE the solar-interference corridor (link blacked out). */
+  inCorridor: boolean;
+  /** Conjunction approach in [0,1]: 0 wide-open, 1 imminent/in-corridor blackout. */
   approach: number;
-  /** True once approach has entered the alarm band (≤ CRIT margin). */
+  /** True once approach has entered the alarm band (margin ≤ corridor). */
   approachAlarm: boolean;
 
   // --- E8 prefetch POLICY (the tame-it lever) glanceable readout ---
@@ -99,17 +110,26 @@ export function freshnessBand(freshness: number): FreshnessBand {
 }
 
 /**
- * Map the Sun-miss margin (solar radii) to a 0..1 conjunction-approach value.
- * Linear inside [CRIT, WATCH]; clamps to 1 when occulted or inside CRIT, to 0
- * when wider than WATCH. Monotonic non-increasing in margin, so a tightening
- * margin always grows the gauge.
+ * Map the Sun-miss margin (solar radii) to a 0..1 conjunction-approach value,
+ * keyed off the live corridor threshold (E10a). The watch band opens at
+ * {@link CONJUNCTION_WATCH_FACTOR} × corridor; the gauge is FULL (1) at/inside
+ * the corridor (where the link blacks out) or when occulted/in-corridor, and 0
+ * wider than the watch band. Linear in between, monotonic non-increasing in
+ * margin, so a tightening margin always grows the gauge and a tighter corridor
+ * pulls the whole ramp in with it.
  */
-export function conjunctionApproach(marginSolarRadii: number, occulted: boolean): number {
-  if (occulted) return 1;
+export function conjunctionApproach(
+  marginSolarRadii: number,
+  blackedOut: boolean,
+  corridorRsun: number,
+): number {
+  if (blackedOut) return 1;
   if (!Number.isFinite(marginSolarRadii)) return 0;
-  if (marginSolarRadii <= CONJUNCTION_CRIT_RSUN) return 1;
-  if (marginSolarRadii >= CONJUNCTION_WATCH_RSUN) return 0;
-  return (CONJUNCTION_WATCH_RSUN - marginSolarRadii) / (CONJUNCTION_WATCH_RSUN - CONJUNCTION_CRIT_RSUN);
+  const crit = corridorRsun;
+  const watch = corridorRsun * CONJUNCTION_WATCH_FACTOR;
+  if (marginSolarRadii <= crit) return 1;
+  if (marginSolarRadii >= watch) return 0;
+  return (watch - marginSolarRadii) / (watch - crit);
 }
 
 /** Short display label for a feed id: the part after "mars_", uppercased. */
@@ -155,7 +175,12 @@ export function deriveReadout(fs: FrameState): Readout {
   const d = fs.demand;
   const oneWay = fs.oneWaySeconds;
   const peak = Math.max(0, Math.min(1, d.peakCacheFreshness));
-  const approach = conjunctionApproach(fs.losMarginSolarRadii, fs.losOcculted);
+  const corridorRsun = fs.losCorridorRsun;
+  // "Blacked out" = the LOS is inside the corridor (the same verdict the resolver
+  // reaches via feasible/lineOfSight) — that, not the bare 1-Rsun disk, is the
+  // alarm/full state for the gauge.
+  const blackedOut = fs.losInCorridor;
+  const approach = conjunctionApproach(fs.losMarginSolarRadii, blackedOut, corridorRsun);
 
   let earliestEta: number | null = null;
   let anyBlackout = false;
@@ -192,9 +217,12 @@ export function deriveReadout(fs: FrameState): Readout {
     countdownSeconds: earliestEta,
     blackout: anyBlackout,
     marginSolarRadii: fs.losMarginSolarRadii,
+    corridorRsun,
     occulted: fs.losOcculted,
+    inCorridor: blackedOut,
     approach,
-    approachAlarm: approach > 0 && fs.losMarginSolarRadii <= CONJUNCTION_CRIT_RSUN,
+    // Alarm = inside the corridor (margin ≤ threshold) — i.e. the link is dead.
+    approachAlarm: fs.losMarginSolarRadii <= corridorRsun && (approach > 0 || blackedOut),
     policyMode: d.policyMode,
     policyLabel: policyLabel(d.policyMode, d.policyFloor),
     policyFiring: d.autoPrefetched.length > 0,

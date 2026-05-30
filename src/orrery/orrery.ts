@@ -846,13 +846,17 @@ export class Orrery {
       this.roCountRow.style.display = "none";
     }
 
-    // CONJUNCTION APPROACH — the predictable-blackout lead cue. Bar grows as the
-    // Sun-miss margin tightens; label shows OCCULT or the live Rsun margin.
-    const cTone = r.occulted ? "bad" : r.approachAlarm ? "warn" : r.approach > 0 ? "watch" : "good";
+    // CONJUNCTION APPROACH — the predictable-blackout lead cue (E10a's solar-
+    // interference corridor). The bar grows as the Sun-miss margin tightens toward
+    // the corridor threshold; the label reads the live Rsun margin while the link
+    // is up, then BLACKOUT once the LOS enters the corridor (margin ≤ threshold) —
+    // the same verdict the resolver reaches via feasible(). So the player SEES the
+    // blackout coming (watch → warn) and pre-staging is a visible skill (§4.3a).
+    const cTone = r.inCorridor ? "bad" : r.approachAlarm ? "warn" : r.approach > 0 ? "watch" : "good";
     setN(
       this.roConjVal,
-      r.occulted
-        ? "OCCULT"
+      r.inCorridor
+        ? "BLACKOUT"
         : Number.isFinite(r.marginSolarRadii)
           ? `${r.marginSolarRadii.toFixed(1)} Rsun`
           : "CLEAR",

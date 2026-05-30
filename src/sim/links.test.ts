@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { segmentSphere, earthMarsLos } from "./links";
+import { segmentSphere, earthMarsLos, lineOfSight, SOLAR_CORRIDOR_RSUN } from "./links";
 import type { Vec3 } from "./ephemeris";
 import { loadEphemeris } from "./system-data";
 
@@ -93,12 +93,20 @@ describe("segmentSphere — closest-point geometry (hand-checked unit cases)", (
 describe("earthMarsLos — Earth→Mars line-of-sight margin against the Sun (real ephemeris)", () => {
   const eph = loadEphemeris();
 
-  it("returns the documented shape with a boolean occultation flag", () => {
+  it("returns the documented shape with boolean occult + corridor flags", () => {
     const los = earthMarsLos(eph, 20_000_000);
-    expect(Object.keys(los).sort()).toEqual(["marginSolarRadii", "missDistance", "occulted"]);
+    expect(Object.keys(los).sort()).toEqual([
+      "corridorRsun",
+      "inCorridor",
+      "marginSolarRadii",
+      "missDistance",
+      "occulted",
+    ]);
     expect(typeof los.missDistance).toBe("number");
     expect(typeof los.marginSolarRadii).toBe("number");
     expect(typeof los.occulted).toBe("boolean");
+    expect(typeof los.inCorridor).toBe("boolean");
+    expect(los.corridorRsun).toBe(SOLAR_CORRIDOR_RSUN);
   });
 
   it("expresses the margin as missDistance in solar radii (margin = miss / sunR)", () => {
@@ -130,5 +138,70 @@ describe("earthMarsLos — Earth→Mars line-of-sight margin against the Sun (re
 
   it("is a pure function of (eph, t): repeated calls are identical", () => {
     expect(earthMarsLos(eph, 12_345_678)).toEqual(earthMarsLos(eph, 12_345_678));
+  });
+});
+
+describe("solar-interference corridor — the blackout generalisation (E10a, retires SD-22)", () => {
+  // Canonical setup: Earth at the origin, Mars 10 along +x, Sun centred at
+  // (5, 4, 0) — projecting to the segment MIDPOINT, 4 units off-axis. With a
+  // "Sun radius" of 1 the disk is missed (4 > 1) but a 5× corridor catches it
+  // (4 < 5). This is the corridor in miniature, away from the real eph.
+  const A: Vec3 = [0, 0, 0];
+  const B: Vec3 = [10, 0, 0];
+  const SUN: Vec3 = [5, 4, 0];
+
+  it("segmentSphere separates the GEOMETRY radius (distance) from the BLOCK radius (corridor)", () => {
+    // distance is the true miss (4); blocked keys off the (larger) block radius.
+    const disk = segmentSphere(A, B, SUN, 1); // blockRadius defaults to radius=1
+    expect(disk.distance).toBeCloseTo(4, 12);
+    expect(disk.blocked).toBe(false); // 4 > 1 → disk missed
+
+    const corridor = segmentSphere(A, B, SUN, 1, 5); // blockRadius=5 (N=5 Rsun)
+    expect(corridor.distance).toBeCloseTo(4, 12); // SAME geometry distance
+    expect(corridor.blocked).toBe(true); // 4 < 5 → inside the corridor
+  });
+
+  it("a corridor blocks only when the Sun is BETWEEN the endpoints (near-side never blacks out)", () => {
+    // Sun behind the start (t<0): even a vast corridor cannot block it.
+    const behind = segmentSphere(A, B, [-3, 1, 0], 1, 100);
+    expect(behind.t).toBeLessThan(0);
+    expect(behind.blocked).toBe(false);
+    // Sun beyond the far endpoint (t>1): likewise never blocks.
+    const beyond = segmentSphere(A, B, [13, 1, 0], 1, 100);
+    expect(beyond.t).toBeGreaterThan(1);
+    expect(beyond.blocked).toBe(false);
+  });
+
+  describe("on the REAL ephemeris", () => {
+    const eph = loadEphemeris();
+    // The conjunction epoch (the t minimising the Sun-LOS miss); found by scan.
+    const CONJ_T = 15_731_438;
+
+    it("the tightest real Sun-miss is ≈3.32 Rsun — so N=1 (disk) NEVER fires but N=5 DOES", () => {
+      const los = earthMarsLos(eph, CONJ_T);
+      expect(los.marginSolarRadii).toBeGreaterThan(3.3);
+      expect(los.marginSolarRadii).toBeLessThan(3.4);
+      // The bare disk (N=1) is never crossed — SD-22's dormancy.
+      expect(lineOfSight(eph, "earth", "mars", CONJ_T, ["sun"], 1)).toBe(true);
+      // The default corridor (N=5) DOES black it out — the live blackout.
+      expect(lineOfSight(eph, "earth", "mars", CONJ_T, ["sun"], SOLAR_CORRIDOR_RSUN)).toBe(false);
+      expect(earthMarsLos(eph, CONJ_T).inCorridor).toBe(true);
+    });
+
+    it("N=1 corridor reduces EXACTLY to the physical-disk occultation (clean generalisation)", () => {
+      for (let t = 0; t <= 30_000_000; t += 500_000) {
+        const occulted = earthMarsLos(eph, t).occulted;
+        const n1Blocked = !lineOfSight(eph, "earth", "mars", t, ["sun"], 1);
+        expect(n1Blocked).toBe(occulted);
+      }
+    });
+
+    it("the corridor opens a real blackout WINDOW that brackets the conjunction", () => {
+      // Far from conjunction the link is open; in the window it is blacked out;
+      // the window is centred on (contains) the conjunction epoch.
+      expect(lineOfSight(eph, "earth", "mars", CONJ_T - 2_000_000, ["sun"])).toBe(true);
+      expect(lineOfSight(eph, "earth", "mars", CONJ_T, ["sun"])).toBe(false);
+      expect(lineOfSight(eph, "earth", "mars", CONJ_T + 2_000_000, ["sun"])).toBe(true);
+    });
   });
 });

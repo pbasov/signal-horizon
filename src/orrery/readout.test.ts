@@ -6,10 +6,15 @@ import {
   feedGlyphState,
   feedLabel,
   policyLabel,
-  CONJUNCTION_WATCH_RSUN,
-  CONJUNCTION_CRIT_RSUN,
+  CONJUNCTION_WATCH_FACTOR,
 } from "./readout";
+import { SOLAR_CORRIDOR_RSUN } from "../sim/links";
 import type { FrameState, DemandReadout, FeedReadout } from "../types";
+
+/** The corridor threshold the live readout keys off (the default blackout edge). */
+const CORRIDOR = SOLAR_CORRIDOR_RSUN;
+/** The watch band the gauge starts filling at: factor × corridor. */
+const WATCH = SOLAR_CORRIDOR_RSUN * CONJUNCTION_WATCH_FACTOR;
 
 /**
  * M1-10 / E7 — the glanceable MULTI-FEED readout derivation. PURE, so it is pinned
@@ -62,7 +67,9 @@ const frame = (over: Partial<FrameState> = {}): FrameState => ({
   earthMarsDistanceM: 2.5e11,
   oneWaySeconds: 800,
   losMarginSolarRadii: 50,
+  losCorridorRsun: CORRIDOR,
   losOcculted: false,
+  losInCorridor: false,
   packet: null,
   demand: demand(),
   ...over,
@@ -80,21 +87,21 @@ describe("freshnessBand — the redundant colour-off channel", () => {
 
 describe("conjunctionApproach — see the blackout coming (GDD §4.3a)", () => {
   it("is 0 when the margin is wider than the watch band", () => {
-    expect(conjunctionApproach(CONJUNCTION_WATCH_RSUN + 1, false)).toBe(0);
-    expect(conjunctionApproach(50, false)).toBe(0);
+    expect(conjunctionApproach(WATCH + 1, false, CORRIDOR)).toBe(0);
+    expect(conjunctionApproach(50, false, CORRIDOR)).toBe(0);
   });
 
-  it("is 1 at/inside the crit band and when occulted", () => {
-    expect(conjunctionApproach(CONJUNCTION_CRIT_RSUN, false)).toBe(1);
-    expect(conjunctionApproach(0.5, false)).toBe(1);
-    expect(conjunctionApproach(50, true)).toBe(1); // occult clamps to full
+  it("is 1 at/inside the corridor and when blacked out", () => {
+    expect(conjunctionApproach(CORRIDOR, false, CORRIDOR)).toBe(1); // at the edge
+    expect(conjunctionApproach(CORRIDOR - 0.5, false, CORRIDOR)).toBe(1); // inside
+    expect(conjunctionApproach(50, true, CORRIDOR)).toBe(1); // blacked out clamps to full
   });
 
-  it("ramps monotonically up as the margin tightens through the watch→crit band", () => {
-    const mid = (CONJUNCTION_WATCH_RSUN + CONJUNCTION_CRIT_RSUN) / 2;
-    const a = conjunctionApproach(CONJUNCTION_WATCH_RSUN - 0.01, false);
-    const b = conjunctionApproach(mid, false);
-    const c = conjunctionApproach(CONJUNCTION_CRIT_RSUN + 0.01, false);
+  it("ramps monotonically up as the margin tightens through the watch→corridor band", () => {
+    const mid = (WATCH + CORRIDOR) / 2;
+    const a = conjunctionApproach(WATCH - 0.01, false, CORRIDOR);
+    const b = conjunctionApproach(mid, false, CORRIDOR);
+    const c = conjunctionApproach(CORRIDOR + 0.01, false, CORRIDOR);
     expect(a).toBeGreaterThan(0);
     expect(b).toBeGreaterThan(a);
     expect(c).toBeGreaterThan(b);
@@ -102,8 +109,15 @@ describe("conjunctionApproach — see the blackout coming (GDD §4.3a)", () => {
     expect(b).toBeCloseTo(0.5, 5);
   });
 
+  it("a tighter corridor pulls the whole ramp in (the dial moves the cue)", () => {
+    // At a fixed margin of 6 Rsun: with the default corridor (5) it is just past
+    // the edge (low approach); shrink the corridor to 2 and 6 Rsun is wide open.
+    expect(conjunctionApproach(6, false, 5)).toBeGreaterThan(0);
+    expect(conjunctionApproach(6, false, 2)).toBe(0); // 6 > 2×1.8=3.6 watch → open
+  });
+
   it("treats a non-finite (no-occluder) margin as wide open", () => {
-    expect(conjunctionApproach(Infinity, false)).toBe(0);
+    expect(conjunctionApproach(Infinity, false, CORRIDOR)).toBe(0);
   });
 });
 
@@ -175,19 +189,22 @@ describe("deriveReadout — MULTI-FEED projection", () => {
   });
 
   it("blackout is true when ANY feed is in blackout; carries conjunction approach", () => {
-    const occ = deriveReadout(
+    // In-corridor conjunction: the LOS is inside the solar-interference corridor
+    // (margin ≤ threshold) so the link is dead. The gauge is full + alarmed and
+    // the per-feed blackout_miss lights the aggregate blackout.
+    const blk = deriveReadout(
       frame({
-        losOcculted: true,
-        losMarginSolarRadii: 0.4,
+        losInCorridor: true,
+        losMarginSolarRadii: 3.3, // inside the default 5-Rsun corridor
         demand: demand({ feeds: [feed({ blackout: true, outcome: "blackout_miss", viaCache: false })] }),
       }),
     );
-    expect(occ.blackout).toBe(true);
-    expect(occ.occulted).toBe(true);
-    expect(occ.approach).toBe(1);
-    expect(occ.approachAlarm).toBe(true);
+    expect(blk.blackout).toBe(true);
+    expect(blk.inCorridor).toBe(true);
+    expect(blk.approach).toBe(1);
+    expect(blk.approachAlarm).toBe(true);
 
-    const open = deriveReadout(frame({ losMarginSolarRadii: 50, losOcculted: false }));
+    const open = deriveReadout(frame({ losMarginSolarRadii: 50, losInCorridor: false }));
     expect(open.approach).toBe(0);
     expect(open.approachAlarm).toBe(false);
     expect(open.blackout).toBe(false);
