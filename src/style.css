@@ -335,8 +335,15 @@ body {
 .log-line .ts.stale { color: var(--grey); }
 .log-line .sev { flex: 0 0 auto; width: 1.1em; text-align: center; }
 .log-line .ent { color: var(--violet); }
-.log-line .val { color: var(--amber); }
+.log-line .val { color: var(--amber); flex: 0 0 auto; }
 .log-line .msg { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+/* §8 freshness ramp on the value token: a freshness/age value reads warm when
+   fresh and desaturates toward machine-grey as it stales (matches the orrery
+   saturation + readout warmth). Only freshness-bearing values carry these. */
+.log-line .val.good  { color: var(--green); }
+.log-line .val.watch { color: var(--cyan); }
+.log-line .val.warn  { color: var(--amber); }
+.log-line .val.dead  { color: var(--grey); }
 .log-line.info .sev { color: var(--cyan); }
 .log-line.warn .sev,
 .log-line.warn .msg { color: var(--orange); }

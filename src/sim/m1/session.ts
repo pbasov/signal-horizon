@@ -28,7 +28,7 @@
  */
 import type { Ephemeris } from "../ephemeris";
 import { DT } from "../clock";
-import { oneWaySeconds } from "../delay";
+import { oneWaySeconds, freshness as delayFreshness } from "../delay";
 import { Cache } from "./cache";
 import { Demand } from "./demand";
 import { Level } from "./coherence";
@@ -42,6 +42,8 @@ import {
   type PrefetchPolicy,
   type PolicyFeedState,
 } from "./policy";
+import { EventLog, type PrefetchKind } from "./eventlog";
+import { PREFETCH_COST } from "./economy";
 
 /** Per-feed mutable fetch state — one in-flight data leg per feed at most. */
 interface FetchState {
@@ -160,6 +162,25 @@ export class M1Session {
    */
   policy: PrefetchPolicy = defaultPolicy();
 
+  /**
+   * E9 (M1-10b) — THE TRUTHFUL EVENT LOG (the §4.12 parse seed). An append-only,
+   * deterministic stream of {@link M1Event}s emitted PURELY from this session's
+   * state transitions (edge-triggered, never per-tick level). It is a DERIVED
+   * side-output: kept OUT of the snapshot/state-hash (the canonical state is
+   * balance/cache/fetch/policy), so the replay golden is unchanged — but because
+   * the emitters fire off deterministic state transitions, the stream itself
+   * replays bit-identically (proven in eventlog-replay coverage). UNBOUNDED here
+   * (the recording log); the live panel reads a bounded view.
+   */
+  readonly events = new EventLog();
+
+  /** Per-feed PRIOR serve band (for edge-triggered serve-transition logging). null = unseen. */
+  private prevBand = new Map<string, ResolveOutcome | null>();
+  /** Per-feed PRIOR link feasibility (for edge-triggered blackout enter/exit). null = unseen. */
+  private prevFeasible = new Map<string, boolean | null>();
+  /** PRIOR policy mode (so a CHANGE logs once, from→to). undefined = unseen. */
+  private prevPolicyMode: PrefetchPolicy["mode"] | undefined = undefined;
+
   /** Per-feed fetch state, keyed by feed id (one in-flight leg per feed). */
   private fetches = new Map<string, FetchState>();
 
@@ -175,7 +196,19 @@ export class M1Session {
     this.economy = new M1Economy(openingBalance);
     for (const f of this.feeds) {
       this.fetches.set(f.id, { inFlight: false, launchT: 0, arrivalT: 0 });
+      this.prevBand.set(f.id, null);
+      this.prevFeasible.set(f.id, null);
     }
+  }
+
+  /**
+   * Derive the integer fixed-step tick from a sim-time + this step's dt. tSim is
+   * always tick·dt (the clock hands us tick·dt), so a round recovers the tick
+   * exactly at the fixed DT the replay uses; at coarser live dt it still names the
+   * tick the event happened on. Pure, no clock dependency.
+   */
+  private tickOf(t: number, dtSeconds: number): number {
+    return dtSeconds > 0 ? Math.round(t / dtSeconds) : 0;
   }
 
   /** True iff ANY feed has a data leg in flight right now. */
@@ -235,14 +268,58 @@ export class M1Session {
    * manual/prefetch-only path, with no per-tick autopilot, IS bit-DT-invariant.)
    */
   step(eph: Ephemeris, t: number, dtSeconds: number = DT): SessionRenderState {
+    const tick = this.tickOf(t, dtSeconds);
+
     // 1. LAND arrivals first, across every feed, so a feed that lands its sample
     //    this step resolves to a hit immediately. Eviction (if the cache is full)
-    //    is judged at the store instant t.
+    //    is judged at the store instant t. Each landing emits the TRUTHFUL trio:
+    //    fetch_arrive (the real landed freshness — replacing the old stale "0.50"
+    //    flavour lie), the cache_evict it forced (which dataset, how stale), and
+    //    the cache_store. Edge events, fired only when something HAPPENS.
     for (const feed of this.feeds) {
       const fs = this.fetchOf(feed.id);
       if (fs.inFlight && t >= fs.arrivalT) {
+        // The freshness the just-arrived copy lands at (captured at launchT, now
+        // one-way-light-time old) — the honest number, ≈0.75-and-decaying.
+        const landed = delayFreshness(t - fs.launchT, feed.freshnessHalfLifeS);
+        this.events.push((seq) => ({
+          kind: "fetch_arrive",
+          seq,
+          tick,
+          tSim: t,
+          feedId: feed.id,
+          datasetId: feed.datasetId,
+          landedFreshness: landed,
+        }));
+        // Log the eviction this store WILL force (before it mutates the cache) so
+        // the record names the victim + how stale it was — the §4.12 "evicted the
+        // wrong dataset" line item.
+        const victim = this.cache.evictionVictim(feed.datasetId, t);
+        if (victim !== null) {
+          const vf = this.cache.freshnessOf(victim, t);
+          this.events.push((seq) => ({
+            kind: "cache_evict",
+            seq,
+            tick,
+            tSim: t,
+            datasetId: victim,
+            freshness: vf,
+            forBy: feed.datasetId,
+            reason: "lowest_freshness",
+          }));
+        }
         this.cache.store(feed.datasetId, fs.launchT, feed.freshnessHalfLifeS, t);
         fs.inFlight = false;
+        this.events.push((seq) => ({
+          kind: "cache_store",
+          seq,
+          tick,
+          tSim: t,
+          datasetId: feed.datasetId,
+          freshness: landed,
+          slotsUsed: this.cache.occupied,
+          slotCapacity: this.cache.capacity,
+        }));
       }
     }
 
@@ -272,18 +349,32 @@ export class M1Session {
         if (fs.inFlight) continue;
         // A blackout pre-stage is one where the link is up now but forecast down
         // within the lead — record it for the render cue (the relief firing).
-        if (
+        const isPrestage =
           this.policy.mode === "freshness_blackout" &&
-          !feasible(eph, t + this.policy.blackoutLeadS, feed.sourceId, feed.customerId, ["sun"])
-        ) {
-          autoBlackoutPrestage = true;
-        }
+          !feasible(eph, t + this.policy.blackoutLeadS, feed.sourceId, feed.customerId, ["sun"]);
+        if (isPrestage) autoBlackoutPrestage = true;
         const d = eph.distanceBetween(feed.sourceId, feed.customerId, t);
+        const eta = oneWaySeconds(d);
         fs.launchT = t;
-        fs.arrivalT = t + oneWaySeconds(d);
+        fs.arrivalT = t + eta;
         fs.inFlight = true;
         this.economy.chargePrefetch();
         autoPrefetched.push(id);
+        // The autopilot fired a leg — log it as the prefetch it is (auto top-up vs
+        // blackout pre-stage), carrying the leg's ETA + the €50 charged. This is
+        // the §4.4 skill made legible (and later, timely-vs-wasted analysable).
+        const cause: PrefetchKind = isPrestage ? "prestage" : "auto";
+        this.events.push((seq) => ({
+          kind: "prefetch",
+          seq,
+          tick,
+          tSim: t,
+          feedId: feed.id,
+          datasetId: feed.datasetId,
+          cause,
+          etaSeconds: eta,
+          costEur: PREFETCH_COST,
+        }));
       }
     }
 
@@ -295,6 +386,44 @@ export class M1Session {
       const result = resolve(eph, t, feed, this.cache, linkOpen);
       summedRevenueRate += revenueRatePerSecond(result.outcome);
 
+      // BLACKOUT enter/exit — edge-triggered on the link feasibility flip. (Per
+      // SD-22 the LoS never actually occults in the shipped ephemeris, so this
+      // will not fire live yet; it is wired truthfully so when E10 makes a
+      // conjunction blackout live-exercisable the record already carries it.)
+      const wasFeasible = this.prevFeasible.get(feed.id);
+      if (wasFeasible !== null && wasFeasible !== undefined && wasFeasible !== linkOpen) {
+        this.events.push((seq) => ({
+          kind: "blackout",
+          seq,
+          tick,
+          tSim: t,
+          feedId: feed.id,
+          edge: linkOpen ? "exit" : "enter",
+        }));
+      }
+      this.prevFeasible.set(feed.id, linkOpen);
+
+      // SERVE band TRANSITION — the per-contract delivery truth, edge-triggered:
+      // a feed going miss→fresh on a landing, fresh→stale as it decays, served→
+      // miss/blackout. Logged only when the band actually CHANGES (never per-tick).
+      const prevBand = this.prevBand.get(feed.id) ?? null;
+      if (result.outcome !== prevBand) {
+        const sev = result.outcome; // captured for the closure (avoids re-read).
+        this.events.push((seq) => ({
+          kind: "serve",
+          seq,
+          tick,
+          tSim: t,
+          feedId: feed.id,
+          datasetId: feed.datasetId,
+          band: sev,
+          from: prevBand,
+          freshness: result.servedFreshness,
+          viaCache: result.viaCache,
+        }));
+        this.prevBand.set(feed.id, result.outcome);
+      }
+
       // 4. A MISS with the link up and no leg already crawling for THIS feed starts
       //    its data leg. blackout_miss (link down) does NOT start a fetch. The
       //    autopilot above may already have launched this feed's leg — the
@@ -302,9 +431,21 @@ export class M1Session {
       const fs = this.fetchOf(feed.id);
       if (result.outcome === "miss" && !fs.inFlight) {
         const d = eph.distanceBetween(feed.sourceId, feed.customerId, t);
+        const eta = oneWaySeconds(d);
         fs.launchT = t;
-        fs.arrivalT = t + oneWaySeconds(d);
+        fs.arrivalT = t + eta;
         fs.inFlight = true;
+        // A natural miss-fetch leg launched — the visible light-gap wait begins.
+        this.events.push((seq) => ({
+          kind: "fetch_launch",
+          seq,
+          tick,
+          tSim: t,
+          feedId: feed.id,
+          datasetId: feed.datasetId,
+          etaSeconds: eta,
+          cause: "miss",
+        }));
       }
 
       feedStates.push({
@@ -387,15 +528,31 @@ export class M1Session {
    * E8 will add the STANDING policy; this is the manual lever. Per-feed targeting
    * can refine later (the lowest-freshness pick is the simple, intuitive default).
    */
-  prefetch(eph: Ephemeris, t: number): string | null {
+  prefetch(eph: Ephemeris, t: number, atTick?: number): string | null {
     const target = this.pickPrefetchTarget(eph, t);
     if (target === null) return null;
     const d = eph.distanceBetween(target.sourceId, target.customerId, t);
+    const eta = oneWaySeconds(d);
     const fs = this.fetchOf(target.id);
     fs.launchT = t;
-    fs.arrivalT = t + oneWaySeconds(d);
+    fs.arrivalT = t + eta;
     fs.inFlight = true;
     this.economy.chargePrefetch();
+    // The MANUAL prefetch (P) fired and launched a leg — log it truthfully. The
+    // tick is the action's recorded atTick (so live + replay stamp the same one);
+    // fall back to the DT-derived tick for direct test calls. Edge event.
+    const tick = atTick ?? this.tickOf(t, DT);
+    this.events.push((seq) => ({
+      kind: "prefetch",
+      seq,
+      tick,
+      tSim: t,
+      feedId: target.id,
+      datasetId: target.datasetId,
+      cause: "manual",
+      etaSeconds: eta,
+      costEur: PREFETCH_COST,
+    }));
     return target.id;
   }
 
@@ -427,13 +584,32 @@ export class M1Session {
    * same tick via the shared applySessionAction, so the DERIVED auto-prefetches
    * reproduce bit-identically.
    */
-  setPolicy(p: PrefetchPolicy): void {
+  setPolicy(p: PrefetchPolicy, atTick?: number, tSim?: number): void {
+    const from = this.prevPolicyMode ?? this.policy.mode;
     this.policy = {
       mode: p.mode,
       freshnessFloor: Math.max(0, Math.min(0.95, p.freshnessFloor)),
       blackoutLeadS: Math.max(0, p.blackoutLeadS),
       maxConcurrentAuto: Math.max(0, Math.trunc(p.maxConcurrentAuto)),
     };
+    // The standing policy CHANGED (a recorded player intent) — log it. The
+    // autopilot's per-step prefetches it drives are logged at their own firing
+    // step; this records the lever move itself (mode + floor, from→to). The tick
+    // is the action's recorded atTick when known (live + replay stamp the same).
+    const mode = this.policy.mode;
+    const floor = this.policy.freshnessFloor;
+    const tick = atTick ?? 0;
+    const ts = tSim ?? tick * DT;
+    this.events.push((seq) => ({
+      kind: "policy",
+      seq,
+      tick,
+      tSim: ts,
+      mode,
+      floor,
+      from,
+    }));
+    this.prevPolicyMode = mode;
   }
 
   /** Capture all mutable session state by value for a fast-load snapshot. */

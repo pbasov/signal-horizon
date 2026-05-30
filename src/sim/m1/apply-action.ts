@@ -44,7 +44,7 @@ export function applySessionAction(
     // clock.seconds = tick · dt, so replay must use the identical instant. The
     // multi-feed session returns the TARGETED feed id (or null when nothing is
     // eligible); coerce to the boolean "did it mutate" the caller expects.
-    return session.prefetch(eph, action.atTick * dt) !== null;
+    return session.prefetch(eph, action.atTick * dt, action.atTick) !== null;
   }
   if (action.kind === KIND_SET_PREFETCH_POLICY) {
     // E8 — the player CHANGED the standing policy (the tame-it lever). Apply it at
@@ -52,7 +52,7 @@ export function applySessionAction(
     // (a pure function of policy + state, run inside step()) reproduce
     // bit-identically with no per-step logging. The mutation always "took", so
     // return true (the live caller treats it as a state change).
-    session.setPolicy(policyFromPayload(action));
+    session.setPolicy(policyFromPayload(action), action.atTick, action.atTick * dt);
     return true;
   }
   return false;

@@ -137,11 +137,16 @@ export class Cache {
   }
 
   /**
-   * Evict the slot with the lowest freshness at time t. Deterministic: ties break
-   * on the FIRST-inserted matching slot (Map iteration is insertion order), so the
-   * choice is a pure function of the slot contents + t.
+   * The dataset id a {@link store} of `incoming` at time t WOULD evict, or null if
+   * no eviction is needed (the dataset is already held, or a free slot exists).
+   * PURE — it inspects but never mutates. The session uses this to LOG the
+   * truthful eviction (which dataset, how stale) BEFORE the store mutates the
+   * cache (E9 §4.12: the record must name "cache evicted the wrong dataset").
+   * Mirrors {@link evictStalest}'s lowest-freshness + insertion-order tie-break
+   * exactly, so what it reports is what store() will actually drop.
    */
-  private evictStalest(t: number): void {
+  evictionVictim(incoming: string, t: number): string | null {
+    if (this.slots.has(incoming) || this.slots.size < this.capacity) return null;
     let victim: string | null = null;
     let lowest = Number.POSITIVE_INFINITY;
     for (const [id, s] of this.slots) {
@@ -151,7 +156,31 @@ export class Cache {
         victim = id;
       }
     }
+    return victim;
+  }
+
+  /**
+   * Evict the slot with the lowest freshness at time t. Deterministic: ties break
+   * on the FIRST-inserted matching slot (Map iteration is insertion order), so the
+   * choice is a pure function of the slot contents + t.
+   */
+  private evictStalest(t: number): void {
+    const victim = this.evictionVictimAll(t);
     if (victim !== null) this.slots.delete(victim);
+  }
+
+  /** The lowest-freshness slot id at t over ALL held slots (the eviction target). PURE. */
+  private evictionVictimAll(t: number): string | null {
+    let victim: string | null = null;
+    let lowest = Number.POSITIVE_INFINITY;
+    for (const [id, s] of this.slots) {
+      const f = s.freshness(t);
+      if (f < lowest) {
+        lowest = f;
+        victim = id;
+      }
+    }
+    return victim;
   }
 
   /** Drop the slot holding `datasetId` (no-op if absent). Pure. */

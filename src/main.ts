@@ -149,14 +149,18 @@ let prevCue: CueDemandSlice | null = null;
  * it onto the one-way bus (drained by the frame loop). The sim never sees audio.
  */
 function tickSim(t: number): void {
-  for (const e of mission.update(t)) log.append(e);
+  // The Mission advances the orrery's single Earth→Mars packet crawl (the visible
+  // aggregate wait). E9: it no longer feeds the SYSTEM.LOG — the log is the
+  // TRUTHFUL sim event stream (session.events), rendered each frame below.
+  mission.update(t);
   demand = session.step(eph, t);
   // The Mission's single Earth→Mars packet represents the AGGREGATE in-flight
   // wait (all feeds share the same geometry); the orrery draws a packet PER feed
-  // in flight from the per-feed readout. Launch the log/telemetry packet whenever
-  // any leg is crawling and none is shown.
+  // in flight from the per-feed readout. Launch the packet whenever any leg is
+  // crawling and none is shown (a render concern only — the real per-feed launch
+  // is already logged as a fetch_launch event inside session.step()).
   if (demand.fetchesInFlight > 0 && mission.packet === null) {
-    for (const e of mission.launch(t)) log.append(e);
+    mission.launch(t);
   }
   // Audio reads an AGGREGATE slice across the roster: a fetch is "in flight" if
   // ANY feed is fetching; a serve is "via cache" if ANY feed hit; the outcome is
@@ -270,9 +274,8 @@ window.addEventListener("keydown", (e) => {
     if (applySessionAction(eph, session, action, DT)) {
       addAction(save, action);
       // The prefetch IS the visible wait: launch the Mission packet to crawl it.
-      if (mission.packet === null) {
-        for (const ev of mission.launch(clock.seconds)) log.append(ev);
-      }
+      // (The truthful "prefetch MANUAL" line is already logged inside the session.)
+      if (mission.packet === null) mission.launch(clock.seconds);
     }
   } else if (k === "a" || k === "A") {
     // E8 — CYCLE the prefetch policy mode: manual → freshness → freshness_blackout
@@ -357,6 +360,9 @@ function frame(now: number): void {
     },
   };
 
+  // E9 — paint the truthful SYSTEM.LOG: drain the new tail of the sim event stream
+  // (incremental, by seq) into the panel. The log IS the surfaced sim record.
+  log.render(session.events);
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);
