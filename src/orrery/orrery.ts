@@ -24,6 +24,10 @@ import { DemandField } from "../sim/coverage/demand";
 import { scoreCoverageAt } from "../sim/coverage/score";
 import { CoverageOverlay } from "./coverage-overlay";
 import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
+import { orbitRenderRadius, type OrbitRenderScale } from "./orbit-render-scale";
+import { pickNearest, type PickCandidate } from "./pick";
+import { solveOrbit, orbitPeriodSeconds } from "../sim/m2/orbit";
+import type { SatOrbit } from "../sim/m2/roster";
 
 const DEG = Math.PI / 180;
 
@@ -59,11 +63,22 @@ export interface CameraPreset {
   logK: number;
   /** compression gain (scene units) */
   logScale: number;
+  /** Near-body orbit de-squash band (metres). When set, points within this distance
+   * of the focus body are radially RE-RADII'd (orbit-render-scale) BEFORE the log-fold
+   * so near-body orbits/sats separate from the parent disc and sweep visibly. Identity
+   * (no de-squash) when undefined — system-scale presets keep the honest log-fold only. */
+  orbitBandM?: number;
 }
 
 export const CAMERA_PRESETS: CameraPreset[] = [
-  { name: "CISLUNAR", focus: "earth", az: 0 * DEG, el: 22 * DEG, dist: 3.2, fov: 50, logK: 2.0e8, logScale: 1.4 },
-  { name: "ORBITS", focus: "earth", az: 35 * DEG, el: 30 * DEG, dist: 5.0, fov: 46, logK: 9.0e6, logScale: 1.15 },
+  // EARTH — the new DEFAULT framing. A tight Earth-focused shot with the near-body
+  // de-squash ON, so LEO/GEO + deployed sats render CLEAR of the Earth disc and the
+  // player SEES them sweep as the clock advances (the screensaver → game fix #1). The
+  // band holds LEO..GEO comfortably inside the Moon distance (Moon ≈ 3.84e8 m), so the
+  // Moon ring + everything past it stays on the honest log-fold (identity de-squash).
+  { name: "EARTH", focus: "earth", az: 20 * DEG, el: 24 * DEG, dist: 3.0, fov: 48, logK: 6.0e7, logScale: 1.25, orbitBandM: 2.0e8 },
+  { name: "CISLUNAR", focus: "earth", az: 0 * DEG, el: 22 * DEG, dist: 3.2, fov: 50, logK: 2.0e8, logScale: 1.4, orbitBandM: 1.2e8 },
+  { name: "ORBITS", focus: "earth", az: 35 * DEG, el: 30 * DEG, dist: 5.0, fov: 46, logK: 9.0e6, logScale: 1.15, orbitBandM: 8.0e7 },
   { name: "SYSTEM", focus: "sun", az: 0 * DEG, el: 24 * DEG, dist: 11, fov: 50, logK: 9.0e10, logScale: 3.6 },
   { name: "TOP-DOWN", focus: "sun", az: 0 * DEG, el: 88 * DEG, dist: 13, fov: 46, logK: 9.0e10, logScale: 3.6 },
 ];
@@ -85,6 +100,10 @@ export interface BuildAssetRender {
   posM: Vec3;
   /** Link budget EIRP (drives the coverage sweep). */
   eirp: number;
+  /** For a launched SAT: its Kepler elements, so the orrery can draw a dashed orbital-
+   * plane RING (fix #2) sampled from the sat's own orbit — exactly like the dataset
+   * LEO/GEO rings. Undefined for a ground station. */
+  orbit?: SatOrbit;
 }
 
 /** M3a — one placed ORBITAL DATACENTER's render descriptor (GDD §4.5): a distinct §8 node on
@@ -179,6 +198,20 @@ const MAX_DC_MARKERS = 8;
 /** Earth billboard px (mirrors the BODIES "earth" entry) — used to size the shell
  * so it hugs the Earth disc on screen. Kept in one place. */
 const EARTH_BILLBOARD_PX = 40;
+/** Near-body de-squash tunables (render-only visual lie — see orbit-render-scale.ts).
+ * The surface LIFT (metres) puts even the lowest orbit clear of the parent disc; the
+ * concave altitude EXPONENT (< 1) fans LEO/MEO/GEO into clearly separate visual radii.
+ * Identity below the surface + beyond the per-preset band, so ground stations / the
+ * disc / the Moon ring / Earth↔Mars are all untouched. */
+const ORBIT_DESQUASH_LIFT_M = 1.8e7;
+const ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
+/** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
+ * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
+const PICK_TOLERANCE_PX = 26;
+/** Launched-sat orbit rings: samples per ring (matches the dataset ring density). */
+const SAT_RING_SAMPLES = 96;
+/** Max launched-sat orbit rings drawn at once (a pool; the roster sat count is small). */
+const MAX_SAT_RINGS = 24;
 
 const VERT = /* glsl */ `
   out vec2 vUv;
@@ -248,6 +281,9 @@ interface Frame {
   fov: number;
   logK: number;
   logScale: number;
+  /** Near-body orbit de-squash band (metres); 0 = de-squash off (identity). Animated
+   * across preset changes like the other camera fields so the transition is smooth. */
+  orbitBandM: number;
 }
 
 export class Orrery {
@@ -262,7 +298,10 @@ export class Orrery {
   private cur: Frame;
   private tgt: Frame;
   focusId: string;
-  private activePreset = 2; // SYSTEM — the Earth→Mars money shot
+  /** The CLICK-/F-selected asset id (a body, a placed asset, or a DC), or null. Drives
+   * the selection ring + is the click-to-focus target. Set on click/F, not per frame. */
+  selectedId: string | null = null;
+  private activePreset = 0; // EARTH — the near-body framing where sats visibly orbit (the default)
 
   private bodyMeshes = new Map<string, THREE.Mesh>();
   private haloMesh?: THREE.Mesh;
@@ -289,6 +328,10 @@ export class Orrery {
   private roConjVal!: HTMLElement;
   private roConjFill!: HTMLElement;
   private roBlackout!: HTMLElement;
+
+  /** The live near-body de-squash for the current focus + animated orbit band (fix #1).
+   * Rebuilt each frame by {@link refreshOrbitScale}; null = de-squash off (identity). */
+  private orbitScale: OrbitRenderScale | null = null;
 
   private quad = new THREE.PlaneGeometry(1, 1);
   private tmpV = new THREE.Vector3();
@@ -341,6 +384,22 @@ export class Orrery {
   private dcMarkers: THREE.Mesh[] = [];
   private dcHalos: THREE.Mesh[] = [];
 
+  // --- launched-sat orbit rings (fix #2 — the monument's orbital planes) ------
+  /** Pooled dashed orbit-plane rings for the ROSTER's launched sats — drawn exactly
+   * like the dataset LEO/GEO rings, one per launched sat, in the sat's own body-relative
+   * frame. Each carries the body-relative sampled orbit (rebased + folded each frame) +
+   * the sat's parent id. The pool is rebuilt ONLY when the roster's sat set changes
+   * (X-02 — never per frame), keyed by {@link satRingSig}. */
+  private satRings: { line: THREE.LineSegments; rel: Vec3[]; parentId: string }[] = [];
+  /** Signature of the launched-sat set the rings were last built for (id + epoch + a).
+   * When the live roster's signature differs, {@link rebuildSatRings} re-samples. */
+  private satRingSig = "";
+
+  // --- click-to-focus selection cue (fix #4) ---------------------------------
+  /** A cyan reticle halo drawn over the SELECTED body/asset/DC, so click-to-focus is a
+   * visible action. Built once + hidden; {@link updateSelection} shows/positions it. */
+  private selectionMesh?: THREE.Mesh;
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -359,7 +418,7 @@ export class Orrery {
 
     const p = CAMERA_PRESETS[this.activePreset];
     this.focusId = p.focus;
-    this.cur = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale };
+    this.cur = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale, orbitBandM: p.orbitBandM ?? 0 };
     this.tgt = { ...this.cur };
     this.camera = new THREE.PerspectiveCamera(p.fov, 1, 0.001, 100000);
 
@@ -426,6 +485,14 @@ export class Orrery {
       this.dcMarkers.push(m);
       this.scene.add(m);
     }
+
+    // Fix #4 — the SELECTION reticle: a cyan halo drawn over the click-/F-selected target,
+    // so picking a body/asset/DC is a visible action. Built once + hidden; positioned by
+    // updateSelection from the selected id each frame.
+    this.selectionMesh = this.buildHaloDisc([0.4, 0.92, 1.0]); // cyan reticle.
+    this.selectionMesh.visible = false;
+    this.selectionMesh.renderOrder = 13; // above everything else so the cue always reads.
+    this.scene.add(this.selectionMesh);
 
     this.attachInput();
   }
@@ -529,6 +596,124 @@ export class Orrery {
       line.frustumCulled = false;
       this.scene.add(line);
       this.rings.set(id, { line, rel });
+    }
+  }
+
+  /**
+   * Fix #2 — REBUILD the launched-sat orbit rings from the live roster, ONLY when the
+   * sat set changed (keyed by {@link satRingSig}). Each launched sat gets a dashed
+   * orbital-plane ring sampled from its OWN Kepler elements (one full orbit, in the
+   * sat's body-relative frame — the SAME frame the dataset rings use), so a launched sat
+   * draws an orbit ring exactly like the dataset LEO/GEO. Sampling sweeps the mean anomaly
+   * across one period via {@link solveOrbit} (pure Kepler), so the ring matches the sat's
+   * actual swept path. Rings beyond the pool cap are not drawn (rare — sat count is small).
+   * Called from {@link update}; never allocates per frame (only on a launch).
+   */
+  private rebuildSatRings(sats: BuildAssetRender[]): void {
+    // Build a cheap signature of the launched-sat set (id + epoch + semi-major axis): a
+    // launch changes it, a per-frame propagation does not. Skip the rebuild when unchanged.
+    let sig = "";
+    for (const a of sats) {
+      const o = a.orbit;
+      if (o) sig += `${a.id}:${o.epochS}:${o.aM}|`;
+    }
+    if (sig === this.satRingSig) return;
+    this.satRingSig = sig;
+
+    // Grow the pool to the (capped) sat count, building each ring's geometry once.
+    const need = Math.min(sats.filter((a) => a.orbit).length, MAX_SAT_RINGS);
+    while (this.satRings.length < need) {
+      const segCount = Math.floor(SAT_RING_SAMPLES / 2);
+      const positions = new Float32Array(segCount * 2 * 3);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0xff9e2e, transparent: true, opacity: 0.5 });
+      const line = new THREE.LineSegments(geo, mat);
+      line.frustumCulled = false;
+      this.scene.add(line);
+      this.satRings.push({ line, rel: [], parentId: "earth" });
+    }
+
+    // Re-sample each in-use ring from its sat's orbit; hide the rest.
+    let slot = 0;
+    for (const a of sats) {
+      if (!a.orbit || slot >= MAX_SAT_RINGS || slot >= this.satRings.length) continue;
+      const ring = this.satRings[slot];
+      ring.rel = sampleSatOrbitRelative(a.orbit, SAT_RING_SAMPLES);
+      ring.parentId = a.orbit.parentId;
+      ring.line.visible = true;
+      slot++;
+    }
+    for (let i = slot; i < this.satRings.length; i++) this.satRings[i].line.visible = false;
+  }
+
+  /**
+   * Fix #4 — position the SELECTION reticle over the currently selected target (a body,
+   * a deployed asset, or a DC). Resolves the selected id's world position from the
+   * ephemeris (bodies) or the live roster (assets/DCs), rebases it the same way, and
+   * shows a cyan halo a touch larger than the target. Hidden when nothing is selected or
+   * the selection has left the roster. Render-only; no per-frame allocation.
+   */
+  private updateSelection(t: number, focusAbs: Vec3, worldPerPx: number): void {
+    const mesh = this.selectionMesh;
+    if (!mesh) return;
+    const id = this.selectedId;
+    if (id === null) {
+      mesh.visible = false;
+      return;
+    }
+    let abs: Vec3 | null = null;
+    let px = 18;
+    if (this.ctx.eph.hasBody(id)) {
+      abs = this.ctx.eph.position(id, t);
+      const spec = BODIES.find((s) => s.id === id);
+      px = (spec?.px ?? 16) + 16; // a ring a bit wider than the body disc.
+    } else {
+      const bs = this.buildState;
+      const a = bs?.assets.find((x) => x.id === id);
+      if (a) {
+        abs = a.posM;
+        px = (a.kind === "ground" ? 7 : 9) + 14;
+      } else {
+        const d = bs?.datacenters.find((x) => x.id === id);
+        if (d) {
+          abs = d.posM;
+          px = 11 + 16;
+        }
+      }
+    }
+    if (abs === null) {
+      mesh.visible = false; // the selected asset is gone (e.g. roster reset).
+      return;
+    }
+    this.renderInto(this._rp, abs, focusAbs);
+    mesh.position.copy(this._rp);
+    this.sizeBillboard(mesh, px, worldPerPx);
+    mesh.visible = true;
+  }
+
+  /**
+   * Fix #2 — position the launched-sat orbit rings each frame: rebase + de-squash + fold
+   * each ring's body-relative samples around its parent's current ephemeris position, the
+   * SAME path the dataset rings use (so a launched LEO sat's ring sweeps + de-squashes
+   * identically to the dataset sat_leo ring). Writes straight into the ring's Float32Array
+   * (zero per-point Vector3 alloc). Cheap; the geometry buffers were built on the rebuild.
+   */
+  private updateSatRings(t: number, focusAbs: Vec3): void {
+    for (const ring of this.satRings) {
+      if (!ring.line.visible) continue;
+      const parentAbs = this.ctx.eph.position(ring.parentId, t);
+      const pos = ring.line.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = pos.array as Float32Array;
+      const n = ring.rel.length;
+      let w = 0;
+      for (let i = 0; i < n; i += 2) {
+        const a = ring.rel[i];
+        const b = ring.rel[(i + 1) % n];
+        w = this.writeRenderPoint(arr, w, parentAbs[0] + a[0], parentAbs[1] + a[1], parentAbs[2] + a[2], focusAbs);
+        w = this.writeRenderPoint(arr, w, parentAbs[0] + b[0], parentAbs[1] + b[1], parentAbs[2] + b[2], focusAbs);
+      }
+      pos.needsUpdate = true;
     }
   }
 
@@ -644,7 +829,7 @@ export class Orrery {
     this.activePreset = i;
     const p = CAMERA_PRESETS[i];
     this.focusId = p.focus;
-    this.tgt = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale };
+    this.tgt = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale, orbitBandM: p.orbitBandM ?? 0 };
   }
 
   resetCamera(): void {
@@ -654,6 +839,8 @@ export class Orrery {
   cycleFocus(dir: number): void {
     const i = FOCUS_ORDER.indexOf(this.focusId);
     this.focusId = FOCUS_ORDER[(i + dir + FOCUS_ORDER.length) % FOCUS_ORDER.length];
+    // F-cycle is the secondary select path (fix #4): keep the reticle on the focus body.
+    this.selectedId = this.focusId;
   }
 
   presetName(): string {
@@ -705,11 +892,17 @@ export class Orrery {
     this.cur.fov += (this.tgt.fov - this.cur.fov) * k;
     this.cur.logK += (this.tgt.logK - this.cur.logK) * k;
     this.cur.logScale += (this.tgt.logScale - this.cur.logScale) * k;
+    this.cur.orbitBandM += (this.tgt.orbitBandM - this.cur.orbitBandM) * k;
     this.applyCamera();
 
     const t = this.ctx.now();
     const focusAbs = this.ctx.eph.position(this.focusId, t);
     const sunAbs = this.ctx.eph.position("sun", t);
+    // Refresh the near-body de-squash for THIS frame's focus + animated band (fix #1):
+    // points within orbitBandM of the focus body get radially re-radii'd before the
+    // log-fold, so near-Earth orbits separate from the disc + sweep. Identity when the
+    // band is ~0 (system-scale presets) — see renderInto / writeRenderPoint.
+    this.refreshOrbitScale();
 
     // bodies
     const worldPerPx = (2 * Math.tan((this.cur.fov * DEG) / 2)) / this.h;
@@ -757,17 +950,26 @@ export class Orrery {
     // M2c — pull the live build roster + coverage score for this frame (the monument).
     this.buildState = this.ctx.build?.() ?? null;
 
-    // M2b/M2c — the coverage heatmap shell (only when toggled on), now swept off the
-    // LIVE roster, plus the placed-asset markers so the built network is visible.
+    // Fix #2/#3 — the player's launched constellation is the MONUMENT: draw it ALWAYS,
+    // not only with the heatmap on. Rebuild the orbit-plane rings only when the sat set
+    // changed (a launch), then position the deployed-sat + ground markers + the DC nodes
+    // + the launched-sat orbit rings every frame from the live roster (they orbit/sweep
+    // with the clock via the same Kepler-propagated world positions the coverage scores).
+    const assets = this.buildState?.assets ?? [];
+    this.rebuildSatRings(assets);
+    this.updateSatRings(t, focusAbs);
+    this.updateBuildMarkers(focusAbs, worldPerPx);
+    this.updateDCMarkers(focusAbs, worldPerPx);
+
+    // M2b/M2c — the coverage heatmap shell (only when toggled on), swept off the LIVE
+    // roster so the §4.2/§4.3 windows visibly open/close as the sats pass (fix #6). The
+    // markers/rings above are drawn regardless; only the shell is heatmap-gated.
     if (this.coverageOverlay.visible) {
       this.updateCoverageHeatmap(t, focusAbs, worldPerPx);
-      this.updateBuildMarkers(focusAbs, worldPerPx);
-      this.updateDCMarkers(focusAbs, worldPerPx);
-    } else {
-      for (const m of this.buildMarkers) m.visible = false;
-      for (const m of this.dcMarkers) m.visible = false;
-      for (const h of this.dcHalos) h.visible = false;
     }
+
+    // Fix #4 — the selection reticle over the click-/F-selected target.
+    this.updateSelection(t, focusAbs, worldPerPx);
 
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);
@@ -1006,12 +1208,37 @@ export class Orrery {
     mesh.quaternion.copy(this.camera.quaternion);
   }
 
-  /** focus-relative log-compression scale (scene units per metre) for distance d. */
-  private compressScale(d: number): number {
-    return d > 0 ? (this.cur.logScale * Math.log(1 + d / this.cur.logK)) / d : 0;
+  /**
+   * Rebuild the per-frame near-body de-squash (fix #1) from the current focus body's
+   * true radius + the animated orbit band. Identity (null) when the band is ~0 (a
+   * system-scale preset) or the focus body is dimensionless. PURE w.r.t. the render
+   * state; called once per frame in {@link update}. The de-squash is a documented
+   * VISUAL LIE on rendered radius only — it never touches src/sim metres.
+   */
+  private refreshOrbitScale(): void {
+    const band = this.cur.orbitBandM;
+    const surfaceM = this.ctx.eph.radiusMeters(this.focusId);
+    this.orbitScale =
+      band > surfaceM && surfaceM > 0
+        ? { surfaceM, bandOuterM: band, surfaceLiftM: ORBIT_DESQUASH_LIFT_M, altExponent: ORBIT_DESQUASH_ALT_EXPONENT }
+        : null;
   }
 
-  /** Floating-origin rebase (f64 m) → log-compress → ecliptic→three, written into `out`. */
+  /** The combined focus-relative scale (scene units per TRUE metre) for distance d:
+   * the near-body de-squash (when active) re-radii's d FIRST, then the SD-5 log-fold
+   * runs on the de-squashed radius. Returns 0 for a degenerate point. The de-squash +
+   * fold are both visual lies on rendered radius; the ANGULAR direction (the caller's
+   * unit vector) is untouched, and neither ever feeds coverage/link/delay math. */
+  private compressScale(d: number): number {
+    if (d <= 0) return 0;
+    const r = this.orbitScale ? orbitRenderRadius(d, this.orbitScale) : d;
+    // scene-units-per-true-metre = (log-fold of the de-squashed radius) / d, so the
+    // caller's `f*scale` lands the point at the de-squashed-then-folded radius while
+    // keeping the f64 direction exact.
+    return (this.cur.logScale * Math.log(1 + r / this.cur.logK)) / d;
+  }
+
+  /** Floating-origin rebase (f64 m) → de-squash → log-compress → ecliptic→three, into `out`. */
   private renderInto(out: THREE.Vector3, abs: Vec3, focusAbs: Vec3): THREE.Vector3 {
     const fx = abs[0] - focusAbs[0];
     const fy = abs[1] - focusAbs[1];
@@ -1067,7 +1294,8 @@ export class Orrery {
   }
 
   private updateLabels(t: number, focusAbs: Vec3): void {
-    const showSats = this.presetName() === "ORBITS" || this.presetName() === "CISLUNAR";
+    const pn = this.presetName();
+    const showSats = pn === "EARTH" || pn === "ORBITS" || pn === "CISLUNAR";
     for (const spec of BODIES) {
       const isSat = spec.id.startsWith("sat_");
       const el = this.labelFor(spec.id);
@@ -1146,11 +1374,11 @@ export class Orrery {
           `COVERED <span class="k">${pct}%</span>${escalation}${monument}${dcLine}`,
       );
     } else {
-      set("bl", `drag orbit · wheel zoom`);
+      set("bl", `drag orbit · wheel zoom · <span class="k">click</span> a body/asset to focus`);
     }
     set(
       "br",
-      `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus\n` +
+      `<span class="k">E C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus · <span class="k">click</span> select\n` +
         `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch · <span class="k">M</span> datacenter`,
     );
   }
@@ -1249,11 +1477,16 @@ export class Orrery {
     this.roBlackout.style.display = r.blackout ? "block" : "none";
   }
 
-  // --- input (body-anchored orbit) ----------------------------------------
+  // --- input (body-anchored orbit + click-to-focus) ------------------------
+  /** How far the pointer has moved (px) since pointerdown, so pointerup can tell a CLICK
+   * (pick) from a DRAG (orbit the camera). A click is a press with < a few px travel. */
+  private dragTravelPx = 0;
+
   private attachInput(): void {
     this.canvas.addEventListener("pointerdown", (e) => {
       this.dragging = true;
       this.lastPtr = { x: e.clientX, y: e.clientY };
+      this.dragTravelPx = 0;
       this.canvas.setPointerCapture(e.pointerId);
     });
     this.canvas.addEventListener("pointermove", (e) => {
@@ -1261,10 +1494,18 @@ export class Orrery {
       const dx = e.clientX - this.lastPtr.x;
       const dy = e.clientY - this.lastPtr.y;
       this.lastPtr = { x: e.clientX, y: e.clientY };
+      this.dragTravelPx += Math.abs(dx) + Math.abs(dy);
       this.tgt.az -= dx * 0.006;
       this.tgt.el = Math.max(-88 * DEG, Math.min(88 * DEG, this.tgt.el + dy * 0.006));
     });
     const stop = (e: PointerEvent) => {
+      // Fix #4 — CLICK-TO-FOCUS: a press that barely moved is a click, not a drag. Pick
+      // the nearest body/asset under the cursor and focus + select it. Raycast/pick runs
+      // ON CLICK ONLY (never per frame) — X-02. A drag (camera orbit) skips the pick.
+      if (this.dragging && this.dragTravelPx < 5) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.handleClick(e.clientX - rect.left, e.clientY - rect.top);
+      }
       this.dragging = false;
       try {
         this.canvas.releasePointerCapture(e.pointerId);
@@ -1283,6 +1524,69 @@ export class Orrery {
       { passive: false },
     );
   }
+
+  /**
+   * Fix #4 — pick the nearest pickable (a body, a deployed sat/ground station, or a DC
+   * node) to the click in SCREEN space, then SELECT + FOCUS it. The pick is the pure
+   * {@link pickNearest} over each candidate's projected billboard centre (constant-screen-
+   * size sprites ⇒ screen-space nearest is the robust pick). On a hit: mark it selected
+   * (the selection ring) and, if it is a focusable BODY, frame the camera on it; assets/
+   * DCs select-only (the camera stays on the parent body so the orbit stays in view).
+   * Render-only — touches no sim/economy/coverage state. Runs once per click.
+   */
+  private handleClick(clickX: number, clickY: number): void {
+    const t = this.ctx.now();
+    const focusAbs = this.ctx.eph.position(this.focusId, t);
+    const cands: PickCandidate[] = [];
+    const project = (id: string, abs: Vec3): void => {
+      this.renderInto(this._rp, abs, focusAbs);
+      this.tmpV.copy(this._rp).project(this.camera);
+      const onScreen = this.tmpV.z <= 1 && this.tmpV.z >= -1;
+      cands.push({
+        id,
+        sx: (this.tmpV.x * 0.5 + 0.5) * this.w,
+        sy: (-this.tmpV.y * 0.5 + 0.5) * this.h,
+        onScreen,
+      });
+    };
+    // Bodies (the F-cycle focusables + the dataset sats).
+    for (const spec of BODIES) project(spec.id, this.ctx.eph.position(spec.id, t));
+    // The player's deployed assets + DCs (the monument) — selectable but not camera-focusable.
+    const bs = this.buildState;
+    if (bs) {
+      for (const a of bs.assets) project(a.id, a.posM);
+      for (const d of bs.datacenters) project(d.id, d.posM);
+    }
+    const hit = pickNearest(cands, clickX, clickY, PICK_TOLERANCE_PX);
+    if (hit === null) return;
+    this.selectedId = hit;
+    // Focus the camera only on a focusable BODY; assets/DCs select-only (keep the parent
+    // framed so the orbit + the rest of the constellation stay on screen).
+    if (FOCUS_ORDER.includes(hit)) this.focusId = hit;
+  }
+
+  /** The currently selected asset/body id (click- or F-selected), or null. */
+  selected(): string | null {
+    return this.selectedId;
+  }
+}
+
+/**
+ * Fix #2 — sample a launched sat's full orbit RELATIVE TO ITS PARENT (metres), as
+ * `count` points evenly spaced around the orbit, mirroring Ephemeris.sampleRelativeOrbit
+ * for dataset bodies. The mean anomaly sweeps a full 2π by stepping the propagation time
+ * across one orbital period via the pure {@link solveOrbit} (so the ring matches the
+ * sat's actual swept path). A degenerate orbit (zero period) yields a single point.
+ * Pure; allocates the sample array (called only on a roster change, never per frame).
+ */
+export function sampleSatOrbitRelative(orbit: SatOrbit, count: number): Vec3[] {
+  const period = orbitPeriodSeconds(orbit);
+  const out: Vec3[] = [];
+  if (period <= 0) return [solveOrbit(orbit, orbit.epochS)];
+  for (let k = 0; k < count; k++) {
+    out.push(solveOrbit(orbit, orbit.epochS + (period * k) / count));
+  }
+  return out;
 }
 
 // --- tiny in-place DOM helpers (no per-frame allocation in paintReadout) -----

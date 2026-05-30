@@ -2,8 +2,10 @@
  * Entry point — builds the chrome scaffold, wires the sim → view loop, and routes
  * keyboard control. Everything runs on SIM time from one SimClock.
  *
- * Keys:  1–7 WM preset (6 = PARSE · 7 = CONTRACTS) · 0 reset layout · C/O/S/T camera
- *        presets · R reset camera · F cycle focus · Space pause · , / . time scale ·
+ * Keys:  1–7 WM preset (6 = PARSE · 7 = CONTRACTS) · 0 reset layout · E/C/O/S/T camera
+ *        presets (E = EARTH near-body, the boot default) · click a body/asset to focus
+ *        + select it · R reset camera · F cycle focus · Space pause · , / . time scale
+ *        (boots at 1× — the PLAYER drives the acceleration, GDD §3/Risk-6) ·
  *        P prefetch (pre-position fresh data into the Mars cache) · A policy ·
  *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record) ·
  *        H toggle the COVERAGE HEATMAP · D cycle its dimension (M2b) ·
@@ -100,14 +102,21 @@ const clock = new SimClock();
 // readout shows MISSION-ELAPSED time (missionElapsedSeconds), so the clock reads
 // 0d at boot despite the non-zero J2000 epoch. See sim/m1/scenario.ts.
 clock.setTick(SCENARIO.tick0);
-// E10c — THE ONBOARDING DEFAULT-SCALE DIAL. Boot the LIVE clock at the scenario's
-// default scale (1000×) so a PASSIVE player who never touches the speed keys still
-// reaches + dwells in the conjunction blackout inside the ~30-min sitting (the
-// blackout enters ≈15.7 real-min in). The contention strain is felt at any scale;
-// the speed keys (, / .) remain available to slow down and savour the light-gap.
-// This touches ONLY the live clock; the replay harness starts at t=0 with its own
-// setup, so the golden is unaffected.
-clock.scaleIndex = SCENARIO.defaultScaleIndex;
+// THE PLAYER CONTROLS THE CLOCK — BOOT AT 1× (real-time), NOT THE 1000× SCENARIO LOCK.
+// Per GDD §3/Risk-6 the waiting must BE gameplay the PLAYER drives, not a time-accel
+// slider they watch: dropping the player into 1000× made the game read as a screensaver
+// (the owner's "scale is locked at 1000% — I want to control the speed myself"). We boot
+// at 1× so the player is in control from t=0; , / . cycle the full 1×…1000× range and
+// Space pauses, with the live scale shown in the status strip. (The M1 scenario EPOCH
+// boot above is unchanged — only the SCALE lock is removed; a passive player is now
+// nudged toward the speed keys by the foreshadow NOTICE, not force-accelerated.)
+//
+// This is a LIVE-ONLY setting. The replay harness starts at t=0 with its OWN scale
+// handling (it drives ticks directly, not via this clock's scaleIndex), so BOTH replay
+// goldens (M1 544847093270497462n, M2 8431658617016421069n) are unaffected — confirmed
+// by the replay tests. SCENARIO.defaultScaleIndex is left in the scenario data for the
+// foreshadow nudge's messaging; it no longer drives the boot scale.
+clock.scaleIndex = 0; // TIME_SCALES[0] === 1× (real-time).
 const mission = new Mission(eph);
 // The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
 // loop. When it starts a fetch, we launch the Mission packet to render the wait.
@@ -187,6 +196,10 @@ function buildRenderState(): BuildRenderState {
       kind: a.kind,
       posM: buildScratchPos[i],
       eirp: eirps[i],
+      // Hand a launched sat's Kepler elements to the orrery so it can draw the sat's
+      // orbital-plane RING (fix #2). Pure read of the roster; the orrery samples the ring
+      // from these once per roster change (never per frame). Ground stations have none.
+      orbit: a.kind === "sat" ? a.orbit : undefined,
     })),
     datacenters: dcs,
     coveredDemandFraction: score.coveredDemandFraction,
@@ -661,10 +674,14 @@ window.addEventListener("keydown", (e) => {
     // or return to OVERVIEW if it is already up. A free key beside the 1–6 presets.
     setWmPreset(wmPresetName === "PARSE" ? 0 : presets.findIndex((p) => p.name === "PARSE"));
   }
-  else if (k === "c" || k === "C") orrery.setPreset(0);
-  else if (k === "o" || k === "O") orrery.setPreset(1);
-  else if (k === "s" || k === "S") orrery.setPreset(2);
-  else if (k === "t" || k === "T") orrery.setPreset(3);
+  // Camera presets, by name. EARTH (the near-body framing where sats visibly orbit) is
+  // the boot default; E re-frames it. C/O/S/T keep their named presets (now shifted by
+  // EARTH at index 0). See CAMERA_PRESETS in orrery.ts.
+  else if (k === "e" || k === "E") orrery.setPreset(0); // EARTH (near-body, the default)
+  else if (k === "c" || k === "C") orrery.setPreset(1); // CISLUNAR
+  else if (k === "o" || k === "O") orrery.setPreset(2); // ORBITS
+  else if (k === "s" || k === "S") orrery.setPreset(3); // SYSTEM (the Earth→Mars money shot)
+  else if (k === "t" || k === "T") orrery.setPreset(4); // TOP-DOWN
   else if (k === "r" || k === "R") orrery.resetCamera();
   else if (k === "f") orrery.cycleFocus(1);
   else if (k === "F") orrery.cycleFocus(-1);
