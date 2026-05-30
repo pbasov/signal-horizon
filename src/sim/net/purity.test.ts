@@ -12,6 +12,9 @@ import contractSrc from "./contract.ts?raw";
 import sessionSrc from "./session.ts?raw";
 import applyActionSrc from "./apply-action.ts?raw";
 import scenarioSrc from "./scenario.ts?raw";
+import faultTypesSrc from "./fault-types.ts?raw";
+import faultSrc from "./fault.ts?raw";
+import traceSrc from "./trace.ts?raw";
 
 /**
  * Purity guard for the net/ sim module group (design §4 / the sim/render contract):
@@ -35,6 +38,12 @@ const SOURCES: Array<[string, string]> = [
   ["session.ts", sessionSrc],
   ["apply-action.ts", applyActionSrc],
   ["scenario.ts", scenarioSrc],
+  // ACT-3b (C2) — the fault SPECTRUM + the seeded roll + the self-diagnosing trace view. PURE:
+  // faults draw ONLY from the session's seeded SimRng (no new seed / no unseeded random), and the
+  // trace is a pure read-over-snapshot (no three / DOM / wall-clock).
+  ["fault-types.ts", faultTypesSrc],
+  ["fault.ts", faultSrc],
+  ["trace.ts", traceSrc],
 ];
 
 describe("net modules are pure (no three / DOM / wall-clock / unseeded RNG)", () => {

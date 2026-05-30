@@ -105,6 +105,10 @@ export interface BuildAssetRender {
    * plane RING (fix #2) sampled from the sat's own orbit — exactly like the dataset
    * LEO/GEO rings. Undefined for a ground station. */
   orbit?: SatOrbit;
+  /** net/ Act-3b — true while this sat carries an ACTIVE FAULT (a degradation haircut, a
+   * transient outage, or a telegraphed countdown): the marker PULSES AMBER (the §8 "a working
+   * node is degrading" cue). Render-only — driven from the live NetSession's `faults`. */
+  faulting?: boolean;
 }
 
 /** M3a — one placed ORBITAL DATACENTER's render descriptor (GDD §4.5): a distinct §8 node on
@@ -418,6 +422,9 @@ export class Orrery {
   private _marsR = new THREE.Vector3();
   private _sunDir = new THREE.Vector3();
   private readonly _amber = new THREE.Color(1.0, 0.62, 0.18);
+  /** net/ Act-3b — the healthy signal-green a built sat marker reads at rest (the amber pulse for a
+   * faulting sat lerps from THIS toward {@link _amber}). Matches the buildMarkers' seed colour. */
+  private readonly _buildGreen = new THREE.Color(0.62, 1.0, 0.78);
   private readonly _grey = new THREE.Color(0.36, 0.36, 0.4);
   private readonly _pkColor = new THREE.Color();
   // Mars freshness-as-saturation scratch: a saturated "hot data" Mars that bleeds
@@ -1444,6 +1451,11 @@ export class Orrery {
    */
   private updateBuildMarkers(focusAbs: Vec3, worldPerPx: number): void {
     const assets = this.buildState?.assets ?? [];
+    // net/ Act-3b — the amber PULSE phase for a faulting sat (the §8 "a working node is degrading"
+    // cue). Driven off the SIM clock (deterministic, NOT wall-clock): a 0..1 triangle wave so a
+    // faulting marker oscillates green→amber→green. ~0.7 Hz in sim-seconds.
+    const tSim = this.ctx.now();
+    const pulse = 0.5 + 0.5 * Math.sin(tSim * 4.4);
     let slot = 0;
     for (const a of assets) {
       if (slot >= this.buildMarkers.length) break;
@@ -1452,6 +1464,10 @@ export class Orrery {
       m.position.copy(this._rp);
       // Ground stations read a hair smaller than launched sats (the §8 size cue).
       this.sizeBillboard(m, a.kind === "ground" ? 7 : 9, worldPerPx);
+      // A FAULTING sat pulses AMBER (green ↔ amber); a healthy asset stays signal-green.
+      const col = (m.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color;
+      if (a.faulting) col.copy(this._buildGreen).lerp(this._amber, pulse);
+      else col.copy(this._buildGreen);
       m.visible = true;
       slot++;
     }

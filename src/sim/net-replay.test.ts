@@ -196,9 +196,30 @@ function act3aLog() {
 }
 
 /** The act3a replay runs past the relief so the re-tame latches + the act3a gate fires (t ≈ 470 s,
- * 28 200 ticks). */
+ * 28 200 ticks). The act3a-SPECIFIC invariant sub-tests stop here (escalation grew, the gate is
+ * state-gated, the congestion-fold restore) — the act3b faults that begin at t≈430 are dormant
+ * enough at this horizon that those behaviours hold; the GOLDEN itself is pinned at the longer
+ * act3b horizon below. */
 const MAX_T_ACT3A_SECONDS = 470;
 const MAX_TICK_ACT3A = Math.round(MAX_T_ACT3A_SECONDS / GOLDEN_DT);
+
+// ── ACT 3b (C2): faults — the chaos kitten, mild-first (the re-pin driver) ──────────────────────
+//
+// The act3b beat (emitted INSIDE step when the act3a gate fires, FENCED behind it) ENABLES the
+// seeded fault generator + seeds the MILD-FIRST scripted pair: a Degradation (self-recovers,
+// unwarned), THEN a Telegraphed failure (warning + countdown). The faults draw off the SAME seeded
+// SimRng the session already owns (the M2 launch-failure-roll pattern — NO new action, NO new
+// seed), so the whole spectrum folds + replays bit-stably. The action log is IDENTICAL to the
+// act3a arc (the faults are scenario-seeded, not player actions); only the HORIZON extends so both
+// scripted faults play out (the Degradation fires ~t=430 + self-recovers by ~t=460 ⇒ the 3b gate
+// fires; the Telegraphed then begins ~t=460 + drops by ~t=505). We run to t=520 so the whole arc
+// is in the fold + the network has weathered both.
+const act3bLog = act3aLog;
+
+/** The act3b replay runs past BOTH scripted faults (the Degradation self-recovers ~t=460 ⇒ the 3b
+ * gate fires; the Telegraphed countdown begins ~t=460 + drops ~t=505): t = 520 s, 31 200 ticks. */
+const MAX_T_ACT3B_SECONDS = 520;
+const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
 
 /** Replay an action log through a NetSession to a given max tick (the act3a arc needs a longer
  * horizon than the act1/act2 arc). Mirrors {@link replay} (step then post-drain action). */
@@ -251,10 +272,36 @@ function netStateHash(s: NetSession): bigint {
   // completion — the Act-3 optimizer-pull seed). Folded in FIXED order after the gate ticks.
   acc = mixFloat(acc, snap.cleanServedSinceS);
   acc = mixInt(acc, BigInt(snap.wasteLoggedSats));
-  // The FAULT cursor — 0 in Act 1 (the fault generator is fenced behind act3a/C2). Folded now
-  // so enabling faults in C2 moves this value rather than reshaping the fold.
-  const faultCursor = 0;
-  acc = mixInt(acc, BigInt(faultCursor));
+  // ACT-3b (C2) FAULT + TRACE fold ADDITIONS (the SD-40-C2 re-pin) — REPLACING the old fault-cursor
+  // 0 placeholder. Folded in FIXED order here (where the placeholder was): the fault-generator gate
+  // flag, the ACTIVE faults (each by satId|kind|cause|the three §2.4 predictability-seed sim-times,
+  // sorted by satId in the snapshot), the pending mild-first SCRIPT queue (kinds+causes, in order),
+  // the mild-first gate stamp (lastScriptedFaultSatId), the served-through set + the weather/short-
+  // fall witnesses. In Acts 1–3a these are dormant defaults (off / empty / null / 0) ⇒ byte-
+  // identical to the pre-C2 fold for the act1/act2 horizons; they become live once the cursor
+  // reaches act3b (after the act3a gate) and the seeded roll fires the scripted pair.
+  acc = mixInt(acc, BigInt(snap.faultsOn));
+  acc = mixInt(acc, BigInt(snap.activeFaults.length));
+  for (const f of snap.activeFaults) {
+    acc = mixString(acc, f.satId);
+    acc = mixString(acc, f.kind);
+    acc = mixString(acc, f.cause);
+    acc = mixFloat(acc, f.startedAtS);
+    acc = mixFloat(acc, f.degradedCapacityFactor);
+    acc = mixFloat(acc, f.failsAtS);
+    acc = mixFloat(acc, f.recoversAtS);
+  }
+  acc = mixInt(acc, BigInt(snap.faultScriptQueue.length));
+  for (const sc of snap.faultScriptQueue) {
+    acc = mixString(acc, sc.kind);
+    acc = mixString(acc, sc.cause);
+    acc = mixString(acc, sc.targetSatId ?? "");
+  }
+  acc = mixString(acc, snap.lastScriptedFaultSatId ?? "");
+  acc = mixInt(acc, BigInt(snap.servedThroughFault.length));
+  for (const id of snap.servedThroughFault) acc = mixString(acc, id);
+  acc = mixInt(acc, BigInt(snap.faultWeathered));
+  acc = mixInt(acc, BigInt(snap.surfacedShortfall));
   // ACT-3a (C1b) escalation + congestion fold ADDITIONS (the SD-40-C1b re-pin): the escalation
   // gate flag, the §2.4 congestion epoch, the chosen-sat assignment (sorted id|satId pairs — makes
   // loadBySat a pure function of folded state across a restore), the re-tame witness + its
@@ -362,59 +409,66 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //   B3     (Act-1+Act-2 equatorial REGION-1)  12864209889064023665n
 //   SD-40-B3-FIX (high-lat REGION-1)          260489051471786347n
 //   SD-40-C1b (act3a escalation in the fold)  314363620940498869n
-// What moved it in SD-40-C1b (the escalation-fold re-pin, the SD-40 chained-re-pin pattern): the
-// golden log was EXTENDED through act3a (the equatorial-LEO launches, the REGION-2 accept, the
-// parallel-path + net_set_prefer relief) and run to a longer horizon (470 s); and the fold gained
-// the C1b ADDITIONS — escalationOn (int), congestionEpoch (int), act3aReTameWitnessed (int), the
-// chosenSatByContract id|satId pairs, the nearBreachWitnessed ids, and the congestionFingerprint
-// string — PLUS the value moves already in the fold (REGION-2's offeredLoad + activeAxes growth,
-// REGION-0/REGION-1's escalated offeredLoad + bandwidth-axis flips, REGION-0's prefer change). The
+//   SD-40-C2  (act3b faults in the fold)      11632456535472871375n
+// What moved it in SD-40-C2 (the FAULT re-pin, the SD-40 chained-re-pin pattern): the act3b beat
+// (emitted INSIDE step when the act3a gate fires, FENCED behind it) now ENABLES the seeded fault
+// generator + seeds the MILD-FIRST scripted pair (a Degradation, then a Telegraphed failure) drawn
+// off the SAME seeded SimRng (the M2 launch-failure-roll pattern — NO new action / NO new seed).
+// The golden log is IDENTICAL to the act3a arc (the faults are scenario-seeded, not actions); only
+// the HORIZON extends (470 s → 520 s) so both scripted faults play out (the Degradation self-
+// recovers ~t=460 ⇒ the 3b gate fires; the Telegraphed countdown begins ~t=460 + drops ~t=505). The
+// fold gained the C2 ADDITIONS — faultsOn (int), the active FaultState[] (satId|kind|cause|the three
+// predictability-seed sim-times + the degraded-capacity factor), the pending mild-first script queue,
+// the mild-first gate stamp (lastScriptedFaultSatId), the served-through set, and the weather +
+// surfaced-shortfall witnesses (ints) — REPLACING the old fault-cursor 0 placeholder — PLUS the
+// value moves already in the fold (the degraded sat congesting REGION-2, the longer horizon's
+// escalated loads + accrued served-time, the cursor advancing to act4 + the new gate tick). The
 // two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED
 // (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 314363620940498869n;
+const NET_REPLAY_GOLDEN = 11632456535472871375n;
 
-describe("net/ A3+B3+C1b — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame)", () => {
-  it("pins the net-session replay state hash for the act1→act2→act3a action log (regression guard)", () => {
-    const r = replayTo(act3aLog(), MAX_TICK_ACT3A);
+describe("net/ A3+B3+C1b+C2 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first)", () => {
+  it("pins the net-session replay state hash for the act1→act2→act3a→act3b action log (regression guard)", () => {
+    const r = replayTo(act3bLog(), MAX_TICK_ACT3B);
     expect(r.hash).toBe(NET_REPLAY_GOLDEN);
-  }, 30000);
+  }, 60000);
 
-  it("a logged act1→act2→act3a sequence is deterministic: replaying the same log twice is bit-identical", () => {
-    const a = replayTo(act3aLog(), MAX_TICK_ACT3A);
-    const b = replayTo(act3aLog(), MAX_TICK_ACT3A);
+  it("a logged act1→act2→act3a→act3b sequence is deterministic: replaying the same log twice is bit-identical", () => {
+    const a = replayTo(act3bLog(), MAX_TICK_ACT3B);
+    const b = replayTo(act3bLog(), MAX_TICK_ACT3B);
     expect(a.hash).toBe(b.hash);
     expect(a.balance).toBe(b.balance);
     expect(a.session.snapshot()).toEqual(b.session.snapshot());
   }, 60000);
 
-  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the new act3a fold fields)", () => {
+  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the act3a + act3b fold fields)", () => {
     const eph = Ephemeris.build({});
     const live = new NetSession();
     const byTick = new Map<number, SimAction[]>();
-    for (const a of act3aLog().actions) {
+    for (const a of act3bLog().actions) {
       if (isNetKind(a.kind)) {
         const list = byTick.get(a.atTick) ?? [];
         list.push(a);
         byTick.set(a.atTick, list);
       }
     }
-    for (let tick = 0; tick <= MAX_TICK_ACT3A; tick++) {
+    for (let tick = 0; tick <= MAX_TICK_ACT3B; tick++) {
       const t = tick * GOLDEN_DT;
       live.step(eph, t, GOLDEN_DT);
       const list = byTick.get(tick);
       if (list !== undefined) for (const a of list) applyNetAction(eph, live, a, GOLDEN_DT);
     }
-    const replayed = replayTo(act3aLog(), MAX_TICK_ACT3A);
-    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + the act3a fold fields —
-    // escalationOn / congestionEpoch / chosenSatByContract / the re-tame witness — included) + hash.
+    const replayed = replayTo(act3bLog(), MAX_TICK_ACT3B);
+    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + the act3a fold fields +
+    // the act3b fault fields — faultsOn / activeFaults / the script queue / the witnesses) + hash.
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
     expect(live.balance).toBe(replayed.balance);
     expect(netStateHash(live)).toBe(replayed.hash);
-  }, 60000); // one live run + one replay over the act3a arc — generous headroom.
+  }, 60000); // one live run + one replay over the act3b arc — generous headroom.
 
   it("the net SaveGame survives the JSON round-trip and reproduces the hash (incl. the act2 batch phase spread + the act3a prefer override)", () => {
-    const sg = act3aLog();
+    const sg = act3bLog();
     const reloaded = saveFromJSON(saveToJSON(sg));
     expect(reloaded).not.toBeNull();
     expect(reloaded!.actions.some((a) => a.kind === KIND_NET_LAUNCH)).toBe(true);
@@ -428,11 +482,11 @@ describe("net/ A3+B3+C1b — M1 arrival-sequence replay golden (act1 GEO + act2 
     expect(batch!.payload.phaseSpreadRad).toBeCloseTo(ACT2_PHASE_SPREAD_RAD, 12);
     // dt survives bit-exactly via dt_bits, so the replay reproduces the pinned hash.
     expect(reloaded!.dt).toBe(GOLDEN_DT);
-    const a = replayTo(sg, MAX_TICK_ACT3A);
-    const b = replayTo(reloaded!, MAX_TICK_ACT3A);
+    const a = replayTo(sg, MAX_TICK_ACT3B);
+    const b = replayTo(reloaded!, MAX_TICK_ACT3B);
     expect(b.hash).toBe(a.hash);
     expect(b.hash).toBe(NET_REPLAY_GOLDEN);
-  }, 60000); // two full act3a-arc replays — generous headroom.
+  }, 60000); // two full act3b-arc replays — generous headroom.
 
   it("THE ACT-1 LOOP CLOSES: REGION-0 is SERVED, EARNS €, and the act1 GATE fired deterministically", () => {
     const r = replay(act2Log());
@@ -714,13 +768,15 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     expect(r2.breachSecondsAccum).toBeGreaterThan(0);
   }, 60000);
 
-  it("RESTORE-REPLAY for the congestion fold: restore-then-step == continuous-run (loadBySat re-derived from the folded chosen-sat map — the MED desync fix)", () => {
-    // Run continuously to a mid-act3a tick (escalation on, congestion live), snapshot, restore into
-    // a fresh session, then step BOTH the original and the restored copy forward the SAME ticks with
-    // the SAME post-step actions — the two must stay bit-identical (the congestion state is a pure
-    // function of the FOLDED chosen-sat map + offeredLoad, so the restore reproduces a continuous run).
+  it("RESTORE-REPLAY for the congestion + FAULT fold: restore-then-step == continuous-run (loadBySat re-derived from the folded chosen-sat map — the MED desync fix; the active faults + the mild-first script queue carry across the restore boundary — the C2 fault fold)", () => {
+    // Run continuously to a mid-act3b tick (escalation on, congestion live, AND a fault active —
+    // SPLIT lands AFTER the Degradation has fired ~t=430), snapshot, restore into a fresh session,
+    // then step BOTH the original and the restored copy forward the SAME ticks with the SAME post-
+    // step actions — the two must stay bit-identical (the congestion state AND the fault state — the
+    // active faults + the mild-first script queue + the served-through set — are pure functions of
+    // FOLDED state + the folded rng, so the restore reproduces a continuous run incl. the seeded roll).
     const eph = Ephemeris.build({});
-    const sg = act3aLog();
+    const sg = act3bLog();
     const byTick = new Map<number, SimAction[]>();
     for (const a of sg.actions) {
       if (isNetKind(a.kind)) {
@@ -729,21 +785,26 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
         byTick.set(a.atTick, list);
       }
     }
-    const SPLIT = 26000; // mid-act3a: escalation on, REGION-2 routing live (just past the relief).
+    const SPLIT = 26000; // mid-act3b: escalation on, REGION-2 routing live, the Degradation active.
     const cont = new NetSession();
     for (let tick = 0; tick <= SPLIT; tick++) {
       cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       const list = byTick.get(tick);
       if (list !== undefined) for (const a of list) applyNetAction(eph, cont, a, GOLDEN_DT);
     }
-    // Snapshot at SPLIT, restore into a fresh session (the congestion fold + chosen-sat map carry).
+    // The split lands while a fault is active (the Degradation fired ~t=430) — so the restore must
+    // carry the fault fold, not just the congestion fold.
+    expect(cont.faultsEnabled).toBe(true);
+    expect(cont.faults.length).toBeGreaterThan(0);
+    // Snapshot at SPLIT, restore into a fresh session (the congestion fold + chosen-sat map + the
+    // fault fold — active faults + the mild-first script queue + the rng state — all carry).
     const snap = cont.snapshot();
     const restored = new NetSession();
     restored.restore(snap);
     expect(restored.snapshot()).toEqual(snap);
     // Step BOTH forward the same window; they must stay bit-identical (the loadBySat re-derivation
-    // off folded state reproduces the one-tick-lag aggregate exactly across the restore boundary).
-    for (let tick = SPLIT + 1; tick <= MAX_TICK_ACT3A; tick++) {
+    // off folded state + the seeded fault roll off the folded rng reproduce the continuous run).
+    for (let tick = SPLIT + 1; tick <= MAX_TICK_ACT3B; tick++) {
       cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       restored.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       const list = byTick.get(tick);
@@ -756,5 +817,107 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     expect(netStateHash(restored)).toBe(netStateHash(cont));
     // And the continuous run reproduces the pinned golden (the restore path agrees with the pin).
     expect(netStateHash(cont)).toBe(NET_REPLAY_GOLDEN);
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// SD-40 C2 — THE ACT-3b FAULT INVARIANTS (faults — the chaos kitten, mild-first). The fault
+// generator is FENCED behind the act3a gate (no fault before re-stabilisation); the scripted pair
+// fires MILD-FIRST (a Degradation, THEN a Telegraphed failure — sequenced in time); the player
+// WEATHERS the fault (REGION-0/REGION-1 stay served through it) while the TRACE surfaces a
+// resilience shortfall (the predictability seed); and the act3b gate fires deterministically,
+// advancing the cursor to act4. Faults draw ONLY from the seeded SimRng (replay-deterministic).
+// ---------------------------------------------------------------------------
+describe("SD-40 C2 — act3b faults: mild-first, fenced behind act3a, weathered, the gate fires", () => {
+  it("NO FAULT before the act3a gate (the structural fence): faults are disabled + none active until act3a re-tamed", () => {
+    // Stop at the relief tick − 1 (still on act3a, before the re-tame gate fires): the fault
+    // generator must be OFF and no fault can have fired (faults begin only after re-stabilisation).
+    const r = replayTo(act3bLog(), TICK_RELIEF - 1);
+    expect(r.session.cursor).toBe(2); // still on act3a.
+    expect(r.session.escalationReTamed()).toBe(false);
+    expect(r.session.faultsEnabled).toBe(false); // the generator is FENCED behind the act3a gate.
+    expect(r.session.faults.length).toBe(0); // no fault before re-stabilisation.
+    expect(r.session.weatheredFault()).toBe(false);
+  }, 60000);
+
+  it("MILD-FIRST: a Degradation fires FIRST (self-recovers), THEN a Telegraphed failure (sequenced in time, scripted off the seeded stream)", () => {
+    // Run the whole arc, recording each fault start in order. The first scripted fault is the
+    // Degradation; the Telegraphed begins only AFTER the Degradation resolves (the mild-first gate).
+    const eph = Ephemeris.build({});
+    const s = new NetSession();
+    const sg = act3bLog();
+    const byTick = new Map<number, SimAction[]>();
+    for (const a of sg.actions) {
+      if (isNetKind(a.kind)) {
+        const list = byTick.get(a.atTick) ?? [];
+        list.push(a);
+        byTick.set(a.atTick, list);
+      }
+    }
+    const starts: { tick: number; kind: string; cause: string }[] = [];
+    let prev = new Set<string>();
+    for (let tick = 0; tick <= MAX_TICK_ACT3B; tick++) {
+      s.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
+      const list = byTick.get(tick);
+      if (list !== undefined) for (const a of list) applyNetAction(eph, s, a, GOLDEN_DT);
+      const ids = new Set(s.faults.map((f) => f.satId));
+      for (const f of s.faults) if (!prev.has(f.satId)) starts.push({ tick, kind: f.kind, cause: f.cause });
+      prev = ids;
+    }
+    // At least the scripted pair fired, in MILD-FIRST order: degradation, then telegraphed.
+    const degrIdx = starts.findIndex((e) => e.kind === "degradation");
+    const teleIdx = starts.findIndex((e) => e.kind === "telegraphed");
+    expect(degrIdx).toBeGreaterThanOrEqual(0);
+    expect(teleIdx).toBeGreaterThan(degrIdx); // mild-first: degradation precedes telegraphed.
+    // The Telegraphed begins only AFTER the Degradation self-recovers (sequenced in time, not
+    // fired together) — its start tick is strictly later than the degradation's.
+    expect(starts[teleIdx].tick).toBeGreaterThan(starts[degrIdx].tick);
+    // The live causal lever (lowOrbit) named the cause — the scripted pair bites the LEO.
+    expect(starts[degrIdx].cause).toBe("lowOrbit");
+  }, 60000);
+
+  it("THE 3b GATE FIRES: the player WEATHERED the fault (REGION-0/REGION-1 stayed served through it) + the TRACE surfaced a resilience shortfall ⇒ the cursor advances to act4", () => {
+    const r = replayTo(act3bLog(), MAX_TICK_ACT3B);
+    // The fault generator engaged (act3b emitted it, fenced behind act3a) + the scripted pair is
+    // consumed (both faults played out within the horizon).
+    expect(r.session.faultsEnabled).toBe(true);
+    expect(r.session.snapshot().faultScriptQueue.length).toBe(0);
+    // WEATHERED: the player kept a contract served through a fault's whole lifetime; the TRACE
+    // surfaced ≥1 resilience/optimisation shortfall (the predictability seed + the kind-of-fix).
+    expect(r.session.weatheredFault()).toBe(true);
+    expect(r.session.traceSurfacedShortfall()).toBe(true);
+    // THE 3b GATE FIRED ⇒ the cursor advanced PAST act3b to act4 (the final beat), and a 4th gate
+    // tick is recorded.
+    expect(r.session.cursor).toBeGreaterThanOrEqual(4);
+    expect(r.session.snapshot().gateTicks.length).toBeGreaterThanOrEqual(4);
+    // The network WEATHERED it: the resilient equatorial REGION-0 + the polar REGION-1 stayed
+    // served through the fault (the redundant builder sails through — neither failed).
+    const r0 = r.session.contracts.find((x) => x.id === ACT1_CONTRACT_ID)!;
+    const r1 = r.session.contracts.find((x) => x.id === ACT2_CONTRACT_ID)!;
+    expect(r0.state).not.toBe("failed");
+    expect(r1.state).not.toBe("failed");
+    // The trace report is a live readout (the SYSTEM.LOG / shortfall lines) once faults are on.
+    expect(r.session.trace).not.toBeNull();
+  }, 60000);
+
+  it("the 3b gate does NOT fire before the fault is WEATHERED (state-gated): stopping while the Degradation is still active leaves the cursor on act3b", () => {
+    // Stop mid-Degradation (it fires ~t=430 + self-recovers ~t=460; tick 27000 ≈ t=450 is inside it):
+    // the player has NOT yet weathered it (the fault has not resolved) ⇒ the cursor is still on act3b.
+    const r = replayTo(act3bLog(), 27000);
+    expect(r.session.faultsEnabled).toBe(true);
+    expect(r.session.faults.length).toBeGreaterThan(0); // a fault is active (mid-lifetime).
+    expect(r.session.weatheredFault()).toBe(false); // not yet weathered (the fault has not resolved).
+    expect(r.session.cursor).toBe(3); // still on act3b — the concept is not yet felt.
+  }, 60000);
+
+  it("FAULTS ARE REPLAY-DETERMINISTIC: the active fault state folds + replays bit-identically (same seed ⇒ same fault sequence)", () => {
+    const a = replayTo(act3bLog(), MAX_TICK_ACT3B);
+    const b = replayTo(act3bLog(), MAX_TICK_ACT3B);
+    // The whole fault fold is byte-identical across two replays (the seeded roll is deterministic).
+    expect(a.session.snapshot().activeFaults).toEqual(b.session.snapshot().activeFaults);
+    expect(a.session.snapshot().faultScriptQueue).toEqual(b.session.snapshot().faultScriptQueue);
+    expect(a.session.snapshot().lastScriptedFaultSatId).toBe(b.session.snapshot().lastScriptedFaultSatId);
+    expect(a.session.snapshot().faultWeathered).toBe(b.session.snapshot().faultWeathered);
+    expect(a.hash).toBe(b.hash);
   }, 60000);
 });

@@ -44,6 +44,7 @@ import {
   type Region,
 } from "./endpoint";
 import { offerNetContract, NET_DEFAULT_PREFER, type SlaAxis } from "./contract";
+import type { FaultScript, TraceShortfall } from "./fault-types";
 
 /**
  * The gentle failure-to-progress assist a beat surfaces (design §3 fallback / §2.6 the
@@ -348,18 +349,74 @@ const ACT3A: Beat = {
 };
 
 /**
- * act3b — "And faults degrade it." (mild-first; ONLY after act3a re-tamed) STRUCTURAL
- * placeholder (Phase C / C2). emit will ENABLE the fault generator (a Degradation, then a
- * Telegraphed failure) — fenced behind act3a having fired; gate = weathered ≥1 fault while
- * keeping contracts served AND the trace surfaced ≥1 resilience shortfall.
+ * The MILD-FIRST scripted pair the act3b emit seeds into the fault roll (design §5.1): a
+ * Degradation FIRST (recoverable, self-recovers, UNWARNED — teaches headroom; bites whoever cut
+ * oversubscription too thin in 3a), THEN a Telegraphed failure (warning + countdown — teaches
+ * watch-and-act; the redundant builder sails, the brittle one scrambles). `targetSatId: null` lets
+ * the roll pick the LOWEST-orbit live sat (the LEO the low-orbit lever bites) deterministically off
+ * the seeded stream; `cause: "lowOrbit"` stamps the live lever the trace names. The session feeds
+ * the roll only the queue HEAD and advances it once the prior scripted fault RESOLVES, so the pair
+ * is sequenced IN TIME (the Telegraphed countdown begins only after the Degradation self-recovers).
+ */
+export const ACT3B_FAULT_SCRIPTS: FaultScript[] = [
+  { kind: "degradation", targetSatId: null, cause: "lowOrbit" },
+  { kind: "telegraphed", targetSatId: null, cause: "lowOrbit" },
+];
+
+/**
+ * act3b — "And faults degrade it." (mild-first; ONLY after act3a re-tamed). The fault theme,
+ * FENCED STRUCTURALLY behind act3a (this beat becomes current — and its emit fires — only once
+ * the cursor advances PAST act3a, i.e. the act3a gate `escalationReTamed()` already fired, so a
+ * fault can never fire before re-stabilisation).
+ *
+ * emit: ENABLE the fault generator (the §3 emit contract: flip a flag + seed the mild-first
+ *       scripted pair — it never touches physics; the seeded roll in session.step drives the
+ *       faults). ASSERTS act3a fired (the structural fence, belt-and-braces).
+ * gate: weathered ≥1 fault while keeping contracts served (or recovering) AND the trace surfaced
+ *       ≥1 resilience/optimisation shortfall — the player FELT a working network degrade and the
+ *       trace did its job (named the shortfall + stamped the loss). State-gated; opens act4.
+ * fallback: surface the active fault's resilience shortfall (the trace's brittle-builder warning).
  */
 const ACT3B: Beat = {
   id: "act3b",
-  emit(): void {
-    /* C2: enable the fault generator (fenced behind act3a). */
+  emit(session: NetSession): void {
+    // THE STRUCTURAL FENCE (design §3a/§3b — faults begin only after re-stabilisation): this beat
+    // is current only once the cursor advanced past act3a (its gate fired), so escalationReTamed()
+    // MUST be true here. Assert it — a fault can never fire before act3a re-tamed.
+    if (!session.escalationReTamed()) {
+      throw new Error("act3b fence violated: faults enabled before the act3a re-tame gate fired");
+    }
+    // Enable the fault generator + seed the mild-first scripted pair (the §3 emit contract: flip a
+    // flag, never touch physics — the seeded roll in session.step drives the degradation, then the
+    // telegraphed failure). Idempotent (the session de-dupes the seed; a re-emit never re-queues).
+    session.enableFaults(ACT3B_FAULT_SCRIPTS);
   },
-  gate(): boolean {
-    return false; // C2 fills the weathered-a-fault predicate.
+  gate(session: NetSession): boolean {
+    // The concept is FELT when the player WEATHERED ≥1 fault while keeping contracts served (or
+    // recovering — the redundant builder sails through) AND the TRACE surfaced ≥1 resilience/
+    // optimisation shortfall (the predictability seed + the kind-of-fix — the trace did its job).
+    // State-gated (both latch in session.step); act4 opens on the first true.
+    return session.weatheredFault() && session.traceSurfacedShortfall();
+  },
+  fallback(session: NetSession): Shortfall | null {
+    // Stuck on act3b: a fault is active but the player has not yet weathered it (or the trace has
+    // not surfaced the shortfall). Surface the brittle-builder warning from the trace's resilience
+    // shortfalls (SPOF / over-provision) — point at the redundant-path fix, never do it.
+    const faults = session.faults;
+    if (faults.length === 0) return null;
+    const report = session.trace;
+    const sf = report?.shortfalls.find(
+      (s: TraceShortfall) => s.kindOfFix === "addRedundantPath" || s.kindOfFix === "addPhasedSat",
+    );
+    const sat = faults[0].satId;
+    return {
+      subjectId: sf?.subjectId ?? sat,
+      message:
+        sf?.message ??
+        `${sat} is faulting (${faults[0].cause}) — a single fault must not drop a served region. ` +
+          `Add a redundant/phased path so the network weathers it.`,
+      suggestPresetId: "LEO_SWEEP",
+    };
   },
 };
 

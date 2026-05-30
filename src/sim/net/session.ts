@@ -62,6 +62,14 @@ import {
 } from "./router";
 import { windowAvailability } from "./availability";
 import { M1_SCENARIO, type Beat, type Shortfall } from "./scenario";
+import { rollFaults } from "./fault";
+import {
+  type FaultState,
+  type FaultScript,
+  type TraceReport,
+  faultRemovesSatAt,
+} from "./fault-types";
+import { diagnose, type ContractSolve } from "./trace";
 
 /** The re-exported grace, so a caller (and the A2 test) can assert net/ uses the SHARED
  * m2 constant — there is NO net/ copy of the breach grace. */
@@ -178,6 +186,35 @@ export interface NetSnapshot {
    * congestion epoch bumps when the current step's fingerprint differs from this. Folded as a
    * string so a restore reproduces the epoch-bump decision of a continuous run (replay-safe). */
   congestionFingerprint: string;
+
+  // --- ACT-3b (C2) fault + trace fold state ----------------------------------------
+  /** Whether the FAULT GENERATOR is gated ON (0/1) — set true by the act3b beat's emit, which
+   * fires ONLY after the act3a gate (faults are FENCED behind re-stabilisation). While on, the
+   * session rolls {@link rollFaults} off the seeded stream each step. Folds into the golden. */
+  faultsOn: number;
+  /** The ACTIVE faults this step, one per faulted sat (folded by satId|kind|cause|the three
+   * §2.4 predictability-seed sim-times — bit-stable f64s). Sorted by satId so the fold never
+   * depends on insertion order. A faulted sat is removed from the router graph (transient /
+   * telegraphed-expired) or has its effective capacity haircut (degradation). */
+  activeFaults: FaultState[];
+  /** The pending SCRIPTED mild-first queue (a Degradation, then a Telegraphed failure) the
+   * act3b emit seeds; the roll consumes the HEAD once mild-first-ready. Folded (in order) so a
+   * restore resumes the exact mild-first sequence. */
+  faultScriptQueue: FaultScript[];
+  /** The satId of the LAST scripted fault that fired (null = none) — the mild-first gate the
+   * Telegraphed failure waits on (it fires only once the Degradation resolved). Folded. */
+  lastScriptedFaultSatId: string | null;
+  /** Whether the player has WEATHERED ≥1 fault — kept a contract served through a fault's whole
+   * lifetime (start → resolve). The first half of the act3b gate. Latched. Folds (0/1). */
+  faultWeathered: number;
+  /** SatIds whose active fault has coexisted with a fully-served contract (the network kept
+   * serving while it faulted); on that fault's resolution the player WEATHERED it. Folded (sorted)
+   * so a restore reproduces the weather latch across the boundary. */
+  servedThroughFault: string[];
+  /** Whether the trace has surfaced ≥1 optimisation/resilience shortfall (over-provision / SPOF /
+   * binding-constraint) since faults began — the second half of the act3b gate. Latched true the
+   * step {@link diagnose} returns a non-empty shortfall list while faults are on. Folds (0/1). */
+  surfacedShortfall: number;
 }
 
 export class NetSession {
@@ -249,6 +286,41 @@ export class NetSession {
   /** The quantized congestion fingerprint of the last step's shared-load aggregate (E3) — the
    * epoch bumps when this step's fingerprint differs. Folded so a restore reproduces the bump. */
   private prevCongestionFingerprint = "";
+
+  // --- ACT-3b (C2) fault + trace state ----------------------------------------------
+  /** The FAULT GENERATOR gate (folded as int 0/1): set true by {@link enableFaults} — fired ONLY
+   * by the act3b beat, which emits ONLY after the act3a gate (faults FENCED behind re-stabilisation).
+   * While on, {@link step} rolls {@link rollFaults} off the seeded {@link SimRng} each tick. */
+  private faultsOn = false;
+  /** The ACTIVE faults, keyed by satId (one fault per sat at a time). A faulted sat is REMOVED from
+   * the router graph (transient / a telegraphed countdown that expired) or has its effective
+   * capacity HAIRCUT (a degradation — the sat still routes, its shared load is scaled up so it
+   * congests sooner). Folded (sorted by satId) as the predictability-seed times. */
+  private readonly activeFaults = new Map<string, FaultState>();
+  /** The pending SCRIPTED mild-first queue (a Degradation, then a Telegraphed failure) the act3b
+   * emit seeds; the roll consumes the HEAD once it is mild-first-ready (the prior scripted fault
+   * resolved). Folded in order so a restore resumes the exact mild-first sequence. */
+  private faultScriptQueue: FaultScript[] = [];
+  /** The satId of the LAST scripted fault that fired (null = none yet) — the mild-first gate: the
+   * NEXT scripted fault (the Telegraphed failure) fires only once THIS one has resolved (left the
+   * active map). Folded (string|null) so a restore reproduces the mild-first cadence. */
+  private lastScriptedFaultSatId: string | null = null;
+  /** The act3b WEATHERED-A-FAULT witness (folded int 0/1): the player kept ≥1 contract served
+   * through a fault's WHOLE lifetime (start → self-recover / drop) — the network rode through it.
+   * {@link weatheredFault} returns this. */
+  private faultWeathered = false;
+  /** SatIds whose ACTIVE fault has coexisted with ≥1 fully-served contract at some step (the
+   * network kept serving while this sat was faulting). On that fault's RESOLUTION, the player
+   * WEATHERED it ⇒ latch {@link faultWeathered}. Folded (sorted) so a restore reproduces the
+   * weather latch across the boundary. Cleared per sat when its fault resolves. */
+  private readonly servedThroughFault = new Set<string>();
+  /** The act3b TRACE-SURFACED-A-SHORTFALL witness (folded int 0/1): {@link diagnose} surfaced ≥1
+   * resilience/optimisation/binding shortfall while faults were on. {@link traceSurfacedShortfall}
+   * returns this — the act3b gate's layer-1 target (the trace did its job). */
+  private surfacedShortfall = false;
+  /** The LAST trace report (a DERIVED readout the render/log reads; NOT folded — only the booleans
+   * the session latches from it fold). Refreshed each step once faults are on. */
+  private lastTrace: TraceReport | null = null;
 
   constructor(
     openingBalance = NET_OPENING_BALANCE,
@@ -384,6 +456,49 @@ export class NetSession {
     return this.escalationOn;
   }
 
+  /** ENABLE the FAULT GENERATOR (the act3b beat's emit calls this; idempotent). FENCED: the act3b
+   * beat emits ONLY after the act3a gate fired, so this can never turn on before re-stabilisation
+   * (the scenario assert). Optionally seeds the mild-first SCRIPTED queue (a Degradation, then a
+   * Telegraphed failure) the roll consumes scripted-first. Pure flag flip + queue seed — it never
+   * touches physics (the §3 emit contract); the seeded roll in step() drives the faults. */
+  enableFaults(scripts: readonly FaultScript[] = []): void {
+    this.faultsOn = true;
+    // Seed the mild-first queue ONCE (idempotent — a re-emit of an already-seeded queue is a no-op,
+    // so a restore-then-re-emit never double-queues; the queue is folded so a restore resumes it).
+    if (scripts.length > 0 && this.faultScriptQueue.length === 0) {
+      this.faultScriptQueue = scripts.map((s) => ({ ...s }));
+    }
+  }
+
+  /** Whether the fault generator is gated on (the readout + the act3b assert). */
+  get faultsEnabled(): boolean {
+    return this.faultsOn;
+  }
+
+  /** A read-only view of the active faults this step (the render/log/SYSTEM.LOG reads this — the
+   * amber pulse + the telegraphed countdown). Sorted by satId for a stable readout. */
+  get faults(): readonly FaultState[] {
+    return [...this.activeFaults.values()].sort((a, b) => (a.satId < b.satId ? -1 : a.satId > b.satId ? 1 : 0));
+  }
+
+  /** Whether the player has WEATHERED ≥1 fault while keeping contracts served (or recovering) —
+   * the first half of the act3b gate. Latched. */
+  weatheredFault(): boolean {
+    return this.faultWeathered;
+  }
+
+  /** Whether the trace has surfaced ≥1 resilience/optimisation shortfall since faults began —
+   * the second half of the act3b gate. Latched. */
+  traceSurfacedShortfall(): boolean {
+    return this.surfacedShortfall;
+  }
+
+  /** The LAST trace report (a derived readout the render/log reads — the shortfall lines + the
+   * fault SYSTEM.LOG + the predictability-seed loss roll). Null until faults turn on. NOT folded. */
+  get trace(): TraceReport | null {
+    return this.lastTrace;
+  }
+
   /** The current §2.4 congestion epoch (E3) — the readout the topologyKey is keyed on. */
   get congestion(): number {
     return this.congestionEpoch;
@@ -436,11 +551,15 @@ export class NetSession {
     contract: Contract,
     t: number,
     loadBySat?: ReadonlyMap<string, number>,
+    faults?: ReadonlySet<string>,
   ): number {
     const prev = this.routerStates.get(contract.id) ?? null;
     // E2/E3 (Act 3a): the shared-load aggregate + the congestion epoch are forwarded into the
     // §2.4 re-solve split. Absent/empty (Acts 1–2) ⇒ congestion_term 0 + epoch 0 ⇒ byte-identical
     // routing + the same topologyKey, so the pre-Act-3 fold is untouched (golden-safe).
+    // Act 3b: `faults` is the set of DOWN sat ids (transient / telegraphed-expired) — removed from
+    // the graph via the router's existing `faults?` param (a topology change). Absent when faults
+    // are off ⇒ undefined ⇒ byte-identical routing (golden-safe for Acts 1–3a).
     const next = resolveTick(
       eph,
       contract,
@@ -448,7 +567,7 @@ export class NetSession {
       this.groundNets,
       t,
       prev,
-      undefined, // faults? — Act 3b (fenced behind act3a); absent here.
+      faults, // Act 3b: the down-sat set (transient/telegraphed-expired); undefined pre-act3b.
       loadBySat,
       this.congestionEpoch,
     );
@@ -523,6 +642,147 @@ export class NetSession {
       // re-engineer, it re-tames) is FELT. Latch the witness (the gate reads it).
       this.act3aReTameWitnessed = true;
     }
+  }
+
+  /**
+   * THE FAULT ROLL (design §5 / Act 3b — "and faults degrade it"). Run ONLY when the fault
+   * generator is gated ON (the act3b beat enabled it — itself FENCED behind the act3a gate, so a
+   * fault can never fire before re-stabilisation). Off ⇒ NO rng draw, NO fault state ⇒ byte-
+   * identical to the pre-act3b fold (golden-safe for Acts 1–3a). When on:
+   *   1. roll {@link rollFaults} off the seeded {@link SimRng} (the M2 launch-failure-roll pattern,
+   *      NO new seed / NO new action) with the active faults + the live roster + the scripted
+   *      mild-first queue (scripted-first: the Degradation precedes the Telegraphed failure);
+   *   2. CLEAR every resolved fault (a degradation/transient self-recovered, a telegraphed
+   *      countdown expired into a drop) and ADD every newly-started fault;
+   *   3. consume the scripted queue head when its scripted fault actually fired this step (so the
+   *      pair fires in order across steps, never re-queued).
+   * The active fault map folds (sorted by satId); the rng is already folded. Pure off the stream.
+   */
+  private rollAndApplyFaults(t: number, dt: number): void {
+    if (!this.faultsOn) return;
+    // MILD-FIRST IN TIME (design §5.1 — a Degradation, THEN a Telegraphed failure): feed the roll
+    // only the HEAD of the scripted queue, and advance the head ONLY once the prior scripted fault
+    // has fully RESOLVED (recovered / dropped). So the Degradation fires first, the player weathers
+    // it, and only after it self-recovers does the Telegraphed countdown begin — the pair is
+    // sequenced over time, not fired together. The head is gated on `scriptedHeadPending`: it is
+    // eligible to fire only when no PRIOR scripted fault is still active (the gate below).
+    const headQueue =
+      this.faultScriptQueue.length > 0 && this.scriptedHeadReady() ? [this.faultScriptQueue[0]] : [];
+    const prev = [...this.activeFaults.values()];
+    const result = rollFaults(prev, this.satList, t, dt, this.rng, headQueue);
+    // CLEAR resolved faults (the session frees the sat — recovered, or dropped into a fail). A
+    // fault that RESOLVES on a sat the network kept SERVING THROUGH (servedThroughFault, set by the
+    // prior step's witness) was WEATHERED — the player rode through its whole lifetime. Latch it.
+    for (const satId of result.resolved) {
+      this.activeFaults.delete(satId);
+      if (this.servedThroughFault.delete(satId)) this.faultWeathered = true;
+    }
+    // ADD the newly-started faults (one per sat; the roll never double-faults a sat in a step).
+    for (const f of result.started) this.activeFaults.set(f.satId, { ...f });
+    // Advance the scripted mild-first queue: a scripted head that FIRED this step (a started fault
+    // whose kind matches the head) is consumed, so the NEXT scripted fault becomes the head — but
+    // it only fires once the just-started one resolves (the scriptedHeadReady gate). The head fault
+    // is also stamped so its resolution gates the next (tracked via lastScriptedFaultSatId).
+    if (headQueue.length > 0) {
+      const head = headQueue[0];
+      const fired = result.started.find((f) => f.kind === head.kind);
+      if (fired !== undefined) {
+        this.faultScriptQueue = this.faultScriptQueue.slice(1);
+        this.lastScriptedFaultSatId = fired.satId;
+      }
+    }
+  }
+
+  /** Whether the scripted-queue HEAD is eligible to fire this step (the mild-first gate): true
+   * when NO prior scripted fault is still active — so the Telegraphed failure begins only after the
+   * Degradation has self-recovered (the pair is sequenced in time). The first scripted fault is
+   * always ready (no prior). Pure read. */
+  private scriptedHeadReady(): boolean {
+    if (this.lastScriptedFaultSatId === null) return true; // no prior scripted fault ⇒ ready.
+    return !this.activeFaults.has(this.lastScriptedFaultSatId); // prior resolved ⇒ ready.
+  }
+
+  /** The set of sat ids REMOVED from the routing graph this instant (a topology change, design
+   * §2.4 / the router's `faults?` param): a transient outage, or a telegraphed fault whose
+   * countdown has EXPIRED (before expiry a telegraphed sat still routes — the watch-and-act
+   * window). A DEGRADATION is NOT here — it is a capacity haircut, not a removal (the sat still
+   * routes). Empty when faults are off (⇒ the router sees `undefined` ⇒ byte-identical routing). */
+  private downSatIds(t: number): Set<string> | undefined {
+    if (!this.faultsOn || this.activeFaults.size === 0) return undefined;
+    const down = new Set<string>();
+    for (const f of this.activeFaults.values()) {
+      if (faultRemovesSatAt(f, t)) down.add(f.satId);
+    }
+    return down.size > 0 ? down : undefined;
+  }
+
+  /** Apply the DEGRADATION capacity HAIRCUT to a shared-load aggregate (design §5.1): a degraded
+   * sat still routes, but its link capacity is scaled by `degradedCapacityFactor ∈ (0,1]`. The
+   * router compares the shared load against the FIXED NET_LINK_CAPACITY_UNITS, so we model the
+   * haircut by SCALING UP the degraded sat's effective load by `1/factor` — it then congests /
+   * trips the bandwidth bite sooner (biting whoever cut oversubscription thin in 3a, barely felt
+   * with headroom). Returns a NEW map (the raw `loadBySat` — the folded chosen-sat truth — is
+   * untouched); returns the input unchanged when no degradation is active. Pure. */
+  private applyDegradationHaircut(
+    load: ReadonlyMap<string, number>,
+  ): ReadonlyMap<string, number> {
+    let touched = false;
+    const out = new Map(load);
+    for (const f of this.activeFaults.values()) {
+      if (f.kind !== "degradation") continue;
+      const factor = f.degradedCapacityFactor;
+      if (!(factor > 0) || factor >= 1) continue; // no haircut (factor 1) or degenerate ⇒ skip.
+      const raw = out.get(f.satId) ?? 0;
+      out.set(f.satId, raw / factor); // scale the effective load up ⇒ effective capacity down.
+      touched = true;
+    }
+    return touched ? out : load;
+  }
+
+  /** THE act3b WEATHER-A-FAULT WITNESS (the gate's first half) — MARK phase. AFTER serve/breach,
+   * if ≥1 active fault coexists with ≥1 fully-served contract this step, the network kept serving
+   * WHILE the sat was faulting — mark that sat's id in {@link servedThroughFault}. The LATCH fires
+   * later, when that fault RESOLVES (in {@link rollAndApplyFaults}): the player rode through the
+   * fault's WHOLE lifetime ⇒ weathered. So the gate needs a fault to be survived START→RECOVER, not
+   * merely to appear (mild-first: the Degradation must self-recover before the witness latches).
+   * Pure (reads the active faults + the contract states). */
+  private updateFaultWeathered(): void {
+    if (this.faultWeathered) return; // latched — nothing more to track.
+    if (this.activeFaults.size === 0) return; // no fault this step.
+    // Is the network still serving ≥1 contract this step (it kept working through the fault)?
+    let serving = false;
+    for (const c of this.contractList) {
+      if (c.state === "active" && c.lastServedFraction >= ESCALATION_SERVE_THRESHOLD) {
+        serving = true;
+        break;
+      }
+    }
+    if (!serving) return;
+    // Mark every currently-faulting sat as "served through" — its later resolution latches weathered.
+    for (const f of this.activeFaults.values()) this.servedThroughFault.add(f.satId);
+  }
+
+  /** THE TRACE DIAGNOSIS (design §2.6 / C2.5 — the single legibility surface). Run each step once
+   * faults are on: feed {@link diagnose} the per-contract last SolveResults + the roster + the
+   * active faults + the shared load (the read-over-snapshot input — it re-derives nothing). Latch
+   * {@link surfacedShortfall} once it surfaces ≥1 shortfall (the act3b gate's layer-1 target), and
+   * keep the report as a derived readout (the SYSTEM.LOG / shortfall lines / the predictability
+   * seed). NOT folded — only the latched boolean folds. Pure read of the session snapshot. */
+  private diagnoseTrace(t: number, loadBySat: ReadonlyMap<string, number> | undefined): void {
+    if (!this.faultsOn) return;
+    const solves: ContractSolve[] = this.contractList.map((c) => ({
+      contract: c,
+      solve: this.lastSolve.get(c.id) ?? null,
+    }));
+    const report = diagnose({
+      solves,
+      sats: this.satList,
+      faults: [...this.activeFaults.values()],
+      loadBySat,
+      t,
+    });
+    this.lastTrace = report;
+    if (report.shortfalls.length > 0) this.surfacedShortfall = true;
   }
 
   /**
@@ -605,13 +865,26 @@ export class NetSession {
       }
     }
 
+    // (1c) THE FAULT ROLL (Act 3b / C2 — "and faults degrade it"). Run ONLY when the fault generator
+    // is gated ON (the act3b beat enabled it — itself FENCED behind the act3a gate). OFF (Acts 1–3a)
+    // ⇒ NO rng draw, NO fault state ⇒ the serve loop sees `undefined` faults + the raw loadBySat ⇒
+    // byte-identical routing + fold (golden-safe). When on: draw the next-tick faults off the seeded
+    // stream (scripted mild-first pair first, then the stochastic floor), update the active map, and
+    // derive the DOWN-sat set (removed from the graph) + the degraded-capacity HAIRCUT load (a
+    // degraded sat congests sooner). The serve loop routes around the down sats + bites the haircut.
+    this.rollAndApplyFaults(t, dtSeconds);
+    const downSats = this.downSatIds(t);
+    const effLoad = this.faultsOn && loadBySat !== undefined
+      ? this.applyDegradationHaircut(loadBySat)
+      : loadBySat;
+
     // (2) Accrue revenue + advance ACTIVE contract state machines (Pass B — the truth this tick).
     // One summed wallet add. Each contract's freshly-chosen bridging sat is recorded back into
     // chosenSatByContract so NEXT step's aggregate reflects THIS step's routing.
     let netDelta = 0;
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
-      const frac = this.servedFractionFor(eph, c, t, loadBySat);
+      const frac = this.servedFractionFor(eph, c, t, effLoad, downSats);
       // Record the chosen bridging sat (path[1]) for the two-pass aggregation; clear it when the
       // contract has no path this tick (so a dropped contract no longer loads a sat).
       const chosen = this.lastSolve.get(c.id)?.path?.[1];
@@ -644,6 +917,18 @@ export class NetSession {
     // offeredLoad logistically toward the ceiling, and flip the bandwidth axis on once it crosses
     // the escalation threshold (the §4.4 escalation-triggered mask add). Gated ON by act3a.
     if (this.escalationOn) this.stepEscalation(dtSeconds);
+
+    // (2d) THE act3b WITNESSES + THE TRACE (Act 3b / C2). AFTER serve/breach (so the served fractions
+    // + the SolveResults are this tick's truth) and only while faults are on. (i) WEATHER-A-FAULT:
+    // latch once a contract stays served through an active fault (the gate's first half). (ii) THE
+    // TRACE: run diagnose over the per-contract SolveResults + the active faults + the shared load,
+    // latching surfacedShortfall once it surfaces ≥1 resilience/optimisation shortfall (the gate's
+    // layer-1 target) and keeping the report as a derived readout (the SYSTEM.LOG / shortfall lines /
+    // the predictability-seed loss roll). Both are pure reads; only the latched booleans fold.
+    if (this.faultsOn) {
+      this.updateFaultWeathered();
+      this.diagnoseTrace(t, effLoad);
+    }
 
     // (3) THE GATE (design §3) — AFTER serve/breach + revenue, so a contract that just got
     // served+paid THIS tick can open the next beat THIS tick. On the first true: record the
@@ -716,6 +1001,18 @@ export class NetSession {
       act3aReTameWitnessed: this.act3aReTameWitnessed ? 1 : 0,
       nearBreachWitnessed: [...this.nearBreachWitnessed].sort(),
       congestionFingerprint: this.prevCongestionFingerprint,
+      // ACT-3b (C2) fault + trace fold state. activeFaults is captured SORTED by satId (by value)
+      // so the fold never depends on Map insertion order; the script queue keeps order (the
+      // mild-first sequence); the witnesses are ints. The lastTrace report is DERIVED (not folded).
+      faultsOn: this.faultsOn ? 1 : 0,
+      activeFaults: [...this.activeFaults.values()]
+        .sort((a, b) => (a.satId < b.satId ? -1 : a.satId > b.satId ? 1 : 0))
+        .map((f) => ({ ...f })),
+      faultScriptQueue: this.faultScriptQueue.map((s) => ({ ...s })),
+      lastScriptedFaultSatId: this.lastScriptedFaultSatId,
+      faultWeathered: this.faultWeathered ? 1 : 0,
+      servedThroughFault: [...this.servedThroughFault].sort(),
+      surfacedShortfall: this.surfacedShortfall ? 1 : 0,
     };
   }
 
@@ -755,6 +1052,21 @@ export class NetSession {
     this.nearBreachWitnessed.clear();
     for (const id of s.nearBreachWitnessed ?? []) this.nearBreachWitnessed.add(id);
     this.prevCongestionFingerprint = s.congestionFingerprint ?? "";
+    // ACT-3b (C2) fault + trace fold state. Nullish-coalesced so a pre-C2 snapshot restores to the
+    // dormant defaults (faults off, empty maps/queue, no witness) — byte-identical to the Acts 1–3a
+    // fold. The active fault map + the script queue make the fault stream a pure function of folded
+    // state across the restore boundary (restore-then-step == continuous-run); the lastTrace report
+    // is DERIVED (re-built on the next stepped tick), so it is not restored.
+    this.faultsOn = (s.faultsOn ?? 0) === 1;
+    this.activeFaults.clear();
+    for (const f of s.activeFaults ?? []) this.activeFaults.set(f.satId, { ...f });
+    this.faultScriptQueue = (s.faultScriptQueue ?? []).map((sc) => ({ ...sc }));
+    this.lastScriptedFaultSatId = s.lastScriptedFaultSatId ?? null;
+    this.faultWeathered = (s.faultWeathered ?? 0) === 1;
+    this.servedThroughFault.clear();
+    for (const id of s.servedThroughFault ?? []) this.servedThroughFault.add(id);
+    this.surfacedShortfall = (s.surfacedShortfall ?? 0) === 1;
+    this.lastTrace = null;
     // The cached router paths are derived; the next step() rebuilds them on a full search
     // (the topology key for a restored roster differs from the empty initial state).
     this.routerStates.clear();

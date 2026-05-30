@@ -69,6 +69,9 @@ import { surfacePointRelative } from "./sim/net/link-budget";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL } from "./sim/net/scenario";
+// net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
+// seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
+import { renderFaultLine } from "./sim/net/trace";
 import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -698,6 +701,55 @@ function netConstellation(): void {
 }
 
 /**
+ * net/ Act-3b — drain the live NetSession's FAULT + TRACE state into SYSTEM.LOG (render-only). The
+ * sim owns the truth (the seeded fault roll + the trace diagnosis fold into the replay golden);
+ * this only SURFACES it, edge-triggered, so a fault appearing/resolving + the first resilience
+ * shortfall each emit ONE line (a degradation amber pulse + est. recovery; a telegraphed countdown
+ * "fails in N"; the binding-constraint / SPOF / over-provision shortfall). No per-frame spam: the
+ * fault lines fire on the appearance/resolution edge; the shortfall fires once when it first
+ * surfaces. Pure read of the session (never mutates sim state).
+ */
+const netFaultSeen = new Set<string>();
+let netShortfallLogged = false;
+function drainNetFaultLog(): void {
+  if (!netMode || !netSession.faultsEnabled) return;
+  const t = clock.seconds;
+  const live = new Set<string>();
+  for (const f of netSession.faults) {
+    live.add(f.satId);
+    // NEW fault this frame ⇒ one SYSTEM.LOG line (the §5.3 fault face: the amber-pulse degradation
+    // + est. recovery, or the telegraphed watch-and-act countdown).
+    if (!netFaultSeen.has(f.satId)) {
+      log.append({
+        tSim: t,
+        sev: f.kind === "telegraphed" ? "warn" : "info",
+        entity: f.satId,
+        value: f.kind.toUpperCase(),
+        msg: renderFaultLine(f, t),
+      });
+    }
+  }
+  // RESOLVED faults this frame ⇒ a recovery line.
+  for (const id of netFaultSeen) {
+    if (!live.has(id)) {
+      log.append({ tSim: t, sev: "info", entity: id, value: "RECOVERED", msg: `${id} recovered — the network weathered it.` });
+    }
+  }
+  netFaultSeen.clear();
+  for (const id of live) netFaultSeen.add(id);
+  // The TRACE shortfall — surface the first resilience/optimisation/binding shortfall (the
+  // predictability seed + the kind-of-fix the trace named) once, when it first appears.
+  if (!netShortfallLogged) {
+    const report = netSession.trace;
+    const sf = report?.shortfalls[0];
+    if (sf !== undefined) {
+      log.append({ tSim: t, sev: "warn", entity: sf.subjectId, value: sf.kindOfFix, msg: sf.message });
+      netShortfallLogged = true;
+    }
+  }
+}
+
+/**
  * net/ A4 — build the ORRERY's per-frame net slice (design §6): the highlighted REGION-0
  * (lit the instant the router reports it SERVED, dim otherwise) + the launched sat's
  * footprint over the region. World positions are the TOY-frame earth-relative surface points
@@ -808,11 +860,15 @@ function pushAvailHistory(contractId: string, value: number): number[] {
 function netBuildRenderState(): BuildRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
+  // net/ Act-3b — the faulting-sat set (amber-pulse on the orrery): the ids the live NetSession
+  // reports as carrying an ACTIVE fault this step (degradation / transient / telegraphed). A pure
+  // read of the session's folded fault state; the orrery pulses those markers amber.
+  const faultingIds = new Set(netSession.faults.map((f) => f.satId));
   const assets = netSession.sats.map((s) => {
     const rel = solveOrbit(s.orbit, t);
     const posM: Vec3 = [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
     const eirp = s.loadout.reduce((m, a) => Math.max(m, a.eirp), 0);
-    return { id: s.id, kind: "sat" as const, posM, eirp, orbit: s.orbit };
+    return { id: s.id, kind: "sat" as const, posM, eirp, orbit: s.orbit, faulting: faultingIds.has(s.id) };
   });
   return {
     assets,
@@ -1403,6 +1459,9 @@ function frame(now: number): void {
   // consequence preview + the LAUNCH/ACCEPT face). Projected each frame from the live net
   // session; the panel rebuilds its DOM only on change.
   netPlannerPanel.render(netPlannerRenderState());
+  // net/ Act-3b — surface the live fault + trace state into SYSTEM.LOG (edge-triggered, render-only:
+  // the amber-pulse degradation / telegraphed countdown + the first resilience shortfall).
+  drainNetFaultLog();
   // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
   // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
   // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change
