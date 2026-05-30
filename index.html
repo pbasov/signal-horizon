@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!-- Empty inline icon: suppresses the default /favicon.ico request (and its 404),
+         so the boot smoke gate (tools/smoke.mjs) can stay strict — any console error fails. -->
+    <link rel="icon" href="data:," />
     <title>SIGNAL HORIZON</title>
   </head>
   <body>

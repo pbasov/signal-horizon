@@ -1,7 +1,9 @@
 name: CI
 
 # Ticket C1 / P0-02 — backbone gates + the money-shot screenshot before the M1 kill-gate (DD-7).
-# Gates (any failure fails the job): Vitest -> tsc --noEmit -> vite build -> orrery screenshot.
+# Gates (any failure fails the job): Vitest -> tsc --noEmit -> vite build ->
+# DEV-SERVER boot smoke (catches dev-only module-init crashes the bundled preview
+# build + unit tests miss, e.g. a circular-import TDZ) -> orrery screenshot.
 
 on:
   push:
@@ -67,6 +69,25 @@ jobs:
           echo "Bundled Chromium: $CHROMIUM_BIN"
           test -x "$CHROMIUM_BIN" || { echo "Bundled Chromium not executable at $CHROMIUM_BIN"; exit 1; }
           echo "CHROMIUM_BIN=$CHROMIUM_BIN" >> "$GITHUB_ENV"
+
+      # --- DEV-SERVER boot smoke (the gap that let a circular-import TDZ ship): boot the
+      # ACTUAL `vite dev` server (unbundled native ESM, the one developers run) on a
+      # separate port and FAIL on any uncaught/console error at load. The bundled preview
+      # build hoists module init so it hides this class; vitest never boots the app graph. ---
+      - name: Smoke — dev server boots clean (no console/page errors)
+        env:
+          HEADLESS: "1"
+        run: |
+          npm run dev -- --port 5175 --strictPort &
+          DEV_PID=$!
+          for i in $(seq 1 60); do
+            if curl -sfo /dev/null http://localhost:5175; then break; fi
+            sleep 1
+          done
+          node tools/smoke.mjs http://localhost:5175 5000
+          STATUS=$?
+          kill "$DEV_PID" 2>/dev/null || true
+          exit $STATUS
 
       # Serve the production build on :5173 in the background, then poll until it answers.
       - name: Start preview server
