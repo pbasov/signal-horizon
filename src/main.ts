@@ -48,6 +48,7 @@ import {
   placeDC as placeDCAction,
   netLaunch as netLaunchAction,
   netAccept as netAcceptAction,
+  netPlaceCache as netPlaceCacheAction,
   type SimAction,
 } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
@@ -63,12 +64,15 @@ import {
   previewLaunch,
   A1_BODY_RADIUS_M,
   NET_PRESETS,
+  MARS_RELAY_PRESET,
   type PreviewWorld,
 } from "./sim/net/world";
 import { surfacePointRelative } from "./sim/net/link-budget";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL } from "./sim/net/scenario";
+import { ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
+import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
 import { renderFaultLine } from "./sim/net/trace";
@@ -179,9 +183,18 @@ const netSession = new NetSession(undefined, NET_RNG_SEED);
 // is visible). The net session is ALWAYS stepped so the scenario emits + the loop is live the
 // instant the mode is entered.
 type AppMode = "net" | "cache";
-const APP_MODE: AppMode =
-  new URLSearchParams(window.location.search).get("mode") === "cache" ? "cache" : "net";
+const NET_QUERY = new URLSearchParams(window.location.search);
+const APP_MODE: AppMode = NET_QUERY.get("mode") === "cache" ? "cache" : "net";
 const netMode = APP_MODE === "net";
+// net/ Act-4 — DEBUG-ONLY view seed (the headless-screenshot affordance, design §4.5 / §8). A
+// `?netview=mars` (or `?netact=4`) query param asks the BOOT to seed the live net session straight
+// at the act4 Mars state (the Mars opportunity on the board + the MARS RELAY launched + a Mars
+// sample present) so a screenshot can reach the Mars VIEW WITHOUT driving the full ~460 s gated arc.
+// FOR VISUAL INSPECTION ONLY — it is a main.ts BOOT-TIME RENDER HOOK on the LIVE session, NOT a
+// sim/action/replay path: the replay harness builds its OWN NetSession from the golden action log
+// and never reads this param, so the three goldens are PROVABLY untouched. Never reached in normal
+// play (the param is absent). Labelled DEBUG in SYSTEM.LOG so it can never be mistaken for real play.
+const netDebugView = netMode && (NET_QUERY.get("netview") === "mars" || NET_QUERY.get("netact") === "4");
 // The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps).
 let netPresetCursor = 0;
 // The coverage grid (built once) for the live coverage score. Same default level as the
@@ -750,6 +763,64 @@ function drainNetFaultLog(): void {
 }
 
 /**
+ * net/ Act-4 — surface the MARS FRONTIER beat text + the "to be continued" stop into SYSTEM.LOG
+ * (render-only, edge-triggered). The sim owns the truth (the act4 beat OFFERS the Mars contract +
+ * the cursor STOPS on it — its gate is false forever, a READ not a gate). This only SURFACES the
+ * narrative beat once when the cursor first reaches act4 (the player has reached the frontier),
+ * then surfaces the Mars sample's FIRST arrival ("data arrives old") once, then the "to be
+ * continued" stop once the player has seen the crawl + the stale read. No per-frame spam — each
+ * line fires on its own edge. Pure read of the session (never mutates sim state, no golden).
+ */
+let netAct4BeatLogged = false;
+let netMarsArrivalLogged = false;
+let netAct4StopLogged = false;
+function drainNetAct4Log(): void {
+  if (!netMode) return;
+  const t = clock.seconds;
+  const mc = netSession.contractById(ACT4_MARS_CONTRACT_ID);
+  if (mc === null) return; // act4 not yet reached.
+  // (1) The FRONTIER beat — fired once when the Mars opportunity first appears on the board.
+  if (!netAct4BeatLogged) {
+    netAct4BeatLogged = true;
+    log.append({
+      tSim: t,
+      sev: "warn",
+      entity: "MARS-1",
+      value: "FRONTIER",
+      msg:
+        "ACT 4 — distance changes everything. A Mars colony needs data. Launch a MARS RELAY " +
+        "(; to select, L to launch) — but the signal crawls minutes one-way: your real-time playbook breaks.",
+    });
+  }
+  // (2) The FIRST Mars data arrival — fired once the sample freezes (the data arrives OLD by sight).
+  if (!netMarsArrivalLogged && netSession.mars !== null) {
+    netMarsArrivalLogged = true;
+    const ageMin = ((netSession.marsAgeS(t) ?? 0) / 60).toFixed(1);
+    log.append({
+      tSim: t,
+      sev: "info",
+      entity: "MARS-1",
+      value: `as of ${ageMin}m ago`,
+      msg:
+        "Mars data arrived — and it is already OLD (one light-delay stale on arrival). Place a cache " +
+        "(P) to bring it closer; freshness jumps, then drains again. This is the whole frontier lesson.",
+    });
+  }
+  // (3) The "to be continued" stop — fired once the player has both seen the crawl + read the stale
+  //     sample (the cursor stays on act4 forever; there is NO win screen — a deliberate frontier stop).
+  if (!netAct4StopLogged && netMarsArrivalLogged) {
+    netAct4StopLogged = true;
+    log.append({
+      tSim: t,
+      sev: "info",
+      entity: "SIGNAL HORIZON",
+      value: "…",
+      msg: "TO BE CONTINUED — you have reached the signal horizon. The frontier opens here.",
+    });
+  }
+}
+
+/**
  * net/ A4 — build the ORRERY's per-frame net slice (design §6): the highlighted REGION-0
  * (lit the instant the router reports it SERVED, dim otherwise) + the launched sat's
  * footprint over the region. World positions are the TOY-frame earth-relative surface points
@@ -764,7 +835,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
   const c = currentNetContract();
-  if (c === null) return { region: null, footprints: [], availability: null };
+  if (c === null) return { region: null, footprints: [], availability: null, mars: netMarsSlice(t) };
 
   const solve = netSession.lastSolveFor(c.id);
   const served = c.state === "active" && (solve?.served ?? false);
@@ -788,8 +859,57 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     c.state === "active" && c.activeAxes.has("availability")
       ? { value: c.lastAvailability, bar: c.slaAvail, history: pushAvailHistory(c.id, c.lastAvailability) }
       : null;
-  return { region, footprints, availability };
+  return { region, footprints, availability, mars: netMarsSlice(t) };
 }
+
+/**
+ * Act-4 — the MARS FRONTIER TEASER render slice (design §4.5 / §8 — the vertigo, BY SIGHT). Null
+ * until the act4 beat has surfaced the Mars opportunity (the MARS-1 contract is on the board). Once
+ * it has, this reads ENTIRELY off the live NetSession's PURE Act-4 surface — `mars` / `marsAgeS(t)` /
+ * `marsFreshness(t)` — plus the launched-relay presence + the REAL Earth↔Mars light delay. The
+ * Earth↔Mars signal CRAWL is a render-only cycle keyed on sim-time / oneWayS (the SAME light delay
+ * the M1-cache packet uses): progress = frac(t / oneWayS), so the signal VISIBLY crawls at light
+ * speed across the gap. NO sim feedback — the minutes-long latency is a READOUT (§8 fenced). A pure
+ * read of the session; never mutates sim state, so no golden is touched.
+ */
+function netMarsSlice(t: number): import("./orrery/orrery").NetRenderState["mars"] {
+  const mc = netSession.contractById(ACT4_MARS_CONTRACT_ID);
+  if (mc === null) return null; // act4 not yet reached — no Mars opportunity on the board.
+  // The deep-space relay's presence (the leg bridges by construction once it is up — solveMarsLeg).
+  const relay = netSession.sats.find((s) => s.id.startsWith("MARS-RELAY")) ?? null;
+  const earth = eph.position("earth", t);
+  const relayPosM =
+    relay !== null
+      ? ((): Vec3 => {
+          const rel = solveOrbit(relay.orbit, t);
+          return [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
+        })()
+      : null;
+  const oneWayS = interBodyOneWayLatencyS(eph, "earth", "mars", t);
+  // The crawl cycle: a signal re-launches every oneWayS and crawls Earth→Mars at light speed, so
+  // progress = (t mod oneWayS) / oneWayS. Only shown once the relay is up (presence-based path).
+  const crawlProgress = relay !== null && oneWayS > 0 ? (t % oneWayS) / oneWayS : null;
+  const ageS = netSession.marsAgeS(t);
+  const freshness = netSession.marsFreshness(t);
+  // The breadcrumb-placed one-shot flash: the cache breadcrumb re-captures the sample at "now"
+  // (age ≈ 0), so a near-zero age right after a place reads as "freshness jumped to full".
+  const breadcrumbPlaced = ageS !== null && ageS < NET_MARS_BREADCRUMB_FLASH_S;
+  return {
+    id: mc.region.id,
+    relayLaunched: relay !== null,
+    relayPosM,
+    oneWayS,
+    crawlProgress,
+    sampleAgeS: ageS,
+    freshness,
+    breadcrumbPlaced,
+  };
+}
+
+/** Act-4 — how fresh (sim-seconds of age) the Mars sample must be to read as a just-placed cache
+ * breadcrumb (the "freshness jumped to full" flash). A short window so the cue fires right after a
+ * place + the sample-freeze-on-arrival, then settles into the standing "data arrives OLD" readout. */
+const NET_MARS_BREADCRUMB_FLASH_S = 5.0;
 
 /** Act-2 — the current teaching contract for the render: the live availability demand (REGION-1)
  * once the scenario has emitted it, else REGION-0. So the orrery's hand-off render + sawtooth
@@ -931,6 +1051,84 @@ function netAccept(): void {
       msg: `accepted REGION-0 — serve it to EARN (the wallet ticks while served)`,
     });
   }
+}
+
+/**
+ * net/ Act-4 — PLACE the ONE Mars cache breadcrumb (design §4.5 / §8, "data closer helps"): record
+ * a net_place_cache action at the current tick + apply it via the SHARED applyNetAction. It
+ * re-captures the Mars sample at "now" (age ≈ 0 ⇒ the freshness readout JUMPS back to full by
+ * sight), then drains again. It does NOT change served/breach or revenue (a FELT breadcrumb, not a
+ * relief lever; §8 fenced). A no-op before the Mars path has carried (no sample to refresh yet).
+ */
+function netPlaceMarsCache(): void {
+  const mc = netSession.contractById(ACT4_MARS_CONTRACT_ID);
+  if (mc === null) return; // act4 not reached — no Mars opportunity yet.
+  const action = netPlaceCacheAction(clock.tick);
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "cache_placed") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "MARS-CACHE",
+      value: "placed",
+      msg: "cache breadcrumb placed near Mars — freshness jumps to full (then drains again by sight)",
+    });
+  }
+}
+
+/**
+ * net/ Act-4 — DEBUG SEED (render-only; the headless-screenshot affordance). Drive the LIVE net
+ * session straight to the act4 Mars VIEW so a shot can land on the frontier WITHOUT playing the
+ * ~460 s gated arc. Deterministic + idempotent. It uses ONLY the session's public mutation surface
+ * (the SAME methods the live game uses): force the scenario cursor to act4 (so the next step emits
+ * the Mars opportunity), launch the MARS RELAY, step the session, accept the Mars contract, step
+ * again (so solveMarsLeg presence-bridges it + the sample FREEZES one-way old on arrival), then
+ * place the cache breadcrumb. This is NOT a sim/action/replay path: the replay harness constructs
+ * its OWN NetSession from the golden action log and NEVER calls this, so the three goldens are
+ * untouched. NOT recorded to the SaveGame log (it is a render seed, not player input). Clearly
+ * DEBUG-labelled. Called ONCE at boot ONLY when `?netview=mars` / `?netact=4` is present.
+ */
+/** net/ Act-4 — the DEBUG-view sample-ageing nudge (sim-seconds): how far the debug seed advances
+ * the LIVE clock after the sample freezes, so the "as of Nm ago" staleness + the desaturation read
+ * visibly OLD in the screenshot (freshness ≈ 0.3–0.4 against the ~15 min Earth↔Mars half-life). */
+const NET_MARS_DEBUG_AGE_S = 400.0;
+function seedNetMarsDebugView(): void {
+  const t = clock.seconds;
+  // (1) Force the cursor to act4 (index 4 in M1_SCENARIO: act1, act2, act3a, act3b, act4). Each
+  //     advanceCursor bumps the cursor + stamps a gate tick; the next step's emit fires act4 only
+  //     (the intermediate beats' emits are skipped — we only need the Mars opportunity + relay).
+  while (netSession.cursor < 4) netSession.advanceCursor(Math.round(t / DT));
+  // (2) Step once so the act4 beat EMITS the Mars contract onto the board (the same in-step emit
+  //     the live scenario engine runs). Pure step on the live session.
+  netSession.step(eph, t, DT);
+  // (3) Launch the MARS RELAY via the SHARED applier (the SAME net_launch verb + preset the player
+  //     presses). Its presence bridges the Mars leg by construction (solveMarsLeg). Render-only seed
+  //     ⇒ NOT recorded to the save log.
+  applyNetAction(eph, netSession, netLaunchAction({
+    presetId: MARS_RELAY_PRESET.id,
+    semiMajorM: MARS_RELAY_PRESET.draft.semiMajorM,
+    incRad: MARS_RELAY_PRESET.draft.incRad,
+    subLonRad: MARS_RELAY_PRESET.draft.subLonRad,
+    count: 1,
+  }, clock.tick), DT);
+  // (4) Step + accept + step so the Mars path carries and the sample FREEZES (one-way old on
+  //     arrival, SD-19). The accept moves MARS-1 OFFERED → ACTIVE; the next step's solve serves it.
+  netSession.step(eph, t, DT);
+  applyNetAction(eph, netSession, netAcceptAction(ACT4_MARS_CONTRACT_ID, clock.tick), DT);
+  netSession.step(eph, t, DT);
+  // (5) Make the staleness READ visibly old: nudge the live clock forward a few minutes so the
+  //     sample's age (and the desaturation) reads OLD by sight in a screenshot. Render-only — the
+  //     clock is a LIVE concern, NOT the replay tick driver (the goldens drive ticks directly). The
+  //     resulting freshness ≈ 2^(−age/oneWay) ≈ 0.3–0.4 (clearly stale). Re-step at the new time.
+  clock.setTick(clock.tick + Math.round(NET_MARS_DEBUG_AGE_S / DT));
+  netSession.step(eph, clock.seconds, DT);
+  log.append({
+    tSim: clock.seconds,
+    sev: "warn",
+    entity: "DEBUG",
+    value: "netview=mars",
+    msg: "DEBUG VIEW — net session seeded at the Act-4 Mars frontier (relay launched, sample present). Not reached in normal play; does NOT affect replay.",
+  });
 }
 
 /**
@@ -1199,6 +1397,17 @@ if (netMode) {
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
 
+// net/ Act-4 — DEBUG VIEW seed (render-only; ?netview=mars / ?netact=4). Drive the LIVE session to
+// the act4 Mars frontier so a headless screenshot can reach the Mars VIEW without the full gated
+// arc, then frame the SYSTEM preset (the Earth→Mars money shot) + pause so the crawl + the stale
+// read sit still for the shot. NEVER reached in normal play; NOT a sim/action/replay path (the
+// replay harness builds its own session) — the three goldens are provably untouched.
+if (netDebugView) {
+  seedNetMarsDebugView();
+  orrery.setPreset(3); // SYSTEM — the Earth↔Mars span (the frontier money shot).
+  if (!clock.paused) clock.togglePause(); // freeze the crawl + the stale read for the shot.
+}
+
 // E10a/E10b — DEV-ONLY time seek so the screenshot harness can jump to a precise
 // ephemeris instant. With the E10b scenario epoch (boot at t0 = 14.5e6 s) the
 // arc is now reachable in-session by playing at 1000×, but the seek still lets a
@@ -1325,18 +1534,26 @@ window.addEventListener("keydown", (e) => {
     clock.faster();
     recordScale();
   } else if (k === "p" || k === "P") {
-    // M1-06 PREFETCH: pre-position fresh data into the Mars cache, charged the
-    // one-shot prefetch cost. POST-DRAIN, at the current clock tick — the SAME
-    // ordering the replay driver uses (apply the action AFTER step(at_tick)), via
-    // the shared applySessionAction so live and replay cannot drift. Gated to one
-    // fetch in flight; only RECORD the action when it actually launches (so the
-    // replay charges exactly once too).
-    const action = prefetchAction(clock.tick);
-    if (applySessionAction(eph, session, action, DT)) {
-      addAction(save, action);
-      // The prefetch IS the visible wait: launch the Mission packet to crawl it.
-      // (The truthful "prefetch MANUAL" line is already logged inside the session.)
-      if (mission.packet === null) mission.launch(clock.seconds);
+    // net/ Act-4 — in NET mode P PLACES the ONE Mars cache breadcrumb (the §8 "data closer helps":
+    // it re-captures the Mars sample at "now", so the freshness readout jumps back to full by sight).
+    // Recorded + applied via the SHARED applyNetAction at the current tick (live == replay). In
+    // cache mode P is the M1-06 manual prefetch (unchanged below).
+    if (netMode) {
+      netPlaceMarsCache();
+    } else {
+      // M1-06 PREFETCH: pre-position fresh data into the Mars cache, charged the
+      // one-shot prefetch cost. POST-DRAIN, at the current clock tick — the SAME
+      // ordering the replay driver uses (apply the action AFTER step(at_tick)), via
+      // the shared applySessionAction so live and replay cannot drift. Gated to one
+      // fetch in flight; only RECORD the action when it actually launches (so the
+      // replay charges exactly once too).
+      const action = prefetchAction(clock.tick);
+      if (applySessionAction(eph, session, action, DT)) {
+        addAction(save, action);
+        // The prefetch IS the visible wait: launch the Mission packet to crawl it.
+        // (The truthful "prefetch MANUAL" line is already logged inside the session.)
+        if (mission.packet === null) mission.launch(clock.seconds);
+      }
     }
   } else if (k === "a" || k === "A") {
     // E8 — CYCLE the prefetch policy mode: manual → freshness → freshness_blackout
@@ -1462,6 +1679,9 @@ function frame(now: number): void {
   // net/ Act-3b — surface the live fault + trace state into SYSTEM.LOG (edge-triggered, render-only:
   // the amber-pulse degradation / telegraphed countdown + the first resilience shortfall).
   drainNetFaultLog();
+  // net/ Act-4 — surface the MARS FRONTIER beat text + the "data arrives old" + the "to be
+  // continued" stop into SYSTEM.LOG (edge-triggered, render-only — the cursor stops on act4).
+  drainNetAct4Log();
   // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
   // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
   // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change

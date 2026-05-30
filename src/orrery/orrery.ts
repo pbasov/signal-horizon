@@ -202,6 +202,38 @@ export interface NetRenderState {
     /** Render-only recent-value history (oldest→newest), the sawtooth trace. */
     history: number[];
   } | null;
+  /**
+   * Act-4 — THE MARS FRONTIER TEASER render slice (design §4.5 / §8, "distance changes
+   * everything" — the vertigo, BY SIGHT). Present only once the act4 beat has emitted the Mars
+   * opportunity; null on Acts 1–3. The Earth↔Mars signal CRAWLS at the REAL light delay (the
+   * SAME `oneWaySeconds(distanceBetween)` machinery the M1-cache packet uses), the Mars data node
+   * DESATURATES toward machine-grey as it ages (freshness-as-saturation, reused), and the readout
+   * reads "as of Nm ago". A pure read off the live NetSession (session.mars / marsAgeS / marsFreshness);
+   * NO sim feedback — the minutes-long latency is a READOUT, never a breach axis (§8 fenced). */
+  mars: {
+    /** The Mars region/data-node id (MARS-1) — the node drawn at Mars's render position. */
+    id: string;
+    /** Whether the deep-space MARS RELAY is launched (its presence bridges the leg by construction).
+     * Until launched, the leg is dim + the crawl is "no signal yet". */
+    relayLaunched: boolean;
+    /** Earth-relative world position (m) of the launched relay (drawn as a node on the Earth side),
+     * or null when no relay is up. */
+    relayPosM: Vec3 | null;
+    /** The REAL one-way Earth↔Mars light delay (s) at this t — the crawl's transit time + the
+     * sample half-life (SD-19). Drives the "the signal takes Nm to cross" readout. */
+    oneWayS: number;
+    /** The crawl progress ∈ [0,1] of the in-flight Earth→Mars signal at light speed (a render-only
+     * cycle keyed on sim-time / oneWayS), so the signal VISIBLY crawls. null until the relay is up. */
+    crawlProgress: number | null;
+    /** The Mars sample's AGE (s) — `t − capturedAtT` ("as of Nm ago"); null until a sample exists. */
+    sampleAgeS: number | null;
+    /** The Mars sample FRESHNESS ∈ [0,1] (the reused `delay.ts` 2^(−age/half) curve) — drives the
+     * data-node DESATURATION (full → machine-grey). null until a sample exists. */
+    freshness: number | null;
+    /** True the step the cache breadcrumb is placed (freshness jumps back to full) — a one-shot
+     * cue the readout can flash. Render-derived in main.ts; never folded. */
+    breadcrumbPlaced: boolean;
+  } | null;
 }
 
 export interface OrreryCtx {
@@ -505,6 +537,28 @@ export class Orrery {
   /** The sawtooth-trace sample bars, grown to the history length on first paint + reused. */
   private netAvailBars: HTMLElement[] = [];
 
+  // --- net/ Act-4 Mars frontier teaser overlay (design §4.5 / §8) -------------
+  /** The Mars DATA NODE disc drawn at Mars's render position in net mode: a hot "fresh data" disc
+   * that DESATURATES toward machine-grey as `mars.freshness` drains (freshness-as-saturation, the
+   * SAME grey→hot lerp the packet uses). Built once + hidden; shown only in net mode at act4. */
+  private netMarsNode?: THREE.Mesh;
+  /** The deep-space MARS RELAY node (the Earth-side relay the player launched), a distinct cyan
+   * disc. Built once + hidden; shown when the relay is launched. */
+  private netMarsRelay?: THREE.Mesh;
+  /** The Act-4 Earth↔Mars signal crawler — a disc that crawls Earth→Mars at the REAL light delay
+   * (reuses the packet-crawl machinery). Built once + hidden; shown when the relay is up. */
+  private netMarsCrawler?: THREE.Mesh;
+  /** Hot "fresh data" tint for the Mars node (bleeds toward grey as freshness drains). */
+  private readonly _netMarsHot = new THREE.Color(1.0, 0.5, 0.26);
+  private readonly _netMarsColor = new THREE.Color();
+  /** Act-4 — the MARS readout DOM (the "as of Nm ago" stamp + freshness + light-delay), pinned over
+   * the orrery. Built once + hidden; paintNetMars mutates it in place. */
+  private netMarsBox?: HTMLElement;
+  private netMarsAge?: HTMLElement;
+  private netMarsFresh?: HTMLElement;
+  private netMarsDelay?: HTMLElement;
+  private netMarsHint?: HTMLElement;
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -620,6 +674,25 @@ export class Orrery {
     // the orrery that sawtooths for a lone LEO / N≤3 and FLATTENS at the SLA bar for the N=4
     // constellation. Built once + hidden; shown only in net mode with an availability axis live.
     this.buildNetAvailMeter();
+
+    // Act-4 — the MARS FRONTIER TEASER overlay (design §4.5 / §8): a hot Mars DATA NODE that
+    // desaturates as the cached copy ages, a cyan deep-space RELAY node on the Earth side, and an
+    // Earth↔Mars signal CRAWLER (reusing the packet-crawl path). Built once + hidden; shown only in
+    // net mode once the act4 beat has surfaced the Mars opportunity. The "as of Nm ago" readout box
+    // is built alongside (mutated in place by paintNetMars, no per-frame DOM rebuild).
+    this.netMarsNode = this.buildSignalDisc([1.0, 0.5, 0.26]); // hot fresh-data tint.
+    this.netMarsNode.visible = false;
+    this.netMarsNode.renderOrder = 12;
+    this.scene.add(this.netMarsNode);
+    this.netMarsRelay = this.buildSignalDisc([0.45, 0.85, 1.0]); // cyan relay node.
+    this.netMarsRelay.visible = false;
+    this.netMarsRelay.renderOrder = 12;
+    this.scene.add(this.netMarsRelay);
+    this.netMarsCrawler = this.buildSignalDisc([0.45, 0.85, 1.0]); // cyan crawling signal.
+    this.netMarsCrawler.visible = false;
+    this.netMarsCrawler.renderOrder = 13;
+    this.scene.add(this.netMarsCrawler);
+    this.buildNetMarsReadout();
 
     this.attachInput();
   }
@@ -979,6 +1052,139 @@ export class Orrery {
   }
 
   /**
+   * Act-4 — build the MARS readout DOM once (design §4.5 / §8): a small pinned block reading the
+   * "as of Nm ago" staleness stamp, the freshness % (the desaturation, in words), and the REAL
+   * one-way light delay ("the signal takes Nm to cross"). Hidden until net mode reaches act4;
+   * {@link paintNetMars} mutates it in place (no per-frame DOM rebuild).
+   */
+  private buildNetMarsReadout(): void {
+    const box = document.createElement("div");
+    box.className = "net-mars";
+    box.style.display = "none";
+    box.innerHTML =
+      `<div class="nm-row"><span class="nm-lab">MARS DATA</span><span class="nm-age">—</span></div>` +
+      `<div class="nm-row"><span class="nm-lab">FRESHNESS</span><span class="nm-fresh">—</span></div>` +
+      `<div class="nm-row"><span class="nm-lab">LIGHT DELAY</span><span class="nm-delay">—</span></div>` +
+      `<div class="nm-hint">—</div>`;
+    this.labelLayer.appendChild(box);
+    this.netMarsBox = box;
+    this.netMarsAge = box.querySelector(".nm-age") as HTMLElement;
+    this.netMarsFresh = box.querySelector(".nm-fresh") as HTMLElement;
+    this.netMarsDelay = box.querySelector(".nm-delay") as HTMLElement;
+    this.netMarsHint = box.querySelector(".nm-hint") as HTMLElement;
+  }
+
+  /**
+   * Act-4 — draw the MARS FRONTIER TEASER (design §4.5 / §8 — the vertigo, BY SIGHT). The Mars
+   * DATA NODE sits at Mars's render position and DESATURATES from a hot "fresh data" tint toward
+   * machine-grey as `mars.freshness` drains (the SAME grey→hot lerp the packet uses); the cyan
+   * deep-space RELAY node sits at the launched relay's Earth-relative position; and the Earth↔Mars
+   * signal CRAWLER walks Earth→Mars at the REAL light-delay crawl progress (reusing the rebased
+   * Earth/Mars endpoints the link line already computes). Hidden when there is no Mars slice or no
+   * relay. Render-only — no sim feedback; the minutes-long latency is a READOUT (§8 fenced).
+   */
+  private updateNetMars(t: number, focusAbs: Vec3, worldPerPx: number): void {
+    const node = this.netMarsNode;
+    const relay = this.netMarsRelay;
+    const crawler = this.netMarsCrawler;
+    if (!node || !relay || !crawler) return;
+    const ms = this.netRenderMode ? this.netState?.mars ?? null : null;
+    if (ms === null) {
+      node.visible = false;
+      relay.visible = false;
+      crawler.visible = false;
+      this.paintNetMars(null);
+      return;
+    }
+
+    // The Earth + Mars rebased render points (the SAME transform the link line uses).
+    this.renderInto(this._earthR, this.ctx.eph.position("earth", t), focusAbs);
+    this.renderInto(this._marsR, this.ctx.eph.position("mars", t), focusAbs);
+
+    // THE MARS DATA NODE — a hot disc at Mars that DESATURATES as the cached copy ages: the
+    // freshness-as-saturation cue (the data reads OLD by sight). When no sample yet, it reads cold
+    // grey (nothing fresh has arrived). The dither also coarsens as it greys (a colour-off channel).
+    const f = ms.freshness ?? 0;
+    node.position.copy(this._marsR);
+    this._netMarsColor.copy(this._grey).lerp(this._netMarsHot, f);
+    const nMat = node.material as THREE.ShaderMaterial;
+    nMat.uniforms.uColor.value.copy(this._netMarsColor);
+    nMat.uniforms.uCell.value = 2.0 + (1 - f) * 3.0; // finer stipple = fresher.
+    this.sizeBillboard(node, 22, worldPerPx);
+    node.visible = true;
+
+    // THE DEEP-SPACE RELAY NODE — the Earth-side relay the player launched (cyan), shown only once
+    // it is up; until then there is no path (the leg is presence-based) and the crawler is hidden.
+    if (ms.relayLaunched && ms.relayPosM !== null) {
+      this.renderInto(this._rp, ms.relayPosM, focusAbs);
+      relay.position.copy(this._rp);
+      this.sizeBillboard(relay, 11, worldPerPx);
+      relay.visible = true;
+    } else {
+      relay.visible = false;
+    }
+
+    // THE EARTH↔MARS SIGNAL CRAWLER — a cyan disc crawling Earth→Mars at the REAL light delay
+    // (crawlProgress is the render-only cycle keyed on sim-time / oneWayS in main.ts). The signal
+    // VISIBLY crawls across the interplanetary gap — the vertigo: minutes one-way, every command late.
+    if (ms.crawlProgress !== null) {
+      const p = ms.crawlProgress;
+      this.tmpV.set(
+        this._earthR.x + (this._marsR.x - this._earthR.x) * p,
+        this._earthR.y + (this._marsR.y - this._earthR.y) * p,
+        this._earthR.z + (this._marsR.z - this._earthR.z) * p,
+      );
+      crawler.position.copy(this.tmpV);
+      this.sizeBillboard(crawler, 10, worldPerPx);
+      crawler.visible = true;
+    } else {
+      crawler.visible = false;
+    }
+
+    this.paintNetMars(ms);
+  }
+
+  /**
+   * Act-4 — paint the MARS readout box (the "as of Nm ago" stamp + freshness + light delay), or
+   * hide it when null. Pure presentation: the staleness reads OLD (minutes ago) and the freshness
+   * desaturates in words; the light-delay names why ("the signal takes Nm to cross"). A breadcrumb
+   * placement flashes the hint ("CACHE PLACED — data closer"). No per-frame DOM rebuild.
+   */
+  private paintNetMars(ms: NetRenderState["mars"]): void {
+    const box = this.netMarsBox;
+    if (!box) return;
+    if (ms === null) {
+      box.style.display = "none";
+      return;
+    }
+    box.style.display = "block";
+    // "as of Nm ago" — the data arrives OLD (the staleness stamp). Em-dash until a sample exists.
+    const ageTxt =
+      ms.sampleAgeS === null
+        ? ms.relayLaunched
+          ? "awaiting first signal"
+          : "no relay — launch one"
+        : `as of ${fmtDuration(ms.sampleAgeS)} ago`;
+    setN(this.netMarsAge!, ageTxt);
+    setC(this.netMarsAge!, ms.sampleAgeS === null ? "nm-age warn" : "nm-age");
+    // FRESHNESS — the desaturation in words (full → grey). Tone tracks the band.
+    const fr = ms.freshness ?? 0;
+    setN(this.netMarsFresh!, ms.freshness === null ? "—" : fmtPct(fr));
+    setC(this.netMarsFresh!, `nm-fresh ${fr >= 0.5 ? "good" : fr > 0.05 ? "warn" : "dead"}`);
+    // LIGHT DELAY — the REAL one-way Earth↔Mars crossing time (minutes). The vertigo, named.
+    setN(this.netMarsDelay!, `${fmtDuration(ms.oneWayS)} one-way`);
+    setC(this.netMarsDelay!, "nm-delay warn");
+    // HINT — the breadcrumb cue, or the standing teaser line.
+    const hint = ms.breadcrumbPlaced
+      ? "CACHE PLACED — data closer, freshness jumps"
+      : ms.sampleAgeS === null
+        ? "the signal crawls — minutes one-way; you cannot tune what arrives this late"
+        : "data arrives OLD — place a cache (P) to bring it closer";
+    setN(this.netMarsHint!, hint);
+    setC(this.netMarsHint!, ms.breadcrumbPlaced ? "nm-hint good" : "nm-hint");
+  }
+
+  /**
    * Fix #2 — position the launched-sat orbit rings each frame: rebase + de-squash + fold
    * each ring's body-relative samples around its parent's current ephemeris position, the
    * SAME path the dataset rings use (so a launched LEO sat's ring sweeps + de-squashes
@@ -1303,6 +1509,9 @@ export class Orrery {
     // net/ Act-1 — the region (lit/dim) + footprint discs, only in net render mode.
     this.netState = this.netRenderMode ? (this.ctx.net?.() ?? null) : null;
     this.updateNetOverlay(focusAbs, worldPerPx);
+    // net/ Act-4 — the Mars frontier teaser: the desaturating Mars data node + the relay node +
+    // the Earth↔Mars signal crawling at the real light delay (shown only at act4 in net mode).
+    this.updateNetMars(t, focusAbs, worldPerPx);
 
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);

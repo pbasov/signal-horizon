@@ -733,3 +733,38 @@ body {
 .net-avail .na-bar { flex: 1 1 auto; min-width: 1px; background: var(--grey); }
 .net-avail .na-bar.good { background: var(--green); }
 .net-avail .na-bar.warn { background: var(--amber); }
+
+/* ---- net/ Act-4 MARS frontier teaser readout (the "data arrives OLD" vertigo) ---------- */
+/* A small block pinned over the orrery, lower-left (above the avail meter slot), reading the
+   "as of Nm ago" staleness stamp, the desaturating freshness %, and the REAL one-way light
+   delay. 1-bit chrome, redundant tone+text. Shown only in net mode once act4 has surfaced Mars. */
+.net-mars {
+  position: absolute;
+  left: 10px;
+  bottom: 168px;
+  width: 200px;
+  padding: 5px 7px 6px;
+  background: rgba(11, 11, 18, 0.78);
+  border: 1px solid var(--line-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  z-index: 3;
+}
+.net-mars .nm-row { display: flex; justify-content: space-between; gap: 8px; }
+.net-mars .nm-lab { color: var(--fg-dim); text-transform: uppercase; }
+.net-mars .nm-age,
+.net-mars .nm-fresh,
+.net-mars .nm-delay { color: var(--fg); text-align: right; }
+.net-mars .nm-age.warn,
+.net-mars .nm-fresh.warn,
+.net-mars .nm-delay.warn { color: var(--amber); }
+.net-mars .nm-fresh.good { color: var(--green); }
+.net-mars .nm-fresh.dead { color: var(--grey); }
+.net-mars .nm-hint {
+  margin-top: 5px;
+  color: var(--fg-dim);
+  font-size: 9.5px;
+  line-height: 1.3;
+}
+.net-mars .nm-hint.good { color: var(--green); }
