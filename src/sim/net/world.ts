@@ -30,7 +30,13 @@ import {
   NET_SPACE_SAMPLES,
   coveredFraction,
 } from "./endpoint";
-import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
+// Source the link-budget reference distance from the LEAF coverage/field (NOT the
+// link-budget re-export) to break a module-init cycle: link-budget imports
+// A1_BODY_RADIUS_M from this file, and the eager preset construction below reads
+// this constant AT MODULE-EVAL — under the unbundled dev server that races the
+// cycle into a TDZ ("Cannot access 'NET_REF_LINK_DISTANCE_M' before initialization").
+// The value is identical (link-budget's NET_REF_LINK_DISTANCE_M === REF_LINK_DISTANCE_M).
+import { REF_LINK_DISTANCE_M as NET_REF_LINK_DISTANCE_M } from "../coverage/field";
 import { solve, isPointServed, type RouterAxis } from "./router";
 
 const TAU = Math.PI * 2;
