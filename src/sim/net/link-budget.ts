@@ -44,6 +44,20 @@ export const NET_SIN_MIN_ELEVATION = Math.sin(NET_MIN_ELEVATION_RAD);
  * range. Re-exported so the sat loadout's `rangeRefM` is sourced from ONE place. */
 export const NET_REF_LINK_DISTANCE_M = REF_LINK_DISTANCE_M;
 
+/**
+ * E4 (Act 3a) — PER-ANTENNA LINK CAPACITY (units matching {@link import("./contract").Contract}.offeredLoad).
+ * The shared-load aggregate a single standard antenna's bridge can carry before it is
+ * CONGESTED: the §7.2 congestion term is `sharedLoadOnSat / NET_LINK_CAPACITY_UNITS`, and
+ * the bandwidth axis bites BINARY when that term reaches 1 (`sharedLoadOnSat ≥ capacity`).
+ *
+ * UNIFORM per standard antenna in C1 (one bus, no overclock). C2 introduces a degradation
+ * HAIRCUT (a per-sat capacity multiplier in (0,1)) which scales THIS base, so the constant
+ * stays the single source of truth and the haircut composes on top of it without a reshape.
+ * A PLAYTEST KNOB — the value is a tuned placeholder on the same `offeredLoad` scale
+ * (default contract `offeredLoad = 1.0`), chosen so one contract sits comfortably under
+ * capacity and two contracts sharing one sat after escalation tip over it. */
+export const NET_LINK_CAPACITY_UNITS = 1.5;
+
 /** Why a link does NOT close (the geometric cause stamped into the predictability
  * seed). `ok` carries the successful case so the trace can read a single enum. */
 export type LinkCause = "ok" | "set_below_horizon" | "out_of_budget" | "occluded";

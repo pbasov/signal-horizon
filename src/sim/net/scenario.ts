@@ -43,7 +43,7 @@ import {
   NET_ACT2_REGION_LON_RAD,
   type Region,
 } from "./endpoint";
-import { offerNetContract, type SlaAxis } from "./contract";
+import { offerNetContract, NET_DEFAULT_PREFER, type SlaAxis } from "./contract";
 
 /**
  * The gentle failure-to-progress assist a beat surfaces (design §3 fallback / §2.6 the
@@ -132,6 +132,36 @@ export const NET_ACT2_REGION: Region = {
   label: "polar metro",
   latRad: NET_ACT2_REGION_LAT_RAD,
   lonRad: NET_ACT2_REGION_LON_RAD,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "earth",
+};
+
+// --- ACT 3a tuning (Your own success congests it) ---------------------------------
+
+/** The Act-3a corridor contract id — a THIRD demand sharing REGION-0's equatorial infrastructure
+ * corridor (onboarding line 99). The replay action log accepts THIS id (accept + net_set_prefer). */
+export const ACT3A_CONTRACT_ID = "REGION-2";
+
+/** Longitude (radians) of the Act-3a corridor region — a few degrees E of the equatorial REGION-0
+ * (lon 0), inside the same equatorial corridor so the SAME equatorial sats bridge BOTH (the shared
+ * link the §4.3 oversubscription rides). 3° E. */
+export const NET_ACT3A_CORRIDOR_LON_RAD = 3 * (Math.PI / 180);
+
+/** The Act-3a corridor's LOW one-way latency SLA (seconds): tighter than the parked GEO path
+ * (~3.57 ms) but looser than a short equatorial LEO hop (~2.07 ms) — so the latency-tolerant GEO
+ * CANNOT meet it (the GEO ceiling, felt) and a shorter LEO route DOES (§4.4). 3 ms. */
+export const NET_ACT3A_LOW_LATENCY_S = 0.003;
+
+/** REGION-2 — the Act-3a EQUATORIAL CORRIDOR metro (lat 0, lon 3° E), sharing REGION-0's
+ * equatorial corridor so the SAME equatorial sats bridge both — the shared link the §4.3
+ * oversubscription rides. Same disc shape as REGION-0; a distinct id/label + a nearby longitude.
+ * Its LATENCY axis is active (low slaLatencyS): the GEO ceiling is felt (GEO can't meet it), a
+ * shorter equatorial LEO route does — the §4.4 latency axis, arriving by an AUTHORED contract. */
+export const NET_ACT3A_CORRIDOR_REGION: Region = {
+  id: ACT3A_CONTRACT_ID,
+  label: "corridor metro",
+  latRad: 0,
+  lonRad: NET_ACT3A_CORRIDOR_LON_RAD,
   radiusRad: NET_ACT1_REGION_RADIUS_RAD,
   bodyId: "earth",
 };
@@ -250,18 +280,70 @@ const ACT2: Beat = {
 };
 
 /**
- * act3a — "Your own success congests it." (escalation) STRUCTURAL placeholder (Phase C /
- * C1). emit will turn ON the escalation law (`offeredLoad` grows where served) + activate
- * latency then bandwidth; gate = a served contract dipped near-breach under risen load,
- * then returned to SERVED. SEPARATE from act3b so faults are fenced behind THIS gate.
+ * act3a — "Your own success congests it." (escalation; C1b). The first full tame → outgrow →
+ * re-tame cycle (onboarding lines 98-105). Two SLA axes arrive ONE AT A TIME (§4.4):
+ *   - LATENCY (authored arrival): emit adds REGION-2, an equatorial CORRIDOR contract sharing
+ *     REGION-0's infrastructure, activeAxes={connectivity,latency}, low slaLatencyS. The
+ *     latency-tolerant parked GEO can't meet it (~3.57 ms > 3 ms) ⇒ the GEO ceiling is FELT;
+ *     a shorter equatorial LEO route does ⇒ the player launches/re-routes onto the short path.
+ *   - BANDWIDTH (escalation-triggered mask flip): emit also enables the ESCALATION LAW — a served
+ *     contract's offeredLoad grows logistically. As REGION-0 + REGION-2 (both min-latency onto the
+ *     same short equatorial LEO) ride the SHARED link past capacity, the escalation step flips the
+ *     bandwidth axis on (load crosses the threshold) ⇒ the shared-link limit BITES (binary —
+ *     breachSecondsAccum accrues, the HIGH-1 fix) ⇒ a comfortable contract dips near-breach.
+ * The player re-engineers BY EXCEPTION — a parallel path (a 2nd equatorial LEO) + a per-contract
+ * net_set_prefer(bw) override — to split the shared sat and re-tame.
+ *
+ * emit: enableEscalation() + offer REGION-2 (the latency corridor). Both deterministic; emit
+ *       never touches physics (the §3 contract) — the generator it enables drives the escalation.
+ * gate: escalationReTamed() — a previously-served contract dipped near-breach under risen load,
+ *       then returned to fully SERVED (the §3a re-tame). SEPARATE from act3b so faults are fenced
+ *       structurally behind THIS gate (act3b only opens after act3a clears).
  */
 const ACT3A: Beat = {
   id: "act3a",
-  emit(): void {
-    /* C1: enable the escalation law; activate latency then bandwidth. */
+  emit(session: NetSession): void {
+    // Enable the escalation generator (the §3 emit contract: flip a flag, never touch physics).
+    session.enableEscalation();
+    // The latency corridor demand: latency ACTIVE + VISIBLE for the first time (the §4.4 latency
+    // axis, arriving by an AUTHORED contract). Idempotent (the session de-dupes by id). The
+    // bandwidth axis is NOT set here — it is flipped on by the escalation law crossing capacity
+    // (the §4.4 "one at a time": latency = authored arrival; bandwidth = escalation-triggered).
+    session.addContract(
+      offerNetContract(ACT3A_CONTRACT_ID, NET_ACT3A_CORRIDOR_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity", "latency"]),
+        slaLatencyS: NET_ACT3A_LOW_LATENCY_S,
+        prefer: { ...NET_DEFAULT_PREFER },
+      }),
+    );
   },
-  gate(): boolean {
-    return false; // C1 fills the escalation re-tame predicate.
+  gate(session: NetSession): boolean {
+    // The concept is FELT when the tame → outgrow → re-tame cycle has been demonstrated: a
+    // previously-served contract dipped near-breach under risen load, then returned to fully
+    // SERVED (the player re-engineered). State-gated (the session latches the witness), not
+    // clock-timed. Fencing: act3b's emit only fires once the cursor advances past act3a.
+    return session.escalationReTamed();
+  },
+  fallback(session: NetSession): Shortfall | null {
+    // The §4.3 sharing readout (the trace's first face): if a corridor contract is sitting
+    // near-breach on a saturated shared link without the player acting, surface the fix — add a
+    // parallel path or prefer-bw on the contract (point at it, never do it).
+    const c = session.contractById(ACT3A_CONTRACT_ID);
+    if (c === null || c.state !== "active") return null;
+    // Only nag while the contract is actually under-served (a saturated shared link), not when
+    // it is comfortably served.
+    if (c.lastServedFraction > 0) return null;
+    const satId = session.lastSolveFor(c.id)?.path?.[1] ?? null;
+    const carried = satId !== null ? session.loadOnSat(satId) : c.offeredLoad;
+    return {
+      subjectId: c.id,
+      message:
+        `${c.label}: the shared link${satId !== null ? ` via ${satId}` : ""} carries combined ` +
+        `load ${carried.toFixed(2)} — its peak exceeds capacity, so a comfortable contract dips ` +
+        `near-breach. Add a PARALLEL PATH (a second equatorial LEO) or set net_set_prefer(bw) on ` +
+        `${c.label} to route it around the congested sat.`,
+      suggestPresetId: "LEO_SWEEP",
+    };
   },
 };
 

@@ -49,7 +49,12 @@ import {
   netRevenueRatePerSecond,
   recordNetEarned,
   cloneNetContract,
+  escalateLoad,
+  ESCALATION_SERVE_THRESHOLD,
+  ESCALATION_BANDWIDTH_AXIS_THRESHOLD,
 } from "./contract";
+import { NET_LINK_CAPACITY_UNITS } from "./link-budget";
+import { BREACH_GRACE_SECONDS as NET_BREACH_GRACE_SECONDS } from "../m2/contracts";
 import {
   type SolveResult,
   type RouterState,
@@ -104,6 +109,24 @@ export const NET_OPENING_BALANCE = 5000.0;
  * is bootstrapped from this. */
 export const NET_RNG_SEED = 4242424242424242n;
 
+/** The QUANTIZATION BUCKET WIDTH (offeredLoad units) the congestion epoch is keyed on (E3): a
+ * sat's aggregate shared load is bucketed `floor(load / bucket)`, and the {@link NetSession}'s
+ * `congestionEpoch` bumps whenever ANY sat's bucket changes between steps. Folding the QUANTIZED
+ * epoch (an int) into the §2.4 topologyKey — never the raw float — forces a re-solve on a
+ * meaningful congestion change (the HIGH-2 fix) while a glacial sub-bucket drift preserves the
+ * cache (it would otherwise re-solve every tick). Sized a fraction of NET_LINK_CAPACITY_UNITS so
+ * the approach-to-capacity is resolved in several buckets. Placeholder. */
+export const NET_CONGESTION_BUCKET_UNITS = NET_LINK_CAPACITY_UNITS / 4;
+
+/** The NEAR-BREACH fraction of the shared grace a contract's `breachSecondsAccum` must reach
+ * (while escalation is on) to be WITNESSED as having "dipped near-breach under risen load" — the
+ * first half of the act3a tame→outgrow→re-tame gate (design §3a / onboarding line 120). A sustained
+ * dip to this depth of the grace (then a return to fully SERVED) demonstrates the concept WITHOUT
+ * requiring an actual FAILED contract (the full grace). 0.1 of the 600 s grace = 60 s of breach —
+ * a real, sustained near-breach the player must re-engineer out of, comfortably below the FAIL
+ * threshold so a re-tame is reachable. Placeholder. */
+export const NET_NEAR_BREACH_GRACE_FRACTION = 0.1;
+
 /** JSON-safe capture of the whole net session (save/restore + state-hash parity). */
 export interface NetSnapshot {
   /** The launched-sat roster, by value. */
@@ -131,6 +154,30 @@ export interface NetSnapshot {
    * completes; the gate's predicate is coverage-held (not a sat cap), so over-build still
    * completes and the surplus is SILENTLY logged here. Folded into the golden. */
   wasteLoggedSats: number;
+
+  // --- ACT-3a (C1b) escalation + congestion fold state -----------------------------
+  /** Whether the escalation law is GATED ON (0/1) — set true by the act3a beat's emit. While
+   * on, a well-served contract's `offeredLoad` grows logistically each step (design §3a). */
+  escalationOn: number;
+  /** The §2.4 CONGESTION EPOCH (E3): a monotone int that bumps whenever any sat's quantized
+   * shared-load bucket changes. Fed into the router topologyKey so a rising load forces a
+   * re-solve through the cache (the HIGH-2 fix). Folds into the golden. */
+  congestionEpoch: number;
+  /** The chosen bridging sat per ACTIVE contract id (the two-pass aggregation's Pass-A result),
+   * as `[contractId, satId]` pairs. Folded (sorted by contractId) so `loadBySat` is a pure
+   * function of folded state across a restore boundary (the MED desync fix). */
+  chosenSatByContract: [string, string][];
+  /** Whether the act3a tame→outgrow→re-tame cycle has been WITNESSED (0/1): a previously-served
+   * contract dipped near-breach under risen load, then returned to fully SERVED. The act3a gate
+   * returns this. Folds into the golden. */
+  act3aReTameWitnessed: number;
+  /** Contract ids that have DIPPED near-breach while escalation was on (the first half of the
+   * re-tame witness), so a later return to fully-served can complete the cycle. Folds (sorted). */
+  nearBreachWitnessed: string[];
+  /** The quantized congestion fingerprint of the LAST step's shared-load aggregate (E3): the
+   * congestion epoch bumps when the current step's fingerprint differs from this. Folded as a
+   * string so a restore reproduces the epoch-bump decision of a continuous run (replay-safe). */
+  congestionFingerprint: string;
 }
 
 export class NetSession {
@@ -183,6 +230,25 @@ export class NetSession {
   /** Over-build waste (sats beyond the measured zero-gap minimum) recorded when the act2 gate
    * fired — seeds the Act-3 optimizer pull (onboarding line 86). 0 until act2 completes. */
   private wasteLoggedSats = 0;
+
+  // --- ACT-3a (C1b) escalation + congestion state ----------------------------------
+  /** The escalation law gate (folded as int 0/1): set true by {@link enableEscalation}. */
+  private escalationOn = false;
+  /** The §2.4 congestion epoch (E3) — bumps on a quantized shared-load bucket change. Folded. */
+  private congestionEpoch = 0;
+  /** The chosen bridging sat per ACTIVE contract id (Pass A of the two-pass aggregation). Folded
+   * as sorted `id|satId` pairs so {@link loadBySatFromState} is a pure function of folded state
+   * across a restore boundary; the live `loadBySat` map is re-derived each step, never stored. */
+  private readonly chosenSatByContract = new Map<string, string>();
+  /** The act3a re-tame witness (folded int 0/1): a previously-served contract dipped near-breach
+   * under risen load, then returned to fully SERVED. {@link escalationReTamed} returns this. */
+  private act3aReTameWitnessed = false;
+  /** Contract ids that have DIPPED near-breach while escalation was on (the first half of the
+   * re-tame witness). A later return to fully-served completes the cycle. Folded (sorted). */
+  private readonly nearBreachWitnessed = new Set<string>();
+  /** The quantized congestion fingerprint of the last step's shared-load aggregate (E3) — the
+   * epoch bumps when this step's fingerprint differs. Folded so a restore reproduces the bump. */
+  private prevCongestionFingerprint = "";
 
   constructor(
     openingBalance = NET_OPENING_BALANCE,
@@ -306,6 +372,36 @@ export class NetSession {
     return c;
   }
 
+  /** ENABLE the escalation law (the act3a beat's emit calls this; idempotent). While on, a
+   * well-served contract's `offeredLoad` grows logistically each step (design §3a — "your
+   * success congests it"). Pure flag flip — it never touches physics (the §3 emit contract). */
+  enableEscalation(): void {
+    this.escalationOn = true;
+  }
+
+  /** Whether the escalation law is gated on (the readout + the trace face). */
+  get escalationEnabled(): boolean {
+    return this.escalationOn;
+  }
+
+  /** The current §2.4 congestion epoch (E3) — the readout the topologyKey is keyed on. */
+  get congestion(): number {
+    return this.congestionEpoch;
+  }
+
+  /** Whether the act3a tame→outgrow→re-tame cycle has been witnessed (the act3a gate's
+   * predicate): a previously-served contract dipped near-breach under risen load, then returned
+   * to fully SERVED. State-gated (the concept demonstrated), not clock-timed. */
+  escalationReTamed(): boolean {
+    return this.act3aReTameWitnessed;
+  }
+
+  /** The aggregate shared load routed over a sat id this step (the trace/readout reads this) —
+   * re-derived from the folded chosen-sat assignment + each contract's offeredLoad. */
+  loadOnSat(satId: string): number {
+    return this.loadBySatFromState().get(satId) ?? 0;
+  }
+
   /** Advance the scenario cursor + stamp the gate tick (the A3 engine calls this when a
    * beat's gate first fires). Idempotent-ish: records the tick for the current beat. */
   advanceCursor(gateTick: number): void {
@@ -335,9 +431,27 @@ export class NetSession {
    * Pure; reuses the cached {@link RouterState} for the instant verdict + the pure
    * {@link windowAvailability} for the rolling held-fraction. `lastAvailability` is a readout.
    */
-  private servedFractionFor(eph: Ephemeris, contract: Contract, t: number): number {
+  private servedFractionFor(
+    eph: Ephemeris,
+    contract: Contract,
+    t: number,
+    loadBySat?: ReadonlyMap<string, number>,
+  ): number {
     const prev = this.routerStates.get(contract.id) ?? null;
-    const next = resolveTick(eph, contract, this.satList, this.groundNets, t, prev);
+    // E2/E3 (Act 3a): the shared-load aggregate + the congestion epoch are forwarded into the
+    // §2.4 re-solve split. Absent/empty (Acts 1–2) ⇒ congestion_term 0 + epoch 0 ⇒ byte-identical
+    // routing + the same topologyKey, so the pre-Act-3 fold is untouched (golden-safe).
+    const next = resolveTick(
+      eph,
+      contract,
+      this.satList,
+      this.groundNets,
+      t,
+      prev,
+      undefined, // faults? — Act 3b (fenced behind act3a); absent here.
+      loadBySat,
+      this.congestionEpoch,
+    );
     this.routerStates.set(contract.id, next);
     this.lastSolve.set(contract.id, next.result);
     // Act 1 (connectivity-only): binary served fraction — the byte-identical legacy path.
@@ -349,6 +463,92 @@ export class NetSession {
     contract.lastAvailability = avail; // the sawtooth-meter readout (set each step).
     if (!next.result.served) return 0.0; // instant gap (a sawtooth trough) → 0.
     return avail >= contract.slaAvail ? 1.0 : 0.0; // sustained shortfall → 0; held → 1.0.
+  }
+
+  /**
+   * THE TWO-PASS CONGESTION AGGREGATION (Act 3a / C1b — Pass A + Aggregate). REPLAY-SAFE: built
+   * ENTIRELY from FOLDED state (`offeredLoad` + the prior-tick `chosenSatByContract`), never a
+   * separate cached map, so a restore-then-step reproduces a continuous run (the MED desync fix).
+   *
+   * {@link loadBySatFromState} rebuilds the shared-load aggregate `satId → Σ offeredLoad` from the
+   * LAST step's chosen-sat assignment (Pass A's one-tick lag — deterministic + bounded). The live
+   * `step` then runs the contract solves against THIS map, records each contract's freshly-chosen
+   * sat back into {@link chosenSatByContract}, and bumps {@link congestionEpoch} when a quantized
+   * bucket changed — so next step's aggregate reflects this step's routing. Pure.
+   */
+  private loadBySatFromState(): Map<string, number> {
+    const load = new Map<string, number>();
+    for (const c of this.contractList) {
+      if (c.state !== "active") continue;
+      const satId = this.chosenSatByContract.get(c.id);
+      if (satId === undefined) continue;
+      load.set(satId, (load.get(satId) ?? 0) + c.offeredLoad);
+    }
+    return load;
+  }
+
+  /** The quantized congestion FINGERPRINT of the current `loadBySat` (E3): each sat's bucket
+   * `floor(load / NET_CONGESTION_BUCKET_UNITS)` plus a flag for whether it crossed the bandwidth
+   * capacity, folded into a sorted string. A change between steps ⇒ the congestion epoch bumps ⇒
+   * the topologyKey flips ⇒ a re-solve through the cache. Pure. */
+  private congestionFingerprint(load: ReadonlyMap<string, number>): string {
+    const parts: string[] = [];
+    for (const [satId, l] of load) {
+      const bucket = Math.floor(l / NET_CONGESTION_BUCKET_UNITS);
+      const overCap = l >= NET_LINK_CAPACITY_UNITS ? 1 : 0;
+      parts.push(`${satId}:${bucket}:${overCap}`);
+    }
+    parts.sort();
+    return parts.join("|");
+  }
+
+  /**
+   * THE act3a RE-TAME WITNESS (design §3a / onboarding line 120 — the tame→outgrow→re-tame gate).
+   * Two halves, both folded:
+   *   1. DIP — an active contract whose `breachSecondsAccum` crossed the near-breach threshold
+   *      (NET_NEAR_BREACH_GRACE_FRACTION of the shared grace) while escalation was on: it dipped
+   *      near-breach under risen load. (Reachable because the bandwidth axis bites BINARY — the
+   *      HIGH-1 fix — so the shared grace actually accrues.) Recorded in `nearBreachWitnessed`.
+   *   2. RE-TAME — a witnessed contract back to fully SERVED (`servedFraction == 1.0`): the player
+   *      re-engineered (a parallel path / a net_set_prefer override) and re-tamed it ⇒ the cycle
+   *      is demonstrated, set `act3aReTameWitnessed`. State-gated, not clock-timed. Pure.
+   */
+  private updateReTameWitness(contract: Contract, servedFraction: number): void {
+    if (this.act3aReTameWitnessed) return; // once witnessed, latched (idempotent).
+    const nearBreach =
+      contract.breachSecondsAccum >= NET_NEAR_BREACH_GRACE_FRACTION * NET_BREACH_GRACE_SECONDS;
+    if (nearBreach) this.nearBreachWitnessed.add(contract.id);
+    else if (this.nearBreachWitnessed.has(contract.id) && servedFraction >= ESCALATION_SERVE_THRESHOLD) {
+      // A dipped-then-re-tamed contract: the act3a concept (your success congests it, you
+      // re-engineer, it re-tames) is FELT. Latch the witness (the gate reads it).
+      this.act3aReTameWitnessed = true;
+    }
+  }
+
+  /**
+   * THE ESCALATION LAW (design §3a / onboarding line 99). For each ACTIVE contract served WELL
+   * the prior step (`lastServedFraction >= ESCALATION_SERVE_THRESHOLD`), grow its `offeredLoad`
+   * by the EXACT CLOSED-FORM LOGISTIC FLOW toward the ceiling over `dtSeconds` (the M2
+   * dynamic-demand semigroup — DT-INVARIANT, bounded, no shock-compounding). Once a served
+   * contract's grown load crosses ESCALATION_BANDWIDTH_AXIS_THRESHOLD, the BANDWIDTH axis is
+   * added to its `activeAxes` (the §4.4 escalation-triggered mask flip — one-line mask add, NO
+   * struct reshape) so the shared-link limit can bite. Pure; no RNG. Folds via offeredLoad +
+   * activeAxes (both already in netStateHash).
+   */
+  private stepEscalation(dtSeconds: number): void {
+    if (dtSeconds <= 0) return;
+    for (const c of this.contractList) {
+      if (c.state !== "active") continue;
+      // Grow demand only where served WELL the prior step (lastServedFraction set by the m2
+      // transition above) — a breaching/under-served contract does not escalate.
+      if (c.lastServedFraction < ESCALATION_SERVE_THRESHOLD) continue;
+      c.offeredLoad = escalateLoad(c.offeredLoad, dtSeconds);
+      // The §4.4 escalation-triggered BANDWIDTH-axis mask flip (deterministic in step). Add the
+      // axis ONCE the load crosses the threshold; idempotent (Set add of an already-present axis).
+      if (c.offeredLoad >= ESCALATION_BANDWIDTH_AXIS_THRESHOLD && !c.activeAxes.has("bandwidth")) {
+        c.activeAxes = new Set<SlaAxis>([...c.activeAxes, "bandwidth"]);
+      }
+    }
   }
 
   /**
@@ -387,11 +587,36 @@ export class NetSession {
       if (c.state !== "active" && c.activeAxes.has("availability")) this.cleanServedSinceS = t;
     }
 
-    // (2) Accrue revenue + advance ACTIVE contract state machines. One summed wallet add.
+    // (1b) THE TWO-PASS CONGESTION AGGREGATION (Act 3a / C1b — Pass A + Aggregate). Run ONLY when
+    // escalation is gated ON (Acts 1–2: escalationOn=false ⇒ NO loadBySat, NO epoch bump ⇒ the
+    // serve loop passes `undefined` ⇒ congestion_term 0 + epoch 0 ⇒ byte-identical routing + the
+    // pre-Act-3 topologyKey, so Act-1/Act-2 + their fold are UNTOUCHED — golden-safe). When on:
+    // rebuild the shared-load aggregate from the FOLDED prior chosen-sat map + current offeredLoad
+    // (Pass A's one-tick lag, fully re-derivable across a restore — the MED desync fix), and bump
+    // the congestion epoch when its quantized fingerprint changed (E3: a rising load ⇒ a re-solve
+    // through the cache; a static load preserves it). The serve loop below is Pass B (the truth).
+    let loadBySat: ReadonlyMap<string, number> | undefined;
+    if (this.escalationOn) {
+      loadBySat = this.loadBySatFromState();
+      const fp = this.congestionFingerprint(loadBySat);
+      if (fp !== this.prevCongestionFingerprint) {
+        this.congestionEpoch++;
+        this.prevCongestionFingerprint = fp;
+      }
+    }
+
+    // (2) Accrue revenue + advance ACTIVE contract state machines (Pass B — the truth this tick).
+    // One summed wallet add. Each contract's freshly-chosen bridging sat is recorded back into
+    // chosenSatByContract so NEXT step's aggregate reflects THIS step's routing.
     let netDelta = 0;
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
-      const frac = this.servedFractionFor(eph, c, t);
+      const frac = this.servedFractionFor(eph, c, t, loadBySat);
+      // Record the chosen bridging sat (path[1]) for the two-pass aggregation; clear it when the
+      // contract has no path this tick (so a dropped contract no longer loads a sat).
+      const chosen = this.lastSolve.get(c.id)?.path?.[1];
+      if (chosen !== undefined) this.chosenSatByContract.set(c.id, chosen);
+      else this.chosenSatByContract.delete(c.id);
       // The AVAILABILITY clean-streak stamp (§3.3, the gate-hardening field): whenever an
       // availability-active contract feeds a 0 served-fraction (a breach reset — an instant gap
       // OR a rolling shortfall), the clean hand-off streak RESTARTS at this sim-time. The Act-2
@@ -405,8 +630,20 @@ export class NetSession {
       // The IMPORTED m2 transition (servedFraction, dt) — NO net/ copy. It advances the
       // served/breach accums + completes on term / fails past the IMPORTED grace.
       stepActiveContract(c, frac, dtSeconds);
+      // THE act3a RE-TAME WITNESS (design §3a / onboarding line 120) — only while escalation is on.
+      // FIRST half: a contract whose breach window crossed the near-breach threshold (it dipped
+      // near-breach under risen load). SECOND half: a witnessed contract back to fully SERVED
+      // (re-tamed) ⇒ the tame→outgrow→re-tame cycle is demonstrated (act3aReTameWitnessed=true).
+      if (this.escalationOn) this.updateReTameWitness(c, frac);
     }
     if (netDelta !== 0) this.walletBalance += netDelta;
+
+    // (2c) THE ESCALATION LAW (design §3a / onboarding line 99 — "demand grows where you serve").
+    // After serve/breach + revenue (so the step's € is keyed on the load at the START of the step
+    // — DT-invariant, mirroring the M2 dynamic-demand cadence), grow each well-served contract's
+    // offeredLoad logistically toward the ceiling, and flip the bandwidth axis on once it crosses
+    // the escalation threshold (the §4.4 escalation-triggered mask add). Gated ON by act3a.
+    if (this.escalationOn) this.stepEscalation(dtSeconds);
 
     // (3) THE GATE (design §3) — AFTER serve/breach + revenue, so a contract that just got
     // served+paid THIS tick can open the next beat THIS tick. On the first true: record the
@@ -469,6 +706,16 @@ export class NetSession {
       lastStepS: this.lastStepS,
       cleanServedSinceS: this.cleanServedSinceS,
       wasteLoggedSats: this.wasteLoggedSats,
+      // ACT-3a (C1b) escalation + congestion fold state. chosenSatByContract is captured as sorted
+      // [id, satId] pairs so loadBySat is a pure function of folded state across a restore.
+      escalationOn: this.escalationOn ? 1 : 0,
+      congestionEpoch: this.congestionEpoch,
+      chosenSatByContract: [...this.chosenSatByContract.entries()].sort((a, b) =>
+        a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      ),
+      act3aReTameWitnessed: this.act3aReTameWitnessed ? 1 : 0,
+      nearBreachWitnessed: [...this.nearBreachWitnessed].sort(),
+      congestionFingerprint: this.prevCongestionFingerprint,
     };
   }
 
@@ -496,6 +743,18 @@ export class NetSession {
     this.lastStepS = s.lastStepS;
     this.cleanServedSinceS = s.cleanServedSinceS;
     this.wasteLoggedSats = s.wasteLoggedSats;
+    // ACT-3a (C1b) escalation + congestion fold state. Nullish-coalesced so a pre-C1b snapshot
+    // restores to the dormant defaults (escalation off, epoch 0, empty maps) — byte-identical to
+    // the Act-1/Act-2 fold. chosenSatByContract + prevCongestionFingerprint make loadBySat a pure
+    // function of folded state across the restore boundary (restore-then-step == continuous-run).
+    this.escalationOn = (s.escalationOn ?? 0) === 1;
+    this.congestionEpoch = s.congestionEpoch ?? 0;
+    this.chosenSatByContract.clear();
+    for (const [id, satId] of s.chosenSatByContract ?? []) this.chosenSatByContract.set(id, satId);
+    this.act3aReTameWitnessed = (s.act3aReTameWitnessed ?? 0) === 1;
+    this.nearBreachWitnessed.clear();
+    for (const id of s.nearBreachWitnessed ?? []) this.nearBreachWitnessed.add(id);
+    this.prevCongestionFingerprint = s.congestionFingerprint ?? "";
     // The cached router paths are derived; the next step() rebuilds them on a full search
     // (the topology key for a restored roster differs from the empty initial state).
     this.routerStates.clear();

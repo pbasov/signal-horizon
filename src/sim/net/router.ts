@@ -43,7 +43,9 @@ import {
   evaluateLink,
   surfacePointRelative,
   surfaceNormalRelative,
+  NET_LINK_CAPACITY_UNITS,
 } from "./link-budget";
+import type { PreferWeights } from "./contract";
 
 /** A stamped record of a link that LOST (the predictability seed, design §2.4/§2.6):
  * the two endpoints, the geometric cause, and the sim-time it happened. */
@@ -75,12 +77,34 @@ export interface SolveResult {
 
 /** The minimal contract surface the router needs (the full Contract struct lands in
  * A2; the router only reads the region geometry + which axes are active). Keeping it
- * structural lets A2 pass the real Contract without a router change. */
+ * structural lets A2 pass the real Contract without a router change.
+ *
+ * --- E1 (Act 3a, additive + signature-stable) ------------------------------------
+ * The §7.2 reactive cost-blend reads the per-contract `prefer.{lat,bw,stab}` weights and
+ * the `latency` axis reads `slaLatencyS`. The full {@link import("./contract").Contract}
+ * is a structural supertype that supplies both at runtime — but the TYPE must surface
+ * them so the router can read them off a RoutableContract. BOTH are OPTIONAL with no-op
+ * defaults so Act-1/Act-2 callers (and the A1/A2/golden paths) are byte-identical when
+ * absent: `prefer` absent ⇒ {@link NET_ROUTER_DEFAULT_PREFER} (lat-only, w_bw = w_stab = 0);
+ * `slaLatencyS` absent ⇒ Infinity (no latency ceiling ever binds). */
 export interface RoutableContract {
   id: string;
   region: Region;
   activeAxes?: ReadonlySet<RouterAxis>;
+  /** E1: per-contract §7.2/§7.3 prefer weights; absent ⇒ lat-only default (no-op blend). */
+  prefer?: PreferWeights;
+  /** E1: max one-way latency (s) the path must achieve; absent ⇒ Infinity (no ceiling). */
+  slaLatencyS?: number;
 }
+
+/** The router's default PREFER weights when a contract carries none (E1 back-compat). The
+ * SAME shape as {@link import("./contract").NET_DEFAULT_PREFER}: latency-biased, bandwidth
+ * secondary, stability DORMANT (w_stab = 0 — the cost-blend STRUCTURE is the real §7.2 blend
+ * so M2 turns on the predictive/stability term with no reshape; in M1 it contributes 0). With
+ * these defaults + no `loadBySat`, the blend's cost reduces to the bare latency term, which is
+ * a monotone function of path distance — so it picks the SAME bridge the legacy max-margin
+ * (closest/highest-above-horizon) pick did. Restated here so the router needs no value import. */
+export const NET_ROUTER_DEFAULT_PREFER: PreferWeights = { lat: 1.0, bw: 0.0, stab: 0.0 };
 
 /** Earth-relative world position (metres) of a launched sat at sim-time t. The earth
  * centre is the common origin the link budget works in, so we DROP the eph.position
@@ -136,6 +160,26 @@ function bestAntenna(sat: NetSat): { eirp: number; rangeRefM: number } {
  * ascending then groundId ascending — order-independent, pure. An EQUATORIAL region with one
  * reachable ground gets a byte-identical bridge to the single-ground form (golden-safe).
  *
+ * --- THE REACTIVE COST-BLEND (Act 3a / §7.2 — the min-cost pick, E1+E2) -----------
+ * Instead of the FIRST bridging sat (the pre-Act-3 critique target), we pick the MIN-COST
+ * (sat, ground) bridge under the §7.2 reactive blend (still O(sats·grounds) — the degenerate
+ * Dijkstra the header promises). For each candidate:
+ *   cost = w_lat·latency_term + w_bw·congestion_term + w_stab·instability_term
+ *     latency_term     = up.latencyS + down.latencyS            (the realized path length / c)
+ *     congestion_term  = sharedLoadOnSat / NET_LINK_CAPACITY_UNITS   (∝ 1 / available bandwidth)
+ *     instability_term = 0                                       (w_stab DORMANT — M1 LOCKED)
+ *     w_lat = prefer.lat,  w_bw = prefer.bw,  w_stab = prefer.stab
+ * `sharedLoadOnSat = loadBySat.get(satId) ?? 0`.
+ *
+ * BYTE-IDENTITY (the back-compat guarantee): when `loadBySat` is absent/empty AND `prefer`
+ * is the lat-only default ({@link NET_ROUTER_DEFAULT_PREFER}), the cost is the bare latency
+ * term — and because every candidate's latency is a monotone function of its distance while
+ * `received ∝ 1/d²`, the min-latency sat IS the max-margin sat the legacy path picked. To
+ * make the result BIT-identical (latency_term and margin agree on the winner but the tie-break
+ * differs in shape), the default branch takes the EXISTING max-margin comparison VERBATIM; the
+ * cost-blend branch activates ONLY when a non-default prefer or a non-empty `loadBySat` is
+ * supplied (Act 3a). So Act-1/Act-2 routing + the golden are untouched.
+ *
  * Returns the bridging sat id + realized latency, or null with the binding cause.
  */
 export function bridgeForPoint(
@@ -144,18 +188,30 @@ export function bridgeForPoint(
   groundNets: GroundNet[],
   sats: NetSat[],
   t: number,
+  prefer?: PreferWeights,
+  loadBySat?: ReadonlyMap<string, number>,
 ): { satId: string; groundId: string; latencyS: number } | { satId: null; cause: Exclude<LinkCause, "ok"> } {
   const from = surfacePointRelative(point.latRad, point.lonRad, t);
   const normal = surfaceNormalRelative(point.latRad, point.lonRad, t);
 
+  // The §7.2 blend is engaged ONLY when a non-default prefer or a non-empty shared-load map is
+  // supplied (Act 3a). Otherwise the LEGACY max-margin pick runs VERBATIM (byte-identical Act-1/2).
+  const w = prefer ?? NET_ROUTER_DEFAULT_PREFER;
+  const blendEngaged =
+    (loadBySat !== undefined && loadBySat.size > 0) ||
+    w.lat !== NET_ROUTER_DEFAULT_PREFER.lat ||
+    w.bw !== NET_ROUTER_DEFAULT_PREFER.bw ||
+    w.stab !== NET_ROUTER_DEFAULT_PREFER.stab;
+
   let worstCause: Exclude<LinkCause, "ok"> = "set_below_horizon";
-  // The strongest-margin (sat, ground) bridge so far (the highest-above-the-horizon sat
-  // over the ground it downlinks to). margin = min(up.received, down.received); ties break
-  // by satId ascending then groundId ascending — order-independent across roster + grounds.
+  // The best (sat, ground) bridge so far. In the LEGACY path the score is margin (maximise);
+  // in the BLEND path the score is cost (minimise). Ties break by satId ascending then groundId
+  // ascending in BOTH paths — order-independent across roster + grounds.
   let bestSatId: string | null = null;
   let bestGroundId: string | null = null;
   let bestLatencyS = Infinity;
   let bestMargin = -Infinity;
+  let bestCost = Infinity;
   for (const groundNet of groundNets) {
     // Ground endpoint world position + its outward normal (altitude raises the horizon).
     const groundR = groundRadiusM(groundNet);
@@ -175,18 +231,35 @@ export function bridgeForPoint(
         if (down.cause !== "ok") worstCause = down.cause;
         continue;
       }
-      const margin = Math.min(up.received, down.received);
-      const better =
-        margin > bestMargin ||
-        (margin === bestMargin &&
-          bestSatId !== null &&
-          (sat.id < bestSatId ||
-            (sat.id === bestSatId && bestGroundId !== null && groundNet.id < bestGroundId)));
+      const latencyS = up.latencyS + down.latencyS;
+      let better: boolean;
+      if (blendEngaged) {
+        // §7.2 cost = w_lat·latency_term + w_bw·congestion_term + w_stab·0. Lower is better.
+        const sharedLoad = loadBySat?.get(sat.id) ?? 0;
+        const congestionTerm = sharedLoad / NET_LINK_CAPACITY_UNITS;
+        const cost = w.lat * latencyS + w.bw * congestionTerm; // w_stab·instability_term = 0.
+        better =
+          cost < bestCost ||
+          (cost === bestCost &&
+            bestSatId !== null &&
+            (sat.id < bestSatId ||
+              (sat.id === bestSatId && bestGroundId !== null && groundNet.id < bestGroundId)));
+        if (better) bestCost = cost;
+      } else {
+        // LEGACY max-margin pick (VERBATIM): margin = min(up.received, down.received), higher better.
+        const margin = Math.min(up.received, down.received);
+        better =
+          margin > bestMargin ||
+          (margin === bestMargin &&
+            bestSatId !== null &&
+            (sat.id < bestSatId ||
+              (sat.id === bestSatId && bestGroundId !== null && groundNet.id < bestGroundId)));
+        if (better) bestMargin = margin;
+      }
       if (better) {
-        bestMargin = margin;
         bestSatId = sat.id;
         bestGroundId = groundNet.id;
-        bestLatencyS = up.latencyS + down.latencyS;
+        bestLatencyS = latencyS;
       }
     }
   }
@@ -220,6 +293,7 @@ export function solve(
   groundNets: GroundNet[],
   t: number,
   faults?: ReadonlySet<string>,
+  loadBySat?: ReadonlyMap<string, number>,
 ): SolveResult {
   const losses: LinkLossStamp[] = [];
   if (groundNets.length === 0 || sats.length === 0) {
@@ -236,10 +310,11 @@ export function solve(
 
   // The region endpoint is sampled at its CENTRE for the path-existence verdict; the
   // WHOLE-DISC margin (every Fibonacci sample reachable) is asserted via isPointServed. The
-  // bent path closes via the strongest (sat, ground) bridge across ALL ground stations (Act 2
-  // adds the high-lat GROUND-1 for REGION-1); an equatorial region keeps GROUND-0 (golden-safe).
+  // bent path closes via the MIN-COST (sat, ground) bridge across ALL ground stations (the
+  // §7.2 reactive blend over prefer+loadBySat; the legacy max-margin pick when both default —
+  // golden-safe). Act 2 adds the high-lat GROUND-1 for REGION-1.
   const centre: RegionPoint = { latRad: contract.region.latRad, lonRad: contract.region.lonRad };
-  const bridge = bridgeForPoint(eph, centre, groundNets, live, t);
+  const bridge = bridgeForPoint(eph, centre, groundNets, live, t, contract.prefer, loadBySat);
   if (bridge.satId === null) {
     losses.push({ aId: contract.region.id, bId: groundNets[0].id, cause: bridge.cause, atS: t });
     // When the contract ENFORCES the availability axis, an instantaneous gap (the sat set
@@ -256,6 +331,45 @@ export function solve(
       losses,
     };
   }
+
+  // A bridge exists. The Act-3 quantitative axes bite BINARY (HIGH-1: a pro-rata fraction never
+  // accrues breach under the shared state machine), enforced ONE AT A TIME via `activeAxes`:
+  //
+  //   LATENCY (§4.4) — the GEO ceiling, felt: a path whose realized one-way latency exceeds the
+  //   contract's `slaLatencyS` does NOT satisfy a latency-active contract (a ~340 ms GEO path
+  //   fails a low-latency SLA; a short LEO/relay hop passes). bindingConstraint = "latency".
+  const slaLatencyS = contract.slaLatencyS ?? Infinity;
+  if ((contract.activeAxes?.has("latency") ?? false) && bridge.latencyS > slaLatencyS) {
+    losses.push({ aId: contract.region.id, bId: bridge.satId, cause: "out_of_budget", atS: t });
+    return {
+      served: false,
+      path: [contract.region.id, bridge.satId, bridge.groundId],
+      latencyS: bridge.latencyS,
+      bindingConstraint: "latency",
+      losses,
+    };
+  }
+
+  //   BANDWIDTH (§4.3) — the shared-link limit, felt: when the chosen bridge's shared load is at
+  //   or over capacity (`congestion_term ≥ 1`, i.e. sharedLoad ≥ NET_LINK_CAPACITY_UNITS) the
+  //   link is CONGESTED and a bandwidth-active contract is unserved binary. The router already
+  //   routed AROUND congestion (the cost-blend prefers a less-loaded parallel path when one
+  //   exists); this verdict bites only when the chosen — already the cheapest — path is itself
+  //   over capacity. bindingConstraint = "bandwidth".
+  if (contract.activeAxes?.has("bandwidth") ?? false) {
+    const sharedLoad = loadBySat?.get(bridge.satId) ?? 0;
+    if (sharedLoad >= NET_LINK_CAPACITY_UNITS) {
+      losses.push({ aId: bridge.satId, bId: bridge.groundId, cause: "out_of_budget", atS: t });
+      return {
+        served: false,
+        path: [contract.region.id, bridge.satId, bridge.groundId],
+        latencyS: bridge.latencyS,
+        bindingConstraint: "bandwidth",
+        losses,
+      };
+    }
+  }
+
   return {
     served: true,
     path: [contract.region.id, bridge.satId, bridge.groundId],
@@ -297,16 +411,28 @@ export interface RouterState {
   wasServed: boolean;
 }
 
-/** A cheap topology fingerprint: which sats exist + which are faulted + the contract id.
- * A change here forces a full re-search (a launch adds a sat id; a fault flips one). */
+/** A cheap topology fingerprint: which sats exist + which are faulted + the contract id +
+ * (E3, Act 3a) a quantized CONGESTION EPOCH. A change here forces a full re-search.
+ *
+ * --- E3 (the HIGH-2 fix) — the congestion fingerprint ----------------------------
+ * The session calls `resolveTick` (not `solve`), which re-solves ONLY on a topologyKey change.
+ * A rising `offeredLoad` is neither a launch nor a fault, so without this the cached verdict
+ * would go STALE on congestion (design §2.4 requires "a demand/escalation change triggers a
+ * re-solve"). The session keeps a per-step integer `congestionEpoch` that bumps whenever any
+ * sat's quantized shared-load bucket changes OR a contract crosses the bandwidth-axis threshold;
+ * folding it into the key means a congestion change ⇒ epoch bumps ⇒ fingerprint changes ⇒ full
+ * re-solve through the cached path. We fold the QUANTIZED epoch (an int), NEVER the raw float
+ * load (raw floats would re-solve every tick and defeat the cache). Absent (= 0) ⇒ the key is
+ * BYTE-IDENTICAL to the pre-Act-3 fingerprint (golden-safe). */
 export function topologyKey(
   contract: RoutableContract,
   sats: NetSat[],
   faults?: ReadonlySet<string>,
+  congestionEpoch = 0,
 ): string {
   const ids = sats.map((s) => s.id).sort();
   const faulted = faults && faults.size ? [...faults].sort() : [];
-  return `${contract.id}|${ids.join(",")}|${faulted.join(",")}`;
+  return `${contract.id}|${ids.join(",")}|${faulted.join(",")}|${congestionEpoch}`;
 }
 
 /**
@@ -332,12 +458,17 @@ export function resolveTick(
   t: number,
   prev: RouterState | null,
   faults?: ReadonlySet<string>,
+  loadBySat?: ReadonlyMap<string, number>,
+  congestionEpoch = 0,
 ): RouterState {
-  const topoKey = topologyKey(contract, sats, faults);
+  const topoKey = topologyKey(contract, sats, faults, congestionEpoch);
 
-  // First tick or a discrete topology change ⇒ full search.
+  // First tick or a discrete topology change (launch / fault / CONGESTION EPOCH bump) ⇒ full
+  // search. E3: a rising `offeredLoad` that bumps `congestionEpoch` flips topoKey here, so the
+  // cached verdict refreshes for congestion (the HIGH-2 fix) — `loadBySat` is forwarded so the
+  // re-solve actually consumes the shared load + the latency/bandwidth axes.
   if (!prev || prev.topoKey !== topoKey) {
-    const result = solve(eph, contract, sats, groundNets, t, faults);
+    const result = solve(eph, contract, sats, groundNets, t, faults, loadBySat);
     return { result, solvedAtS: t, topoKey, wasServed: result.served };
   }
 
@@ -345,7 +476,7 @@ export function resolveTick(
   const nowServed = isRegionServed(eph, contract, sats, groundNets, t, faults);
   if (nowServed !== prev.wasServed) {
     // A horizon rise/set crossed the gate ⇒ a topology event ⇒ full re-search.
-    const result = solve(eph, contract, sats, groundNets, t, faults);
+    const result = solve(eph, contract, sats, groundNets, t, faults, loadBySat);
     return { result, solvedAtS: t, topoKey, wasServed: result.served };
   }
 
@@ -358,8 +489,8 @@ export function resolveTick(
       wasServed: false,
     };
   }
-  // Still served on the cached path — refresh the realized latency cheaply.
-  const refreshed = solve(eph, contract, sats, groundNets, t, faults);
+  // Still served on the cached path — refresh the realized latency + the axis verdicts cheaply.
+  const refreshed = solve(eph, contract, sats, groundNets, t, faults, loadBySat);
   return { result: refreshed, solvedAtS: prev.solvedAtS, topoKey, wasServed: true };
 }
 

@@ -5,6 +5,7 @@ import { saveGame, addAction, saveFromJSON, saveToJSON } from "./save";
 import {
   netLaunch,
   netAccept,
+  netSetPrefer,
   KIND_NET_LAUNCH,
   KIND_NET_ACCEPT,
   KIND_NET_SET_PREFER,
@@ -17,6 +18,7 @@ import { SLA_AXIS_ORDINAL, type SlaAxis } from "./net/contract";
 import {
   ACT1_CONTRACT_ID,
   ACT2_CONTRACT_ID,
+  ACT3A_CONTRACT_ID,
   ACT2_ZERO_GAP_N,
   ACT2_SLA_AVAIL,
   NET_HANDOFF_CYCLE_S,
@@ -142,6 +144,84 @@ function act2Log() {
   return actLog(ACT2_ZERO_GAP_N);
 }
 
+// ── ACT 3a (C1b): the escalation → oversubscription → re-tame arc (the re-pin driver) ──────────
+
+/** The DEG→RAD helper for the equatorial-LEO launches (act3a corridor). */
+const ACT3A_DEG_RAD = Math.PI / 180;
+
+/** ACT 3a: the player launches a short EQUATORIAL LEO (inc 0) for the latency corridor at this
+ * tick (the parked GEO can't meet REGION-2's low latency SLA; a short LEO route does). */
+const TICK_EQ_LEO_1 = 19461; // shortly after the act2 gate fires (cursor reaches act3a ~t=323).
+/** ACT 3a: ACCEPT the REGION-2 corridor (latency axis active) just after its short path is up. */
+const TICK_ACCEPT_R2 = 19521;
+/** ACT 3a: the RELIEF BY EXCEPTION after escalation tips the shared link near-breach — a PARALLEL
+ * equatorial LEO + a net_set_prefer on the latency-tolerant trunk REGION-0 (made bandwidth-share-
+ * aware) so it YIELDS the short corridor path to the latency-critical REGION-2, splitting the
+ * shared sat. Fixed tick (the dip is witnessed by ~t=429; this lands just after). */
+const TICK_RELIEF = 25800;
+
+/**
+ * The recorded ACT-1 → ACT-2 → ACT-3a action sequence (the M1 arrival arc THROUGH the act3a
+ * re-tame — the C1b golden driver):
+ *   ACT 1/2 — as {@link actLog} (GEO over REGION-0; the polar N=4 over REGION-1; both gates fire).
+ *   ACT 3a — the act3a beat (emitted inside step when the act2 gate fires) enables ESCALATION +
+ *            offers REGION-2 (the equatorial latency corridor). The player launches a short
+ *            equatorial LEO + ACCEPTS REGION-2 (latency met — the GEO ceiling felt, a LEO passes);
+ *            escalation grows the shared-link load past capacity (the bandwidth axis flips on),
+ *            the corridor dips near-breach (binary bite — breachSecondsAccum accrues), and the
+ *            player RE-ENGINEERS BY EXCEPTION (a parallel LEO + net_set_prefer on REGION-0) to
+ *            split the shared sat ⇒ re-tamed ⇒ the act3a gate fires.
+ */
+function act3aLog() {
+  const sg = act2Log();
+  // The short equatorial LEO for the latency corridor (inc 0; LEO_SWEEP is polar).
+  addAction(
+    sg,
+    netLaunch(
+      { presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: 1.5 * ACT3A_DEG_RAD, count: 1 },
+      TICK_EQ_LEO_1,
+    ),
+  );
+  addAction(sg, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
+  // The relief: a parallel equatorial LEO + the prefer override on the latency-tolerant trunk.
+  addAction(
+    sg,
+    netLaunch(
+      { presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: -1.5 * ACT3A_DEG_RAD, count: 1 },
+      TICK_RELIEF,
+    ),
+  );
+  addAction(sg, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_RELIEF));
+  return sg;
+}
+
+/** The act3a replay runs past the relief so the re-tame latches + the act3a gate fires (t ≈ 470 s,
+ * 28 200 ticks). */
+const MAX_T_ACT3A_SECONDS = 470;
+const MAX_TICK_ACT3A = Math.round(MAX_T_ACT3A_SECONDS / GOLDEN_DT);
+
+/** Replay an action log through a NetSession to a given max tick (the act3a arc needs a longer
+ * horizon than the act1/act2 arc). Mirrors {@link replay} (step then post-drain action). */
+function replayTo(sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResult {
+  const eph = Ephemeris.build({});
+  const session = new NetSession();
+  const byTick = new Map<number, SimAction[]>();
+  for (const a of sg.actions) {
+    if (isNetKind(a.kind)) {
+      const list = byTick.get(a.atTick) ?? [];
+      list.push(a);
+      byTick.set(a.atTick, list);
+    }
+  }
+  for (let tick = 0; tick <= maxTick; tick++) {
+    const t = tick * sg.dt;
+    session.step(eph, t, sg.dt);
+    const list = byTick.get(tick);
+    if (list !== undefined) for (const a of list) applyNetAction(eph, session, a, sg.dt);
+  }
+  return { hash: netStateHash(session), balance: session.balance, session };
+}
+
 /** The net action kinds this replay routes (the rest are ignored, like the m2 driver). */
 function isNetKind(kind: string): boolean {
   return kind === KIND_NET_LAUNCH || kind === KIND_NET_ACCEPT || kind === KIND_NET_SET_PREFER;
@@ -175,6 +255,24 @@ function netStateHash(s: NetSession): bigint {
   // so enabling faults in C2 moves this value rather than reshaping the fold.
   const faultCursor = 0;
   acc = mixInt(acc, BigInt(faultCursor));
+  // ACT-3a (C1b) escalation + congestion fold ADDITIONS (the SD-40-C1b re-pin): the escalation
+  // gate flag, the §2.4 congestion epoch, the chosen-sat assignment (sorted id|satId pairs — makes
+  // loadBySat a pure function of folded state across a restore), the re-tame witness + its
+  // near-breach-witnessed contract ids, and the prior congestion fingerprint (so a restore
+  // reproduces the epoch-bump decision). Folded in FIXED order after the fault cursor. In Acts 1/2
+  // these are dormant defaults (off / 0 / empty / "") ⇒ byte-identical to the pre-C1b fold for the
+  // shorter horizon; they become live once the cursor reaches act3a + escalation engages.
+  acc = mixInt(acc, BigInt(snap.escalationOn));
+  acc = mixInt(acc, BigInt(snap.congestionEpoch));
+  acc = mixInt(acc, BigInt(snap.act3aReTameWitnessed));
+  acc = mixInt(acc, BigInt(snap.chosenSatByContract.length));
+  for (const [cid, satId] of snap.chosenSatByContract) {
+    acc = mixString(acc, cid);
+    acc = mixString(acc, satId);
+  }
+  acc = mixInt(acc, BigInt(snap.nearBreachWitnessed.length));
+  for (const id of snap.nearBreachWitnessed) acc = mixString(acc, id);
+  acc = mixString(acc, snap.congestionFingerprint);
   // The ROSTER: each sat's full SatOrbit f64s + loadout eirps.
   acc = mixInt(acc, BigInt(snap.roster.length));
   for (const sat of snap.roster) {
@@ -249,77 +347,79 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 }
 
 // ---------------------------------------------------------------------------
-// PINNED net/ M1 arrival-sequence replay golden — the full ACT-1 + ACT-2 arc (scenario emit +
-// LAUNCH the default GEO PARK + ACCEPT REGION-0 + the act1 gate; then the N=4 LEO BATCH + ACCEPT
-// REGION-1 (availability axis) + the region held across a full hand-off cycle + the act2 gate).
-// A SEPARATE world from the M1 cache golden 544847093270497462n and the M2 build golden
-// 8431658617016421069n. Bootstrapped by running the replay once; pinned here as the regression
-// guard. Any change to the scenario table/gates, the contract/session/router model, the launch
-// boundary, the availability fold, or the state-hash fold moves this value.
+// PINNED net/ M1 arrival-sequence replay golden — the full ACT-1 → ACT-2 → ACT-3a arc (scenario
+// emit + LAUNCH the default GEO PARK + ACCEPT REGION-0 + the act1 gate; the N=4 LEO BATCH + ACCEPT
+// REGION-1 + the act2 gate; THEN act3a: escalation enabled + REGION-2 corridor offered, a short
+// equatorial LEO + ACCEPT REGION-2 (latency axis), escalation tips the shared link near-breach
+// (the bandwidth axis flips on, binary bite), a PARALLEL LEO + net_set_prefer relief splits the
+// sat, the corridor re-tames, and the act3a gate fires). A SEPARATE world from the M1 cache golden
+// 544847093270497462n and the M2 build golden 8431658617016421069n. Any change to the scenario
+// table/gates, the contract/session/router model, the escalation law, the congestion fold, the
+// launch boundary, or the state-hash fold moves this value.
 //
-// RE-PINNED IN B3 (the M3a precedent, documented in decisions.md):
-//   PRE-B3 (Act-1 only)  10424955607522567073n
+// RE-PINNED ACROSS PHASES (documented in decisions.md):
+//   PRE-B3 (Act-1 only)                       10424955607522567073n
 //   B3     (Act-1+Act-2 equatorial REGION-1)  12864209889064023665n
-//   SD-40-B3-FIX (high-lat REGION-1)  <below>
-// What moved it in B3: the Act-2 REGION-1 contract (availability axis), the lastAvailability fold,
-// the cleanServedSinceS gate-hardening fold, the wasteLoggedSats fold, and the N=4 batch phase
-// spread. What moved it in the SD-40 B3 FIX (the teaching-bug fix, documented in decisions.md):
-// REGION-1 was re-placed from equatorial lon 5°E to HIGH LATITUDE (lat 70°, lon 5°E) — beyond the
-// parked equatorial GEO's measured ~64° footprint edge, so the GEO ALONE cannot serve it (the
-// latitude wall) — the LEO_SWEEP preset was re-tuned to a POLAR inclination (90°, subLon 5°), and
-// a co-located high-lat ground station (GROUND-1) was added so the inclined constellation's bent
-// path closes. The measured zero-gap N stays 4 (so the batch + phasing assist are unchanged); the
-// REGION-1 placement + preset inclination + the second ground + the multi-ground bridge moved the
-// fold. The two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-byte
-// UNTOUCHED (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
+//   SD-40-B3-FIX (high-lat REGION-1)          260489051471786347n
+//   SD-40-C1b (act3a escalation in the fold)  314363620940498869n
+// What moved it in SD-40-C1b (the escalation-fold re-pin, the SD-40 chained-re-pin pattern): the
+// golden log was EXTENDED through act3a (the equatorial-LEO launches, the REGION-2 accept, the
+// parallel-path + net_set_prefer relief) and run to a longer horizon (470 s); and the fold gained
+// the C1b ADDITIONS — escalationOn (int), congestionEpoch (int), act3aReTameWitnessed (int), the
+// chosenSatByContract id|satId pairs, the nearBreachWitnessed ids, and the congestionFingerprint
+// string — PLUS the value moves already in the fold (REGION-2's offeredLoad + activeAxes growth,
+// REGION-0/REGION-1's escalated offeredLoad + bandwidth-axis flips, REGION-0's prefer change). The
+// two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED
+// (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 260489051471786347n;
+const NET_REPLAY_GOLDEN = 314363620940498869n;
 
-describe("net/ A3+B3 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 constellation)", () => {
-  it("pins the net-session replay state hash for the act1→act2 action log (regression guard)", () => {
-    const r = replay(act2Log());
+describe("net/ A3+B3+C1b — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame)", () => {
+  it("pins the net-session replay state hash for the act1→act2→act3a action log (regression guard)", () => {
+    const r = replayTo(act3aLog(), MAX_TICK_ACT3A);
     expect(r.hash).toBe(NET_REPLAY_GOLDEN);
-  });
+  }, 30000);
 
-  it("a logged act1→act2 sequence is deterministic: replaying the same log twice is bit-identical", () => {
-    const a = replay(act2Log());
-    const b = replay(act2Log());
+  it("a logged act1→act2→act3a sequence is deterministic: replaying the same log twice is bit-identical", () => {
+    const a = replayTo(act3aLog(), MAX_TICK_ACT3A);
+    const b = replayTo(act3aLog(), MAX_TICK_ACT3A);
     expect(a.hash).toBe(b.hash);
     expect(a.balance).toBe(b.balance);
     expect(a.session.snapshot()).toEqual(b.session.snapshot());
-  }, 30000); // two full 21 600-tick replays over the now-two-ground network — generous headroom.
+  }, 60000);
 
-  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the new act2 fields)", () => {
+  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the new act3a fold fields)", () => {
     const eph = Ephemeris.build({});
     const live = new NetSession();
     const byTick = new Map<number, SimAction[]>();
-    for (const a of act2Log().actions) {
+    for (const a of act3aLog().actions) {
       if (isNetKind(a.kind)) {
         const list = byTick.get(a.atTick) ?? [];
         list.push(a);
         byTick.set(a.atTick, list);
       }
     }
-    for (let tick = 0; tick <= MAX_TICK; tick++) {
+    for (let tick = 0; tick <= MAX_TICK_ACT3A; tick++) {
       const t = tick * GOLDEN_DT;
       live.step(eph, t, GOLDEN_DT);
       const list = byTick.get(tick);
       if (list !== undefined) for (const a of list) applyNetAction(eph, live, a, GOLDEN_DT);
     }
-    const replayed = replay(act2Log());
-    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + cleanServedSinceS +
-    // wasteLoggedSats + per-contract lastAvailability included) + the hash.
+    const replayed = replayTo(act3aLog(), MAX_TICK_ACT3A);
+    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + the act3a fold fields —
+    // escalationOn / congestionEpoch / chosenSatByContract / the re-tame witness — included) + hash.
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
     expect(live.balance).toBe(replayed.balance);
     expect(netStateHash(live)).toBe(replayed.hash);
-  }, 30000); // one live run + one replay over the two-ground network — generous headroom.
+  }, 60000); // one live run + one replay over the act3a arc — generous headroom.
 
-  it("the net SaveGame survives the JSON round-trip and reproduces the hash (incl. the act2 batch phase spread)", () => {
-    const sg = act2Log();
+  it("the net SaveGame survives the JSON round-trip and reproduces the hash (incl. the act2 batch phase spread + the act3a prefer override)", () => {
+    const sg = act3aLog();
     const reloaded = saveFromJSON(saveToJSON(sg));
     expect(reloaded).not.toBeNull();
     expect(reloaded!.actions.some((a) => a.kind === KIND_NET_LAUNCH)).toBe(true);
     expect(reloaded!.actions.some((a) => a.kind === KIND_NET_ACCEPT)).toBe(true);
+    expect(reloaded!.actions.some((a) => a.kind === KIND_NET_SET_PREFER)).toBe(true);
     // The batch launch's phaseSpreadRad survives the round-trip (non-zero ⇒ written to the wire).
     const batch = reloaded!.actions.find(
       (a) => a.kind === KIND_NET_LAUNCH && a.payload.count === ACT2_ZERO_GAP_N,
@@ -328,11 +428,11 @@ describe("net/ A3+B3 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 
     expect(batch!.payload.phaseSpreadRad).toBeCloseTo(ACT2_PHASE_SPREAD_RAD, 12);
     // dt survives bit-exactly via dt_bits, so the replay reproduces the pinned hash.
     expect(reloaded!.dt).toBe(GOLDEN_DT);
-    const a = replay(sg);
-    const b = replay(reloaded!);
+    const a = replayTo(sg, MAX_TICK_ACT3A);
+    const b = replayTo(reloaded!, MAX_TICK_ACT3A);
     expect(b.hash).toBe(a.hash);
     expect(b.hash).toBe(NET_REPLAY_GOLDEN);
-  }, 30000); // two full replays over the two-ground network — generous headroom.
+  }, 60000); // two full act3a-arc replays — generous headroom.
 
   it("THE ACT-1 LOOP CLOSES: REGION-0 is SERVED, EARNS €, and the act1 GATE fired deterministically", () => {
     const r = replay(act2Log());
@@ -565,4 +665,96 @@ describe("SD-40 B3-FIX — Act-2 is unsolvable by Act-1's method (the latitude w
     expect(c1.state).not.toBe("completed"); // never completed via the GEO.
     expect(c1.lastAvailability).toBeLessThan(ACT2_SLA_AVAIL); // the GEO can't hold REGION-1.
   }, 30000);
+});
+
+// ---------------------------------------------------------------------------
+// SD-40 C1b — THE ACT-3a ESCALATION INVARIANTS (the tame → outgrow → re-tame cycle + the fold).
+// The escalation law grows offeredLoad deterministically (replay-stable); a corridor contract tips
+// near-breach under the shared-link congestion (binary bandwidth bite — the HIGH-1 fix), then a
+// parallel-path + net_set_prefer relief returns it to SERVED; the act3a gate fires deterministically
+// (which structurally FENCES act3b behind it); and restore-then-step == continuous-run for the new
+// congestion fold (chosenSatByContract / loadBySat — the MED desync fix).
+// ---------------------------------------------------------------------------
+describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle fires the gate deterministically", () => {
+  it("ESCALATION grew the loads + flipped the bandwidth axis (one at a time), and the corridor re-tamed", () => {
+    const r = replayTo(act3aLog(), MAX_TICK_ACT3A);
+    // Escalation engaged (act3a emitted it) and the corridor REGION-2 is on the board.
+    expect(r.session.escalationEnabled).toBe(true);
+    const r2 = r.session.contracts.find((x) => x.id === ACT3A_CONTRACT_ID)!;
+    expect(r2).toBeDefined();
+    // The §4.4 axes arrived ONE AT A TIME: latency by the authored corridor, bandwidth by the
+    // escalation law crossing the threshold (NOT at emit — escalation GREW the load past 1.0 first).
+    expect(r2.activeAxes.has("latency")).toBe(true);
+    expect(r2.activeAxes.has("bandwidth")).toBe(true);
+    expect(r2.offeredLoad).toBeGreaterThan(1.0); // demand grew where served well (deterministic).
+    expect(r2.servedSecondsAccum).toBeGreaterThan(0); // the corridor WAS served (latency met, LEO).
+    // THE 3a GATE FIRED: a previously-served contract dipped near-breach under risen load, then
+    // returned to fully SERVED ⇒ the cursor advanced PAST act3a (the structural fence for act3b).
+    expect(r.session.escalationReTamed()).toBe(true);
+    expect(r.session.cursor).toBeGreaterThanOrEqual(3);
+    expect(r.session.snapshot().gateTicks.length).toBeGreaterThanOrEqual(3);
+    // The re-tame is a LATCH (a previously-served contract dipped near-breach then returned to
+    // fully served): the act3a gate tick is recorded AFTER the relief (the player re-engineered).
+    const act3aGateTick = r.session.snapshot().gateTicks[2];
+    expect(act3aGateTick).toBeGreaterThan(TICK_RELIEF); // the gate fired only after the relief.
+    // The relief SPLIT the shared sat: the corridor REGION-2's load alone sits under capacity (the
+    // re-tamed steady state — measured off its currently-chosen sat, which carries only its load).
+    const r2Sat = r.session.lastSolveFor(r2.id)?.path?.[1];
+    if (r2Sat !== undefined) expect(r.session.loadOnSat(r2Sat)).toBeLessThan(1.5); // capacity.
+  }, 60000);
+
+  it("the act3a gate does NOT fire before the re-tame (state-gated): stopping at the relief tick − 1 leaves the cursor on act3a", () => {
+    const r = replayTo(act3aLog(), TICK_RELIEF - 1);
+    expect(r.session.cursor).toBe(2); // still on act3a — the cycle is not yet demonstrated.
+    expect(r.session.escalationReTamed()).toBe(false);
+    // The dip is REAL: the corridor accrued breach past the near-breach threshold under congestion
+    // (binary bandwidth bite — proving breachSecondsAccum actually accrues, the HIGH-1 fix).
+    const r2 = r.session.contracts.find((x) => x.id === ACT3A_CONTRACT_ID)!;
+    expect(r2.activeAxes.has("bandwidth")).toBe(true);
+    expect(r2.breachSecondsAccum).toBeGreaterThan(0);
+  }, 60000);
+
+  it("RESTORE-REPLAY for the congestion fold: restore-then-step == continuous-run (loadBySat re-derived from the folded chosen-sat map — the MED desync fix)", () => {
+    // Run continuously to a mid-act3a tick (escalation on, congestion live), snapshot, restore into
+    // a fresh session, then step BOTH the original and the restored copy forward the SAME ticks with
+    // the SAME post-step actions — the two must stay bit-identical (the congestion state is a pure
+    // function of the FOLDED chosen-sat map + offeredLoad, so the restore reproduces a continuous run).
+    const eph = Ephemeris.build({});
+    const sg = act3aLog();
+    const byTick = new Map<number, SimAction[]>();
+    for (const a of sg.actions) {
+      if (isNetKind(a.kind)) {
+        const list = byTick.get(a.atTick) ?? [];
+        list.push(a);
+        byTick.set(a.atTick, list);
+      }
+    }
+    const SPLIT = 26000; // mid-act3a: escalation on, REGION-2 routing live (just past the relief).
+    const cont = new NetSession();
+    for (let tick = 0; tick <= SPLIT; tick++) {
+      cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
+      const list = byTick.get(tick);
+      if (list !== undefined) for (const a of list) applyNetAction(eph, cont, a, GOLDEN_DT);
+    }
+    // Snapshot at SPLIT, restore into a fresh session (the congestion fold + chosen-sat map carry).
+    const snap = cont.snapshot();
+    const restored = new NetSession();
+    restored.restore(snap);
+    expect(restored.snapshot()).toEqual(snap);
+    // Step BOTH forward the same window; they must stay bit-identical (the loadBySat re-derivation
+    // off folded state reproduces the one-tick-lag aggregate exactly across the restore boundary).
+    for (let tick = SPLIT + 1; tick <= MAX_TICK_ACT3A; tick++) {
+      cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
+      restored.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
+      const list = byTick.get(tick);
+      if (list !== undefined) {
+        for (const a of list) applyNetAction(eph, cont, a, GOLDEN_DT);
+        for (const a of list) applyNetAction(eph, restored, a, GOLDEN_DT);
+      }
+    }
+    expect(restored.snapshot()).toEqual(cont.snapshot());
+    expect(netStateHash(restored)).toBe(netStateHash(cont));
+    // And the continuous run reproduces the pinned golden (the restore path agrees with the pin).
+    expect(netStateHash(cont)).toBe(NET_REPLAY_GOLDEN);
+  }, 60000);
 });

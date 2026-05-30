@@ -142,6 +142,62 @@ export const NET_DEFAULT_SLA_BANDWIDTH = 1.0;
 /** The neutral prefer weights (latency-biased, bandwidth secondary, stability dormant). */
 export const NET_DEFAULT_PREFER: PreferWeights = { lat: 1.0, bw: 0.0, stab: 0.0 };
 
+// --- THE ESCALATION LAW (Act 3a / C1b — "your success congests it") ----------------
+//
+// `offeredLoad` GROWS on a contract being served well, run in the session step ONLY when
+// escalation is gated ON (the act3a beat enables it; present-from-day-one otherwise dormant).
+// "Demand grows where you serve well" (onboarding line 99). The growth is the EXACT CLOSED-FORM
+// LOGISTIC FLOW the M2 dynamic-demand engine uses (coverage/dynamic-demand.ts) so it is
+// DT-INVARIANT (the SD-20/SD-34 contract): the analytic flow is a semigroup, so a fine (dt=1/60)
+// and a coarse (dt=60) caller integrating to the same sim-time yield the same offeredLoad, and
+// composing two steps of dt equals one step of 2·dt — never an O(dt)-error Euler bump.
+
+/** The served-fraction threshold above which a contract's demand ESCALATES: a contract served
+ * WELL grows; one that is breaching/under-served does not. = 1.0 (fully served the prior step) —
+ * mirrors the M2 engine's "served at/above the quality bar grows" rule (binary q here). */
+export const ESCALATION_SERVE_THRESHOLD = 1.0;
+
+/** Logistic GROWTH rate (per sim-second) of a fully-served contract's offeredLoad at the
+ * low-load end (where the (1 − load/ceiling) brake ≈ 1). Tuned for the toy ~4-min day so a
+ * well-served corridor's load climbs from 1.0 across the bandwidth-axis threshold (1.2) within
+ * ~45 sim-seconds of served time — enough that two contracts sharing one sat tip past
+ * NET_LINK_CAPACITY_UNITS within a short sitting — without exploding. DT-invariant rate.
+ * Placeholder, on the M2 GROWTH_RATE_PER_S scale but faster for the toy day. */
+export const ESCALATION_RATE_PER_S = 2.0e-2;
+
+/** The logistic CARRYING CAPACITY (the ceiling the offeredLoad asymptotes to under sustained
+ * service). Chosen BELOW NET_LINK_CAPACITY_UNITS (1.5) so a single well-served contract ALONE on
+ * a sat never self-congests (its grown load 1.0 → 1.4 stays under capacity even once its bandwidth
+ * axis is on) — but TWO well-served contracts SHARING one sat sum to ~2.8, well over capacity (the
+ * strain the act3a beat needs). This is the "your own success congests it" pivot: relief is
+ * SPLITTING the shared sat (a parallel path / a prefer override), not just adding headroom on one.
+ * Placeholder on the `offeredLoad` scale. */
+export const ESCALATION_LOAD_CEILING = 1.4;
+
+/** The offeredLoad a served contract crosses to make its BANDWIDTH axis bite (the §4.4
+ * escalation-triggered mask flip): once a served contract's grown load reaches this, the act3a
+ * escalation step adds "bandwidth" to its activeAxes (one-line mask add, no struct reshape). Set
+ * ABOVE the initial contract load (1.0) so the axis is genuinely ESCALATION-triggered (it flips
+ * only after demand has grown — NOT at t=0), and BELOW the ceiling (1.4) so escalation actually
+ * reaches it. Placeholder on the `offeredLoad` scale. */
+export const ESCALATION_BANDWIDTH_AXIS_THRESHOLD = 1.2;
+
+/**
+ * Advance a contract's `offeredLoad` by the EXACT CLOSED-FORM LOGISTIC FLOW toward
+ * {@link ESCALATION_LOAD_CEILING} over `dtSeconds` of served time (the M2 dynamic-demand
+ * semigroup): `load(t+dt) = cap / (1 + ((cap − load)/load)·exp(−ESCALATION_RATE_PER_S·dt))`.
+ * Returns the grown load. Pure; DT-invariant; bounded above by the ceiling (it can never
+ * exceed it, so a long run never explodes — a single ceiling-clamp via the asymptote, mirroring
+ * commit 2fc0500's shock-compounding fence). A non-positive load or dt is returned unchanged.
+ */
+export function escalateLoad(offeredLoad: number, dtSeconds: number): number {
+  const cap = ESCALATION_LOAD_CEILING;
+  if (dtSeconds <= 0 || offeredLoad <= 0 || cap <= 0) return offeredLoad;
+  if (offeredLoad >= cap) return cap; // already at/above the ceiling — clamp (no overshoot).
+  const k = Math.exp(-ESCALATION_RATE_PER_S * dtSeconds);
+  return cap / (1 + ((cap - offeredLoad) / offeredLoad) * k);
+}
+
 /**
  * Build an OFFERED contract over a region. Act 1 offers a connectivity-ONLY contract
  * (activeAxes = {connectivity}); the avail/latency/bandwidth fields are present but the
