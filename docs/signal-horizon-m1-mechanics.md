@@ -1,11 +1,11 @@
 # SIGNAL HORIZON — M1 Mechanics Specification
-### v0.1 · the concrete spec · companion to GDD v0.8 + implementation-plan v0.2.1
+### v0.2 · the concrete spec · companion to GDD v0.8 + implementation-plan v0.2.1
 
 > **What this document is, and why it exists.** The GDD is the *feelings-and-philosophy* doc — it says what the game should *feel* like and *why*. That was correct for deciding what game this is, but it is the reason the first prototype had a beautiful orrery and **no gameplay**: we handed an agent feelings without mechanics. This document is the opposite register. It is **concrete, numeric, and implementable** — data structures, verbs with costs, tick order, fault rules, a minute-by-minute scenario. Where a number is a balance knob we haven't tuned, it is written as a **`TUNABLE`** with a starting guess, not omitted. An implementer (human or agent) should be able to build M1 from this without making a design decision.
 >
 > **Scope: M1 only — the fun-gate.** Not the coverage grid (M2), not the leverage curve, not the full information economy. M1 is the *connectivity-construction game* that has to pass the kill-gate (GDD §9, plan §6). It is an **Earth-orbit satellite-ISP puzzle** that *culminates* in the first taste of Mars / light-delay / freshness — and then deliberately stops (Act 4 is a fenced teaser, not a system to build).
 >
-> **One section is deliberately unfinished:** the routing solver & cost metric (§7) is marked `TO SETTLE` — it's the one remaining design atom and will be specified next. Everything else is locked.
+> **The spec is now complete across all atoms.** The routing solver & cost metric (§7) — the last open design atom — is fully specified as of v0.2. What remains open are `TUNABLE` numbers and `PLAYTEST KNOB`s (§10), not design decisions.
 
 ---
 
@@ -179,15 +179,82 @@ Decay is **real, altitude-driven, and an altitude *decision*, not per-tick upkee
 
 ---
 
-## 7. Routing solver & cost metric — `TO SETTLE` (the one remaining design atom)
+## 7. Routing solver & cost metric
 
-This is the last unspecified atom and will be drafted next. Locked so far (from design discussion):
-- **A deterministic solver, NOT a real protocol engine.** It *borrows the mental model* of OSPF/BGP (link-state cost metrics, shortest-path, policy/preferences) so the player's knowledge is transferable — but underneath it is a clean, deterministic shortest-path-over-time-varying-graph solver (Dijkstra/A* on the current line-of-sight adjacency, re-solved on **topology-change events**, not every tick). **Determinism is preserved** (GDD §4.1/§6 golden-master) — no real-daemon timers, concurrency, flap-damping, or real-world calibration. Reasons a real FRR engine is rejected: it destroys determinism, it's tuned to *avoid* the constant reconvergence our orbital gameplay *requires*, and it's fidelity the player can't perceive (Pillar 2).
-- **OSPF-interior early, BGP-peering later.** Early game = OSPF-flavored cost-metric tuning over *your own* constellation (internal, geometric, latency-driven). BGP-flavored policy (peering, trust, "don't route gov traffic over rival X," economics) enters with the **peering layer — later/M2+**, mirroring reality (OSPF = your interior, BGP = between autonomous systems).
-- **Floor / ceiling / power-user, three tiers of control:** (floor) auto-solve, player just watches; (ceiling) tune cost metrics + policy via sliders + a visual constructor — *Cisco Packet Tracer as the reference for fun*; (power-user) type **FRR-style config into the terminal** — authored to map onto *our* solver's parameters, not real FRR.
-- **The solver diagnoses its own shortfall.** When it can't meet a contract it must surface the **binding constraint and the kind of fix** ("latency floor 340ms via 4 LEO hops; a GEO relay at [point] → 180ms but you have none"; "availability breaks 8min/orbit; need ≥1 more sat in this plane"). The solver doesn't just route — it points at the gap. This *is* the trace/diagnostic view, and it's an **M1 necessity** (without it the tune-by-exception verb is unplayable and "solver says no" is opaque).
+The relay network is a **routing problem over a continuously-changing graph**: satellites are nodes, line-of-sight links are edges, and the adjacency matrix *breathes* as orbital geometry moves links in and out of view. The solver finds paths through that graph; the player shapes the graph (via constellation design) and biases the solver (via cost tuning). This section specifies the solver, its cost model, the three control tiers, and the **capability arc** the routing layer grows along (most of which is post-M1, recorded here so it isn't lost).
 
-**Still to decide (the §7 draft):** what a link's cost is *derived from* (raw latency? player-set weight? inverse bandwidth? a blend?); what the solver optimizes by default (lowest-latency path that meets SLA? cheapest? most-reliable?); what the **first** thing the player gets to tune is (per-link weight? per-contract priority? a global "prefer latency vs. prefer reliability" slider?); and how the visual constructor + slider UX maps to the terminal config.
+### 7.1 Architecture — borrow the concepts, not the engine (LOCKED)
+A **clean deterministic shortest-path-over-time-varying-graph solver** (Dijkstra/A\* over the current line-of-sight adjacency), re-solved on **topology-change events** (a link enters/leaves view, a fault, a demand change), **not** every tick. It *exposes the mental model* of OSPF/BGP — link-state cost metrics, shortest-path, policy/preferences — so the player's knowledge is **real and transferable** (GDD §3a: the routing concepts are true about real networks). But underneath it is **not a real routing daemon.**
+
+**Why a real FRR/BGP engine is rejected** (this was discussed at length — recording the reasoning so it isn't relitigated):
+- **Determinism.** A real daemon is concurrent, timer-driven, nondeterministic in convergence ordering — it would destroy the golden-master/replay property the whole architecture rests on (GDD §4.1/§6).
+- **Real protocols are tuned for the opposite problem.** BGP is built to *avoid* reconverging (flap damping, hold timers) because in the terrestrial internet, flapping is bad. But our *entire gameplay* is constant topology change as things orbit — links are *supposed* to come and go. A real engine would either flap-damp itself useless or thrash.
+- **It's fidelity the player can't perceive** (Pillar 2). The player experiences *paths forming, holding, and re-routing* — not "real BGP." We deliver that experience with a purpose-built deterministic solver that borrows the concepts, without inheriting a daemon's timers, concurrency, and real-world calibration.
+
+### 7.2 Link cost — a physics-computed blend, weighted by traffic class (LOCKED)
+The orbital-specific insight: in textbook OSPF, link cost is static (admin-set, often inverse-bandwidth). **Our links are not static — their properties change continuously with geometry** (distance drives latency *and* signal margin; a link cheap now is gone in ten minutes as sats separate). And different **contract classes care about different link properties** — so cost is not one fixed formula. It is a **blend of physics-computed terms, with weights selected by what the path is carrying:**
+
+```
+link_cost(link, traffic_class) =
+      w_lat(class)   · latency_term(link)        // ∝ distance / hop count        (instantaneous)
+    + w_bw(class)    · congestion_term(link)     // ∝ 1 / available bandwidth     (instantaneous)
+    + w_stab(class)  · instability_term(link)    // ∝ 1 / remaining-in-view-time  (REQUIRES PREDICTION — see 7.5)
+```
+- The **`*_term` functions are physics** — computed honestly from geometry and current load. **Not tunable; they are truth.**
+- The **`w_*(class)` weights are the design surface** — the mixing ratio is the interesting part, and it is what makes demand-shape produce topology-shape automatically:
+  - **latency-critical** contract → high `w_lat` → routes the short way (rewards the LEO-mesh / short-hop topology).
+  - **bandwidth/trunk** contract → high `w_bw` → routes the fat way (rewards the backbone-spine / aggregation topology).
+  - **availability/coverage** contract → high `w_stab` → routes over links that *stay up* (rewards regular, stable constellation geometry — the Iridium lesson).
+
+This is real **QoS-class / traffic-engineering routing** (different traffic classes get different path selection) — transferable knowledge, and it is *the mechanism by which the two player archetypes coexist*: the same solver, same constellation, routes a latency contract and a trunk contract **differently over the same physical links**, because their weights differ. (This is why heterogeneous demand — §4.4, the contract generator — is what creates routing agency: uniform demand collapses routing into "one boring answer," shaped demand makes it a real allocation problem.)
+
+> **`TUNABLE`:** the default `w_*` per contract class, and the exact form of each `*_term`. **Locked:** cost is a physics-blend of latency + congestion + instability, the weights are per-traffic-class (set by demand) and player-overridable (the ceiling, §7.3).
+
+### 7.3 Three control tiers (the floor/ceiling/power-user pattern — LOCKED)
+The same cost model, exposed at three depths:
+- **Floor — auto-solve.** The player does nothing. Each contract's traffic class carries sensible default weights; the solver routes; paths form. The player *watches* latency contracts take short paths and trunk contracts take fat paths. It works without intervention. *(The whole early game is playable at this tier.)*
+- **Ceiling — sliders + visual constructor (the Cisco Packet Tracer layer, the reference for the fun).** The player **overrides the weights.** The first and most legible knob is a **per-contract "prefer latency ↔ bandwidth ↔ stability" control** — it directly expresses intent and visibly changes the path. (Example: a contract is met at 200ms, but the player wants *lowest possible* latency → crank `w_lat` → the solver re-solves and picks an even shorter path, perhaps the LEO route over the GEO one — *this is the GEO-fed-by-LEO lowest-latency scenario from design discussion*.) The visual constructor lets the player *see* the graph and the chosen path and drag priorities on it.
+- **Power-user — terminal config (FRR-style).** The same weights plus per-link cost overrides and policy, expressed as text that *maps onto our solver's parameters* (NOT real FRR syntax): e.g. `set latency-weight 100 on contract-7`. Same machine, text interface, for the player who wants it.
+
+> **The first thing the player tunes is a per-contract weight** (prefer-latency/bandwidth/stability). That is the answer to the long-open sub-question — it's the single most legible knob, it expresses intent directly, and it visibly moves the path.
+
+### 7.4 The solver diagnoses its own shortfall (M1 NECESSITY — LOCKED)
+When the solver **can't** meet a contract, it must surface the **binding constraint and the kind of fix** — not just "no path":
+- *"latency floor is 340ms via 4 LEO hops; a GEO relay at [point] would cut it to 180ms, but you have none there."*
+- *"availability breaks 8 min/orbit: no sat covers region X in this window; you need ≥1 more sat in this plane."*
+- *"bandwidth saturated: this trunk link is at 100% from 3 shared contracts; add a parallel path or a higher-bandwidth antenna."*
+
+The solver doesn't just route — **it points at the gap and the kind of hardware/positioning that closes it.** This converts "solver says no" into "I launch *that*," and it *is* the trace/diagnostic view. **It is an M1 necessity** (without it the tune-by-exception verb is unplayable and a failed solve is opaque). The same view shows fault state (§5.3) — one legibility system, multiple jobs.
+
+### 7.5 The capability arc — reactive now, predictive (discovered) later (M1 = reactive + seeds)
+
+This is the routing layer's progression, and it's the first concrete instance of GDD §4.11's "capability *discovered through operation*, not purchased from a menu." **Most of it is post-M1**; M1 builds only the reactive baseline and plants the seeds. Recorded in full so the M1 seeds are planted knowing where they lead.
+
+**The reactive baseline (M1).** Cost uses **latency + congestion only** (both instantaneous; `w_stab = 0`). The solver routes for right-now and **reconverges when a link breaks**. Consequence: when a LEO link sets, the path drops, the solver re-routes, and there's a **brief outage** — survivable, masked by redundancy, but real. The player initially experiences these as noise / bad luck.
+
+**The seed M1 must plant (REQUIRED in M1 even though prediction isn't):** the **trace/diagnostic view stamps every link loss with its geometric cause and time** — `link SAT-7↔SAT-12 lost: SAT-12 set below horizon at 14:32`. A *time*, a *cause*: geometry, not gremlins. M1 routing is reactive and the outages are real, but **the predictability is made visible from the first version** — so the later discovery has soil. *(Build this in M1. It is cheap — the sim already knows the geometry — and it is the prerequisite for the post-gate a-ha.)*
+
+**Discovery — the predictive-routing a-ha (POST-M1).** The capability is **not** a tech-tree node. It is *discovered* via the diagnostic view, as the answer to a problem the player is actively diagnosing:
+1. The player suffers repeated reactive outages on a coverage contract (a link sets every orbit).
+2. Investigating the breach in the trace, they see it stamped with a clean *periodic* time — and the orrery shows the same sat setting at the same orbital point, again and again.
+3. The pattern becomes unignorable: **"this isn't random — it's clockwork. It's *predictable.*"** (Ideally the player sees this before the game says anything.) The instant they think it, the next thought is automatic: *"if I know it's coming, why is my network waiting for it to happen?"*
+4. **The tool surfaces exactly where the player is already looking** — the trace view shows a *forecast* ("next loss of this link: 14:32, in 6m") and offers *"route around it ahead of time."* Not bought from a menu; handed to them where their hand already was, framed as the answer to the question they just formed. The payoff: enable it, watch a path **re-route 30s before the link sets, zero outage.**
+
+This is the **general capability-discovery template** for the whole §4.11 leverage curve, worth stating once: **operate → hit a wall → investigate the wall in a diagnostic view → recognize the pattern → the tool that scales past the wall surfaces there, as the answer to the question you just asked.** Predictive routing is the first instance. *(Honest caveat: spontaneous discovery can't be guaranteed; for players who don't connect the dots, the trace-view forecast is doing more of the work — nudged discovery. The framing must look like "information that was always there," a forecast born of knowable geometry, not an achievement-unlock popup. It should feel discovered even when surfaced.)*
+
+**The deeper a-ha — predictive is NOT a strict upgrade; it's an efficiency-vs-resilience axis (POST-M1, the permanent strategic tension).** Turning up the predictive/stability optimization buys **efficiency** (tight schedules, pre-staged paths, no outages at scheduled link-sets) at the cost of **fragility to perturbation** — because optimized, interdependent paths *cascade* when something unscheduled hits them. *(The OpenTTD-timetable lesson: a timetabled line is efficient until one late train cascades downstream through the whole schedule. The Deutsche-Bahn lesson: same thing, real and painful.)* This couples routing to the **fault system (§5)**:
+- The **perturbation** that breaks an over-optimized predictive schedule is a **fault** — and fault rate is *player-influenced* (overclocking / cheap buses / low orbits, §5.2).
+- So **the fault rate determines which routing philosophy is wiser**, and neither dominates:
+  - **premium-and-sparse + predictive:** low fault rate → safe to run tight predictive schedules → efficient and clean, *but* a rare fault hits the optimized schedule and browns out a region in a cascade (low probability, high blast radius).
+  - **overclock-and-mesh + reactive:** high fault rate → predictive schedules would cascade constantly → run reactive with redundant paths → absorb the churn, contained failures, less efficient but **anti-fragile** (high perturbation, low blast radius per event).
+
+These are the same two archetypes from §5.2 — now revealed as two *coherent philosophies about efficiency vs. resilience* threading through **hardware choice → fault rate → routing strategy → topology** together. This is real infrastructure-engineering truth (tight optimization vs. slack/resilience) — transferable knowledge (§3a) — and it's the routing layer's deepest mastery. The second discovery beat is the player learning, the painful DB way, that *over-optimization has a fragility cost and slack has value.*
+
+> **`M1 scope for §7 (LOCKED):`** reactive solver (latency + congestion, `w_stab = 0`); the cost-blend structure and per-contract weight control present but `w_stab` dormant; the three control tiers (auto / sliders+constructor / terminal) present at least at floor + basic ceiling; the self-diagnosing trace view present (an M1 necessity); and the **predictability seed planted** (trace stamps link losses with geometric cause + time). **Deferred to M2+ (recorded above so it isn't lost):** the predictive/stability term (`w_stab > 0`), predictive routing as a *discovered* capability, the efficiency-vs-resilience/fragility-cascade tension, the routing↔fault coupling, BGP-style peering/policy across other operators, and the full visual-constructor depth.
+
+### 7.6 OSPF-interior now, BGP-peering later (LOCKED — the routing complexity ramp)
+- **Early/M1 = OSPF-flavored:** link-state cost-metric tuning over *your own* constellation. Internal, geometric, latency/stability-driven. (Everything in §7.2–7.5 above.)
+- **Later/M2+ = BGP-flavored:** policy and preferences across *other operators'* networks — peering, trust, "don't route my gov-contract traffic over rival X," inter-operator economics. Mirrors reality (OSPF = your interior IGP; BGP = between autonomous systems). This is where routing meets the competitive/economic layer, and it pairs with the rivals/peering systems (GDD §3, §4.3) — **all deferred, recorded here so the ramp is explicit.**
 
 ---
 
@@ -236,7 +303,9 @@ Run ≥5 testers cold. The old PASS (unprompted routing/constellation tuning + b
 
 ## 10. Open decisions (tracked)
 
-- **§7 routing solver** — the one unspecified atom (cost derivation, default optimization target, first tunable, constructor↔terminal-config UX). Draft next.
+- **§7 routing solver — RESOLVED (v0.2).** Cost = physics-blend (latency + congestion + instability) weighted per traffic-class; first tunable = per-contract prefer-latency/bandwidth/stability weight; three control tiers; self-diagnosing trace view; reactive-now + predictive-discovered-later (efficiency-vs-resilience axis coupled to faults). Remaining sub-details below are `PLAYTEST KNOB`/`TUNABLE`, not open *design*:
+  - Default `w_*` weights per contract class, and the exact form of each `*_term`. `TUNABLE`.
+  - The visual-constructor UX depth (how much graph-editing the ceiling exposes in M1 vs. M2). Lean: minimal in M1 (sliders + see-the-path), full constructor M2.
 - **Degree-of-assist on the planner / constellation phasing** (§3.3) — how viable-but-imperfect the suggestion is. `PLAYTEST KNOB`.
 - **Fault timing & rates** (§5) — when faults first appear in the session, causal multipliers, the rare-random floor. `PLAYTEST KNOB`.
 - **All `TUNABLE` numbers** — bus tiers, antenna characteristics, costs, risk %, SLA thresholds, oversubscription variance. To be set in playtest, not at spec time.
@@ -244,5 +313,5 @@ Run ≥5 testers cold. The old PASS (unprompted routing/constellation tuning + b
 
 ---
 
-*v0.1 of the concrete spec. The register here is deliberately the opposite of the GDD: numbers, structures, fences. Acts 1–3 are the buildable M1 (the Earth connectivity game); Act 4 is a fenced concepts-teaser that hooks the campaign; §7 (the routing solver) is the one atom still to settle and is drafted next. Everything marked `TUNABLE`/`PLAYTEST KNOB` is a number we set by playing, not by guessing — but the mechanics around them are locked. Build M1 from this; do not build the fenced systems (§8) from this.*
+*v0.2 of the concrete spec. The register here is deliberately the opposite of the GDD: numbers, structures, fences. Acts 1–3 are the buildable M1 (the Earth connectivity game); Act 4 is a fenced concepts-teaser that hooks the campaign. **§7 (the routing solver) is now complete** — the last design atom is settled: a deterministic concept-borrowing solver, a physics-blend cost weighted per traffic-class, the first tunable being a per-contract prefer-latency/bandwidth/stability weight, three control tiers, a self-diagnosing trace view, and a reactive-now/predictive-discovered-later capability arc that turns out to be an efficiency-vs-resilience axis coupled to the fault system. Everything marked `TUNABLE`/`PLAYTEST KNOB` is a number we set by playing, not by guessing — but the mechanics around them are locked. Build M1 from this; do not build the fenced systems (§8) from this. The M1 ticket list in implementation-plan v0.2.1 should now be re-passed to absorb this spec's four-act hour structure, the oversubscription-as-core-tension framing, and the §7 reactive-solver-plus-predictability-seed scope.*
 
