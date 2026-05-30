@@ -94,7 +94,7 @@ export class StatusStrip {
     // --- key-hint legend ---
     const keys = document.createElement("div");
     keys.className = "cell keys";
-    appendKeys(keys, "1-5");
+    appendKeys(keys, "1-3");
     keys.append(" presets ");
     appendKeys(keys, "0");
     keys.append(" reset ");

@@ -113,8 +113,81 @@ body {
   overflow: hidden;
   /* hard edges only — no radius, no shadow, no gradient */
 }
+/* The FOCUSED tile — the window-summon rail's target. A cyan border + an inverted-ish
+   titlebar tint so the focused tile reads at a glance (which tile a rail click lands in). */
 .panel.focused { border-color: var(--cyan); }
+.panel.focused > .panel-titlebar { border-bottom-color: var(--cyan); }
+.panel.focused > .panel-titlebar .title { color: var(--cyan); }
 .panel.dragging { opacity: 0.45; z-index: 50; }
+
+/* ---- the window-summon rail (right edge): summon a panel into the focused tile --- */
+/* Docked over the RIGHT edge of the WM canvas, above the tiles (z over panels/gutters).
+   §8 1-bit chrome; one button per available panel; ACTIVE state = the panel is visible. */
+.window-rail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  width: 34px;
+  border-left: 1px solid var(--line);
+  background: var(--bg-2);
+  background-image: var(--dither-dense);
+  background-repeat: repeat;
+}
+.window-rail:hover { width: 132px; } /* hover-expand to read the labels, stays compact at rest */
+.window-rail .rail-cap {
+  flex: 0 0 auto;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--fg-dim);
+  text-align: center;
+  padding: 2px 0 4px;
+  border-bottom: 1px solid var(--line-dim);
+  margin-bottom: 2px;
+}
+.window-rail .rail-btn {
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 1px solid var(--line-dim);
+  padding: 4px 5px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  text-transform: uppercase;
+}
+.window-rail .rail-btn .rail-glyph { flex: 0 0 auto; width: 0.9em; text-align: center; }
+.window-rail .rail-btn .rail-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  opacity: 0; /* hidden in the collapsed rail; appears on hover-expand */
+  transition: none;
+}
+.window-rail:hover .rail-btn .rail-label { opacity: 1; }
+.window-rail .rail-btn:hover { color: var(--fg); border-color: var(--line); }
+/* ACTIVE: this panel is currently visible somewhere in the grid (lit cyan, the §8
+   signal hue). The glyph stays as a redundant shape channel (filled vs hollow). */
+.window-rail .rail-btn.on { color: var(--cyan); border-color: var(--line-dim); }
+.window-rail .rail-btn.on .rail-glyph::before { content: ""; }
+.window-rail .rail-btn:not(.on) .rail-glyph { color: var(--grey); }
+/* FOCUS: this visible panel occupies the FOCUSED tile (a rail click lands here). */
+.window-rail .rail-btn.focus {
+  color: var(--bg);
+  background: var(--cyan);
+  border-color: var(--cyan);
+  font-weight: 700;
+}
 
 .panel-titlebar {
   height: var(--titlebar-h);
@@ -212,6 +285,47 @@ body {
 .orrery-overlay .br { bottom: 0; right: 0; text-align: right; }
 .orrery-overlay b { color: var(--fg); font-weight: 700; }
 .orrery-overlay .k { color: var(--cyan); }
+
+/* ---- on-canvas camera-preset buttons (§8 1-bit chrome, clickable) -------- */
+/* Compact, edge-docked button group bottom-CENTRE of the orrery; clicks the same
+   setPreset path the E/C/O/S/T hotkeys use. pointer-events:auto so it is clickable
+   (the overlay itself is pointer-events:none); the bar swallows pointer events so a
+   click never reaches the canvas orbit/click-to-focus raycast underneath. */
+.orrery-overlay .cam-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  pointer-events: auto;
+  border: 1px solid var(--line-dim);
+  background: rgba(11, 11, 18, 0.7);
+  background-image: var(--dither-sparse);
+  background-repeat: repeat;
+}
+.orrery-overlay .cam-btn {
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--line-dim);
+  padding: 3px 7px;
+  cursor: pointer;
+  text-transform: uppercase;
+  /* hard edges only — 1-bit chrome */
+}
+.orrery-overlay .cam-btn:hover { color: var(--fg); border-color: var(--line); }
+/* ACTIVE camera: coloured for SIGNAL (the current framing), redundant with the
+   filled/inverted treatment so it reads colour-off too. */
+.orrery-overlay .cam-btn.active {
+  color: var(--bg);
+  background: var(--cyan);
+  border-color: var(--cyan);
+  font-weight: 700;
+}
 
 /* ---- glanceable readout (M1-10): the network's health at a glance --------- */
 .orrery-readout {

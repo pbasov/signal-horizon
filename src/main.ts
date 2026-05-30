@@ -2,7 +2,8 @@
  * Entry point — builds the chrome scaffold, wires the sim → view loop, and routes
  * keyboard control. Everything runs on SIM time from one SimClock.
  *
- * Keys:  1–7 WM preset (6 = PARSE · 7 = CONTRACTS) · 0 reset layout · E/C/O/S/T camera
+ * Keys:  1–3 WM preset (1 PLAY · 2 MAP · 3 REVIEW) · 0 reset layout · click a rail button
+ *        (right edge) to SUMMON any panel into the focused tile · E/C/O/S/T camera
  *        presets (E = EARTH near-body, the boot default) · click a body/asset to focus
  *        + select it · R reset camera · F cycle focus · Space pause · , / . time scale
  *        (boots at 1× — the PLAYER drives the acceleration, GDD §3/Risk-6) ·
@@ -61,6 +62,7 @@ import type { BuildRenderState } from "./orrery/orrery";
 import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
+import { WindowRail } from "./wm/window-rail";
 import { Orrery } from "./orrery/orrery";
 import { deriveReadout } from "./orrery/readout";
 import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audio/cue";
@@ -83,7 +85,7 @@ topbar.innerHTML =
   `<span class="brand">◆ SIGNAL HORIZON</span>` +
   `<span>· ts/three.js</span>` +
   `<span class="spacer"></span>` +
-  `<span class="hint">F11 fullscreen · drag title-bars to swap · drag gutters to resize</span>` +
+  `<span class="hint">F11 fullscreen · click the right rail to summon a panel · drag title-bars to swap · drag gutters to resize</span>` +
   `<span class="win-glyphs"><span>●</span><span>⛶</span><span>✕</span></span>`;
 
 const wmCanvas = document.createElement("div");
@@ -596,6 +598,18 @@ const registry = new Map<string, PanelHandle>([
 
 const shell = new Shell(wmCanvas, registry);
 
+// THE WINDOW-SUMMON RAIL — the right-edge vertical button rail that summons any panel
+// into the focused tile LIVE (the owner's core ask). Built once; it wires itself to
+// shell.onActivePanelsChange for its active-state repaint (event-driven, never per-frame).
+// On a summon that brings THE PARSE in, fold the run-so-far so the record is fresh.
+const windowRail = new WindowRail(shell, undefined, (host, changed) => {
+  if (host === "parse" && changed) refreshParse(true);
+});
+wmCanvas.appendChild(windowRail.element);
+// Reserve the collapsed rail's strip (34px, matches .window-rail width) so the tiles
+// never sit under it; the rail's hover-expand overlays transiently on top.
+shell.setReservedRight(34);
+
 // --- WM presets -------------------------------------------------------------
 const presets = PRESET_SPECS.map((spec) => ({ name: spec.name, grid: buildGrid(spec) }));
 let wmPresetName = presets[0].name;
@@ -604,10 +618,10 @@ function setWmPreset(i: number): void {
   if (i < 0 || i >= presets.length) return;
   wmPresetName = presets[i].name;
   shell.setPreset(presets[i].name, presets[i].grid);
-  // Opening THE PARSE view folds the run-so-far into a fresh summary — the §4.12
-  // reviewable-at-rest record. Force a refresh on entry so it always reflects the
-  // live log even if the run is paused (the per-frame caller is dirty-checked).
-  if (wmPresetName === "PARSE") refreshParse(true);
+  // REVIEW carries THE PARSE (the §4.12 reviewable-at-rest record). Force-fold the run
+  // summary on entry so it reflects the live log even on a paused run (the per-frame
+  // caller is dirty-checked). Summoning PARSE via the rail does the same (above).
+  if (wmPresetName === "REVIEW") refreshParse(true);
 }
 
 /**
@@ -640,7 +654,7 @@ function refreshParse(force = false): void {
 }
 
 status.setPresetTabs(presets.map((p) => p.name));
-setWmPreset(0); // OVERVIEW
+setWmPreset(0); // PLAY (the default working layout)
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
@@ -667,12 +681,15 @@ if (import.meta.env.DEV) {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   const k = e.key;
-  if (k >= "1" && k <= "7") setWmPreset(Number(k) - 1);
+  if (k >= "1" && k <= "3") setWmPreset(Number(k) - 1);
   else if (k === "0") shell.reset();
   else if (k === "g" || k === "G") {
-    // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record): open the PARSE preset,
-    // or return to OVERVIEW if it is already up. A free key beside the 1–6 presets.
-    setWmPreset(wmPresetName === "PARSE" ? 0 : presets.findIndex((p) => p.name === "PARSE"));
+    // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record). PARSE is no longer its own
+    // preset (the 7→3 cut); it is a panel summoned via the right rail. G is the keyboard
+    // parity for that: SUMMON it into the focused tile if it is off-screen, else jump to
+    // the REVIEW layout (its at-rest home). Summoning folds the run summary (rail hook).
+    if (shell.visibleHosts().includes("parse")) setWmPreset(presets.findIndex((p) => p.name === "REVIEW"));
+    else windowRail.summonParse();
   }
   // Camera presets, by name. EARTH (the near-body framing where sats visibly orbit) is
   // the boot default; E re-frames it. C/O/S/T keep their named presets (now shifted by
@@ -880,10 +897,10 @@ function frame(now: number): void {
   // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
   // the live build session each frame; the panel rebuilds its rows only on a change.
   contractsPanel.render(contractsRenderState());
-  // E10c — while THE PARSE view is up, keep the reviewable record live (a read-only
-  // re-fold of the truthful log; it never mutates sim state). Only when that preset
-  // is shown, so the per-frame full rebuild is paid for only when it is on screen.
-  if (wmPresetName === "PARSE") refreshParse();
+  // E10c — while THE PARSE panel is VISIBLE (the REVIEW preset, or summoned into any tile
+  // via the rail), keep the reviewable record live (a read-only re-fold of the truthful
+  // log; it never mutates sim state). Dirty-checked, so it costs nothing when not shown.
+  if (shell.visibleHosts().includes("parse")) refreshParse();
   // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
   orrery.setReadout(deriveReadout(fs));
   orrery.update(wallDt);

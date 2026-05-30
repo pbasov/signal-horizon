@@ -2,29 +2,29 @@
  * Preset layouts as DATA (not hardcoded layout logic) — mirrors the
  * presets-as-data principle (data/layouts/*.json in the Godot project). Each
  * preset is an authoring spec compiled into a ZoneGrid. Switching a preset is a
- * single keystroke that swaps the whole layout instantly.
+ * single keystroke (1–3) that swaps the whole layout instantly.
  *
- * OVERVIEW and OPS are the two designed presets the brief asks for. TRACK /
- * STREAM / SPLIT fill keys 3–5 to exercise data-driven instant switching and
- * the 3-column ceiling — recombinations of the same panels.
+ * THE 3 MAIN LAYOUTS (the owner's "too many tiling presets — main 3" cut). The
+ * earlier 7-preset set (OVERVIEW/OPS/TRACK/STREAM/SPLIT/PARSE/CONTRACTS) is RETIRED;
+ * no panel is lost, because the right-edge WINDOW-SUMMON RAIL now composes any panel
+ * into any tile LIVE (Shell.summonPanel). The 3 presets are just STARTING POINTS the
+ * player rearranges by clicking; the rail makes the old recombinations on-demand.
  *
- * OPS (key 2) is the finance-forward preset: it carries the FINANCE dashboard
- * (NETWORK·FINANCE) in its right column alongside the orrery + telemetry, so the
- * solvency loop is glanceable while you watch the link. Each grid keeps the
- * DD-10 invariant: ≤3 columns × ≤3 rows per column, every host UNIQUE in the grid.
+ *   1 · PLAY    — the working screen: the orrery large on the left, with the two
+ *                 live business panels (FINANCE + CONTRACTS) stacked on the right.
+ *                 Watch the link + build, see the € climb, take/decline offers — and
+ *                 swap any of those right tiles to SYSTEM.LOG / TELEMETRY / PARSE with
+ *                 one rail click. The default boot layout.
+ *   2 · MAP     — the MONUMENT: the orrery near-full-bleed (a single zone). Watch the
+ *                 physics, fly the camera, click bodies/assets, toggle the heatmap.
+ *                 Summon a side panel via the rail and the grid grows a second column.
+ *   3 · REVIEW  — at-rest analysis: THE PARSE wide on the left (study the run record),
+ *                 with SYSTEM.LOG + FINANCE beside it — the §4.12 reviewable-at-rest face.
  *
- * Panels (hosts) available in this spike: orrery, system-log, telemetry, finance,
- * parse (the §4.12 reviewable-at-rest record — GDD §5 view #9).
- *
- * PARSE (key 6) is the reviewable-at-rest preset: it puts THE PARSE panel in the
- * wide left column (study the post-run record) with the live log + finance beside
- * it, so the optimiser can open the legible record and grind the gap (§4.12 "slow-
- * loop friendly — reviewable at rest, not only glanceable in the heat of play").
- *
- * CONTRACTS (key 7) is the M2d build-the-monument earning preset (GDD §4.9 / §3): the
- * orrery (heatmap up → the coverage web you serve) in the wide left column, with the
- * CONTRACTS board (the offers + the served% + the earn) and FINANCE/the build wallet
- * beside it — so you watch the balance CLIMB as coverage serves the accepted contracts.
+ * Each grid keeps the DD-10 invariant: ≤3 columns × ≤3 rows per column, every host
+ * UNIQUE in the grid. Panels (hosts) available: orrery, system-log, telemetry, finance,
+ * parse (§4.12 reviewable record · GDD §5 view #9), contracts (the §4.9/§3 coverage-
+ * revenue board). The rail (src/wm/window-rail.ts) lists exactly this host set.
  */
 import type { ZoneGrid } from "./zonegrid";
 
@@ -44,98 +44,40 @@ export function buildGrid(spec: PresetSpec): ZoneGrid {
 
 export const PRESET_SPECS: PresetSpec[] = [
   {
-    name: "OVERVIEW",
+    // PLAY (key 1) — the working screen + the default boot layout. Orrery hero on the
+    // left; the live business loop (FINANCE over CONTRACTS) on the right. The rail swaps
+    // either right tile to LOG/TELEMETRY/PARSE on demand (the old OVERVIEW/OPS/CONTRACTS
+    // recombinations, now one click away).
+    name: "PLAY",
     columns: [
       { weight: 0.62, rows: [{ weight: 1, host: "orrery" }] },
       {
         weight: 0.38,
         rows: [
-          // Telemetry carries the E2 DEMAND group (SERVE/WAIT/CACHE) — give it
-          // enough height that the countdown + cache-freshness rows are visible
-          // without scrolling, while the log keeps the taller share. (DD-10:
-          // still ≤3 rows in the column.)
-          { weight: 1.5, host: "telemetry" },
-          { weight: 1.5, host: "system-log" },
+          { weight: 1.0, host: "finance" },
+          { weight: 1.4, host: "contracts" },
         ],
       },
     ],
   },
   {
-    name: "OPS",
-    columns: [
-      { weight: 0.58, rows: [{ weight: 1, host: "system-log" }] },
-      {
-        weight: 0.42,
-        rows: [
-          { weight: 1.4, host: "orrery" },
-          { weight: 1.0, host: "telemetry" },
-          { weight: 1.2, host: "finance" },
-        ],
-      },
-    ],
+    // MAP (key 2) — the MONUMENT, near-full-bleed. A single orrery zone: watch + fly +
+    // click + heatmap. Summoning any panel via the rail grows a second column beside it
+    // (the always-tiled invariant holds — no float, no occlusion).
+    name: "MAP",
+    columns: [{ weight: 1, rows: [{ weight: 1, host: "orrery" }] }],
   },
   {
-    name: "TRACK",
-    columns: [
-      { weight: 0.72, rows: [{ weight: 1, host: "orrery" }] },
-      {
-        weight: 0.28,
-        rows: [
-          { weight: 1.0, host: "telemetry" },
-          { weight: 1.4, host: "system-log" },
-        ],
-      },
-    ],
-  },
-  {
-    name: "STREAM",
-    columns: [
-      { weight: 0.34, rows: [{ weight: 1, host: "telemetry" }] },
-      {
-        weight: 0.66,
-        rows: [
-          { weight: 1.7, host: "orrery" },
-          { weight: 1.0, host: "system-log" },
-        ],
-      },
-    ],
-  },
-  {
-    name: "SPLIT",
-    columns: [
-      { weight: 0.42, rows: [{ weight: 1, host: "orrery" }] },
-      { weight: 0.3, rows: [{ weight: 1, host: "telemetry" }] },
-      { weight: 0.28, rows: [{ weight: 1, host: "system-log" }] },
-    ],
-  },
-  {
-    // PARSE (key 6) — the reviewable-at-rest legible record (§4.12 / §5 view #9).
-    // THE PARSE takes the wide left column to be studied; the live log + finance sit
-    // beside it so the same screen carries both faces of the record (live + at-rest).
-    name: "PARSE",
+    // REVIEW (key 3) — at-rest analysis (§4.12 / §5 view #9). THE PARSE takes the wide
+    // left column to be studied; the live log + finance sit beside it so the same screen
+    // carries both faces of the record (live + at-rest). Opening it folds the run summary.
+    name: "REVIEW",
     columns: [
       { weight: 0.6, rows: [{ weight: 1, host: "parse" }] },
       {
         weight: 0.4,
         rows: [
           { weight: 1.4, host: "system-log" },
-          { weight: 1.0, host: "finance" },
-        ],
-      },
-    ],
-  },
-  {
-    // CONTRACTS (key 7) — the M2d coverage-revenue preset. The orrery (toggle the
-    // heatmap with H to see the served web) takes the wide left column; the CONTRACTS
-    // board + FINANCE sit beside it so the offers, the served%, and the climbing
-    // balance are all on one screen (the §3 build → serve → REVENUE loop, made visible).
-    name: "CONTRACTS",
-    columns: [
-      { weight: 0.6, rows: [{ weight: 1, host: "orrery" }] },
-      {
-        weight: 0.4,
-        rows: [
-          { weight: 1.6, host: "contracts" },
           { weight: 1.0, host: "finance" },
         ],
       },

@@ -314,6 +314,10 @@ export class Orrery {
   private linkLine: THREE.LineSegments;
   private labels = new Map<string, HTMLElement>();
   private labelLayer: HTMLElement;
+  /** On-canvas camera-preset buttons (one per CAMERA_PRESET), keyed by preset index, so
+   * {@link paintCameraButtons} can light the active one. Built once; clicking calls the
+   * SAME setPreset path the E/C/O/S/T hotkeys use. */
+  private cameraButtons: HTMLButtonElement[] = [];
   /** Latest glanceable readout (M1-10), painted into the overlay each frame. */
   private readout: Readout | null = null;
   /** Cached readout sub-nodes (grabbed once) so paintReadout never queries DOM. */
@@ -410,6 +414,7 @@ export class Orrery {
     this.labelLayer.className = "orrery-overlay";
     this.host.appendChild(this.labelLayer);
     this.buildOverlayCorners();
+    this.buildCameraButtons(); // on-canvas clickable camera-preset buttons (§8 1-bit chrome)
     this.buildReadout(); // builds the block + caches its sub-nodes (no field needed)
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: false });
@@ -739,6 +744,48 @@ export class Orrery {
   }
 
   /**
+   * The ON-CANVAS CAMERA-PRESET BUTTONS (the owner's "camera presets need to be BUTTONS
+   * you can mouseclick inside the orrery, in addition to hotkeys"). A compact, edge-docked
+   * button group (§8 1-bit chrome) with one button per {@link CAMERA_PRESETS} entry —
+   * EARTH · CISLUNAR · ORBITS · SYSTEM · TOP-DOWN. Clicking a button calls the SAME
+   * {@link setPreset} path the E/C/O/S/T hotkeys use (the hotkeys stay), then repaints the
+   * active highlight. Built ONCE here (X-02; never per-frame); {@link paintCameraButtons}
+   * is the only per-change touch.
+   *
+   * The buttons live in the orrery overlay (pointer-events:auto on the bar) layered OVER
+   * the WebGL canvas. A button click lands on the bar, not the canvas, so it does NOT
+   * trigger the click-to-focus raycast; we also stopPropagation on the bar's pointer
+   * events as belt-and-suspenders so a press can never reach the canvas orbit/pick handler.
+   */
+  private buildCameraButtons(): void {
+    const bar = document.createElement("div");
+    bar.className = "cam-bar";
+    // Hit-test the buttons FIRST: swallow pointer events on the bar so a click here never
+    // starts a camera-orbit drag or a click-to-focus pick on the canvas underneath.
+    for (const ev of ["pointerdown", "pointerup", "wheel"] as const) {
+      bar.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    CAMERA_PRESETS.forEach((p, i) => {
+      const btn = document.createElement("button");
+      btn.className = "cam-btn";
+      btn.type = "button";
+      btn.textContent = p.name;
+      btn.title = `camera → ${p.name}`;
+      btn.addEventListener("click", () => this.setPreset(i)); // same path as the hotkey.
+      bar.appendChild(btn);
+      this.cameraButtons.push(btn);
+    });
+    this.labelLayer.appendChild(bar);
+    this.paintCameraButtons();
+  }
+
+  /** Light the active camera-preset button (cyan active-state, §8 coloured-for-signal).
+   * Called once at build + on every {@link setPreset} — event-driven, never per-frame. */
+  private paintCameraButtons(): void {
+    this.cameraButtons.forEach((btn, i) => btn.classList.toggle("active", i === this.activePreset));
+  }
+
+  /**
    * Build the glanceable readout (M1-10): a DOM block pinned over the orrery's
    * top-right, showing Mars-relay FRESHNESS, the fetch COUNTDOWN, a BLACKOUT
    * badge, and a conjunction-APPROACH gauge. DOM is built ONCE here; per-frame
@@ -830,6 +877,7 @@ export class Orrery {
     const p = CAMERA_PRESETS[i];
     this.focusId = p.focus;
     this.tgt = { az: p.az, el: p.el, dist: p.dist, fov: p.fov, logK: p.logK, logScale: p.logScale, orbitBandM: p.orbitBandM ?? 0 };
+    this.paintCameraButtons(); // keep the on-canvas active highlight in sync (click + hotkey).
   }
 
   resetCamera(): void {

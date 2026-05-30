@@ -17,6 +17,7 @@ import {
   cloneGrid,
   computeLayout,
   swap,
+  summonInto,
   setColumnSplit,
   setRowSplit,
 } from "./zonegrid";
@@ -50,11 +51,22 @@ export class Shell {
   private baseGrid: ZoneGrid;
   presetName = "";
   onLayoutChange?: () => void;
+  /** Fired whenever the SET of visible hosts changes (preset switch, swap, summon, reset)
+   * so the window-summon rail can repaint its active state. NOT per-frame — event-driven. */
+  onActivePanelsChange?: () => void;
+  /** The FOCUSED tile's host — the target the window-summon rail acts on (clicking a rail
+   * button summons into THIS tile). Set on a click into any tile (title bar or body); the
+   * panel shows the `.focused` chrome. Null until the first click / first relayout. */
+  focusedHost: string | null = null;
 
   private overlay: HTMLElement | null = null;
   private dividerEls: HTMLElement[] = [];
   private gestureActive = false;
   private onWindowResize = () => this.relayout();
+  /** Px reserved on the RIGHT edge of the canvas for the always-docked window-summon rail,
+   * so the tiles never sit under its collapsed strip. The rail's hover-expand overlays on
+   * top (transient). Set by main.ts after the rail is built; relayout() honours it. */
+  private reservedRightPx = 0;
 
   constructor(
     private canvas: HTMLElement,
@@ -77,13 +89,89 @@ export class Shell {
     this.baseGrid = cloneGrid(grid);
     this.grid = cloneGrid(grid);
     this.relayout();
+    this.ensureFocus();
     this.onLayoutChange?.();
+    this.onActivePanelsChange?.();
   }
 
   reset(): void {
     this.grid = cloneGrid(this.baseGrid);
     this.relayout();
+    this.ensureFocus();
     this.onLayoutChange?.();
+    this.onActivePanelsChange?.();
+  }
+
+  /** The hosts currently shown in the grid (one per zone's active tab). The rail reads
+   * this to light the visible panels. */
+  visibleHosts(): string[] {
+    const out: string[] = [];
+    for (const c of this.grid.columns) for (const r of c.rows) out.push(r.zone.hosts[r.zone.active]);
+    return out;
+  }
+
+  /**
+   * The window-summon rail's action (DD-10 §1/§3): bring `host` into the FOCUSED tile
+   * LIVE. If the panel is ALREADY visible we just move focus to it (never duplicate);
+   * otherwise we {@link summonInto} the focused tile (falling back to the first/largest
+   * tile when nothing is focused), swapping the panel shown there for the summoned one —
+   * no teardown, the always-tiled invariant preserved (the zone keeps one host). The
+   * displaced panel's view is hidden and stays re-summonable. Returns true if a panel
+   * actually changed tiles (so the caller can refresh on-summon, e.g. fold THE PARSE).
+   */
+  summonPanel(host: string): boolean {
+    if (!this.views.has(host)) return false;
+    // Already on screen → focus it, no layout change (no duplication).
+    if (this.visibleHosts().includes(host)) {
+      this.setFocus(host);
+      return false;
+    }
+    const target = this.resolveTargetHost();
+    if (target === null) return false;
+    const ng = summonInto(this.grid, target, host);
+    if (!ng) return false;
+    this.grid = ng;
+    this.relayout();
+    this.onLayoutChange?.();
+    this.onActivePanelsChange?.(); // the visible SET changed (summoned in, displaced out).
+    this.setFocus(host); // the newly-summoned tile takes focus (also refreshes the rail).
+    return true;
+  }
+
+  /** The tile the rail acts on: the focused tile if it is still visible, else the first
+   * (top-left) tile — a stable, sensible default so a rail click always lands somewhere. */
+  private resolveTargetHost(): string | null {
+    const visible = this.visibleHosts();
+    if (this.focusedHost && visible.includes(this.focusedHost)) return this.focusedHost;
+    return visible[0] ?? null;
+  }
+
+  /** Keep `focusedHost` pointing at a visible tile (after a preset switch the old focus
+   * may be gone); default to the first tile. Fires the rail-state callback's caller. */
+  private ensureFocus(): void {
+    const visible = this.visibleHosts();
+    if (!this.focusedHost || !visible.includes(this.focusedHost)) {
+      this.setFocus(visible[0] ?? null);
+    } else {
+      this.paintFocus();
+    }
+  }
+
+  /** Focus a tile by host: store it + repaint the `.focused` chrome. Notifies the rail
+   * so its focus-marker follows the focused tile (event-driven, not per-frame). */
+  setFocus(host: string | null): void {
+    if (this.focusedHost === host) return;
+    this.focusedHost = host;
+    this.paintFocus();
+    this.onActivePanelsChange?.();
+  }
+
+  /** Toggle the `.focused` class so exactly the focused, visible tile is highlighted. */
+  private paintFocus(): void {
+    for (const view of this.views.values()) {
+      const on = view.visible && view.host === this.focusedHost;
+      view.wrapper.classList.toggle("focused", on);
+    }
   }
 
   private createPanel(host: string, handle: PanelHandle): void {
@@ -114,6 +202,16 @@ export class Shell {
     wrapper.append(bar, body);
     this.canvas.appendChild(wrapper);
 
+    // Clicking anywhere in a tile FOCUSES it — that focus is the window-summon rail's
+    // target (a rail click summons into the focused tile). Capture-phase so it lands
+    // before the drag/orrery handlers consume the event.
+    wrapper.addEventListener(
+      "pointerdown",
+      () => {
+        if (this.focusedHost !== host) this.setFocus(host);
+      },
+      true,
+    );
     bar.addEventListener("pointerdown", (e) => this.startDrag(host, e));
 
     this.views.set(host, {
@@ -130,9 +228,16 @@ export class Shell {
     });
   }
 
+  /** Reserve `px` on the right edge for the docked window rail; re-tiles to fit. */
+  setReservedRight(px: number): void {
+    this.reservedRightPx = Math.max(0, px);
+    this.relayout();
+  }
+
   private currentLayout(): Layout {
     const r = this.canvas.getBoundingClientRect();
-    return computeLayout(this.grid, r.width, r.height, GUTTER);
+    const w = Math.max(0, r.width - this.reservedRightPx);
+    return computeLayout(this.grid, w, r.height, GUTTER);
   }
 
   relayout(): void {
@@ -174,6 +279,7 @@ export class Shell {
     }
 
     this.renderDividers(layout);
+    this.paintFocus();
   }
 
   private renderDividers(layout: Layout): void {

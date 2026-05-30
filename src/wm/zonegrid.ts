@@ -128,6 +128,31 @@ export function swap(g: ZoneGrid, a: string, b: string): ZoneGrid | null {
   return validate(ng) ? ng : null;
 }
 
+/**
+ * SUMMON — assign `host` into the zone that currently shows `targetHost`, replacing
+ * the active host shown there. The window-summon rail's core op (DD-10 §1): it does
+ * NOT add a zone or tear the grid down — it swaps the PANEL shown in one tile for
+ * another, so the always-tiled invariant holds (the zone keeps exactly one active
+ * host). The displaced host leaves the grid (its view is hidden, re-summonable).
+ *
+ * If `host` is ALREADY active somewhere in the grid this is a no-op (return null) —
+ * the caller treats that as "just focus the existing tile" so a panel is never
+ * duplicated. If `host` is active in some OTHER zone but we still want it here, the
+ * caller should not reach this path (a visible panel is focused, not re-summoned).
+ * Returns null on an unknown target, a self-summon, or an invariant failure.
+ */
+export function summonInto(g: ZoneGrid, targetHost: string, host: string): ZoneGrid | null {
+  if (targetHost === host) return null;
+  // A host already active in the grid is summon-by-focus, not a re-assign: bail so the
+  // caller focuses the existing tile instead of duplicating the panel.
+  if (findActiveZone(g, host)) return null;
+  const ng = cloneGrid(g);
+  const target = findActiveZone(ng, targetHost);
+  if (!target) return null;
+  target.hosts[target.active] = host;
+  return validate(ng) ? ng : null;
+}
+
 /** Repartition two adjacent columns by setting the left column's share to `frac`. */
 export function setColumnSplit(g: ZoneGrid, leftIndex: number, frac: number): ZoneGrid {
   const ng = cloneGrid(g);
