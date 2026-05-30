@@ -13,6 +13,7 @@ describe("window-summon rail — the panel list", () => {
       "telemetry",
       "contracts",
       "parse",
+      "fleet",
     ]);
   });
 

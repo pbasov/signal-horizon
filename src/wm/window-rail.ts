@@ -37,7 +37,9 @@ export const RAIL_PANELS: RailPanel[] = [
   { host: "telemetry", label: "TELEMETRY" },
   { host: "contracts", label: "CONTRACTS" },
   { host: "parse", label: "PARSE" },
-  // { host: "fleet", label: "FLEET" }, // ← future M-fleet tile: drop in here.
+  // M-fleet — THE FLEET TILE (the focused body's constellation), summoned into the
+  // focused tile like any other panel via the SD-36 mechanism.
+  { host: "fleet", label: "FLEET" },
 ];
 
 export class WindowRail {

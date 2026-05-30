@@ -51,6 +51,7 @@ import { applySessionAction } from "./sim/m1/apply-action";
 import { applyBuildAction } from "./sim/m2/apply-build-action";
 import { BuildSession } from "./sim/m2/session";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
+import { orbitPeriodSeconds } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
 import { DC_CANDIDATES } from "./sim/m3/dc-sites";
 import { resolveDCCompute, computeLiftMultiplier } from "./sim/m3/datacenter";
@@ -59,6 +60,12 @@ import { GeodesicGrid } from "./sim/coverage/grid";
 import { scoreCoverageAt } from "./sim/coverage/score";
 import type { Vec3 } from "./sim/ephemeris";
 import type { BuildRenderState } from "./orrery/orrery";
+import {
+  deriveFleet,
+  type Fleet,
+  type FleetDatasetSat,
+  type FleetRosterSat,
+} from "./sim/m2/fleet";
 import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
@@ -71,6 +78,7 @@ import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
 import { ParsePanel } from "./panels/parse";
 import { Contracts } from "./panels/contracts";
+import { FleetPanel } from "./panels/fleet";
 import { StatusStrip } from "./panels/status";
 import type { ContractReadout, ContractsRenderState, FrameState } from "./types";
 
@@ -213,6 +221,66 @@ function buildRenderState(): BuildRenderState {
     baselineDemand: build.demandField.baselineTotal,
   };
 }
+
+// --- M-fleet — the FLEET tile render state (the focused body's constellation) ---
+// The DATASET sats are the ephemeris bodies whose id carries the `sat_` convention
+// (data/system.json's "satellites" section — sat_leo/sat_geo/sat_meo_*). Their orbital
+// elements are read straight off the live Ephemeris OrbitalBody (a/e/inc/period), so the
+// pure deriveFleet classifies them by altitude band exactly like a launched sat. Built
+// ONCE (the dataset never changes mid-run) and cached — never per frame (X-02).
+const FLEET_DATASET_SATS: FleetDatasetSat[] = eph
+  .bodyIds()
+  .filter((id) => id.startsWith("sat_"))
+  .map((id) => {
+    const b = eph.bodies.get(id)!;
+    return {
+      id,
+      parentId: b.parent,
+      aM: b.a,
+      e: b.e,
+      incRad: b.inc,
+      periodS: b.periodSeconds(),
+      parentRadiusM: eph.radiusMeters(b.parent),
+    };
+  });
+
+/**
+ * M-fleet — build the FLEET panel's per-frame {@link Fleet}: SELECT the satellites
+ * orbiting the orrery's FOCUSED body (SD-35 click-to-focus). The focused body is the
+ * CLICK-SELECTED body when the selection is a real ephemeris body, else the camera
+ * focus body — so clicking a body lists its fleet, and the camera focus is the default.
+ * The launched roster sats are projected into the pure descriptor shape (their orbit +
+ * EIRP); the dataset descriptors are the cached {@link FLEET_DATASET_SATS}. PURE reads of
+ * the live roster + ephemeris — nothing here mutates sim state (render/read-only, both
+ * replay goldens untouched). deriveFleet allocates only the rows it returns (small).
+ */
+function fleetRenderState(): Fleet {
+  // The focused body: the selected id when it names a real body (a click-to-focus on a
+  // body), else the camera focus body (always a body). A selected ASSET/DC is not a body,
+  // so it falls back to the camera focus — the fleet always belongs to a body.
+  const sel = orrery.selectedId;
+  const bodyId = sel !== null && eph.hasBody(sel) ? sel : orrery.focusId;
+
+  // Project the launched roster sats into the pure descriptor shape (orbit + EIRP). Ground
+  // stations are not orbiting sats and are excluded. Reads the roster by value (no mutation).
+  const rosterSats: FleetRosterSat[] = [];
+  for (const a of build.roster.list()) {
+    if (a.kind !== "sat") continue;
+    const o = a.orbit;
+    rosterSats.push({
+      id: a.id,
+      parentId: o.parentId,
+      aM: o.aM,
+      e: o.e,
+      incRad: o.incRad,
+      periodS: orbitPeriodSeconds(o),
+      parentRadiusM: eph.radiusMeters(o.parentId),
+      eirp: a.eirp,
+    });
+  }
+  return deriveFleet(bodyId, FLEET_DATASET_SATS, rosterSats);
+}
+
 // Latest render-facing resolve state; refreshed by tickSim() each fixed tick. The
 // boot tickSim(clock.seconds) below runs the FIRST real step and overwrites this;
 // the placeholder is just a well-typed idle roster (no serves, empty cache) so the
@@ -553,6 +621,10 @@ const parse = new ParsePanel();
 // Holds no sim state; main.ts hands it a per-frame ContractsRenderState projected from
 // the live BuildSession (offers + active served% + the earn).
 const contractsPanel = new Contracts();
+// M-fleet — THE FLEET TILE (GDD §5 / §4.2): the focused body's constellation. Holds no
+// sim state; main.ts hands it a per-frame Fleet projected from the orrery's focused body
+// + the live roster + the dataset sats. Summonable via the SD-36 rail (the FLEET button).
+const fleetPanel = new FleetPanel();
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
@@ -594,6 +666,7 @@ const registry = new Map<string, PanelHandle>([
   ["finance", finance],
   ["parse", parse],
   ["contracts", contractsPanel],
+  ["fleet", fleetPanel],
 ]);
 
 const shell = new Shell(wmCanvas, registry);
@@ -897,6 +970,11 @@ function frame(now: number): void {
   // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
   // the live build session each frame; the panel rebuilds its rows only on a change.
   contractsPanel.render(contractsRenderState());
+  // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
+  // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
+  // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change
+  // (X-02). Render/read-only — a pure SELECT over existing truth, no sim mutation.
+  fleetPanel.render(fleetRenderState());
   // E10c — while THE PARSE panel is VISIBLE (the REVIEW preset, or summoned into any tile
   // via the rail), keep the reviewable record live (a read-only re-fold of the truthful
   // log; it never mutates sim state). Dirty-checked, so it costs nothing when not shown.

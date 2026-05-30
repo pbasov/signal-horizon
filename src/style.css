@@ -582,6 +582,29 @@ body {
 .contract-detail.amber { color: var(--amber); }
 .contract-detail.red   { color: var(--red); }
 
+/* ---- FLEET (M-fleet — the focused body's constellation, GDD §5 / §4.2) ----
+   Reuses the .telem 1-bit chrome housing; only the data carries colour, every
+   distinction redundant on a glyph/word (§8 CVD-safe). */
+.fleet-list { margin-top: 2px; }
+.fleet-empty { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; padding: 2px 0; }
+.fleet-card {
+  border-top: 1px dashed var(--line-dim);
+  padding: 3px 4px 3px 2px;
+}
+.fleet-card:first-child { border-top: 0; }
+.fleet-head { display: flex; gap: 6px; align-items: baseline; }
+/* the KIND glyph (▲ launched / △ dataset): the colour-off channel, tone-reinforced. */
+.fleet-kind { flex: 0 0 auto; width: 10px; text-align: center; }
+.fleet-kind.green { color: var(--green); }
+.fleet-kind.cyan  { color: var(--cyan); }
+.fleet-label { color: var(--fg); flex: 1 1 auto; letter-spacing: 0.04em; }
+.fleet-class { flex: 0 0 auto; font-size: 11px; letter-spacing: 0.05em; }
+.fleet-class.cyan   { color: var(--cyan); }
+.fleet-class.green  { color: var(--green); }
+.fleet-class.amber  { color: var(--amber); }
+.fleet-class.violet { color: var(--violet); }
+.fleet-detail { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+
 /* ---- bottom status strip (always visible) -------------------------------- */
 .statusstrip {
   height: var(--statusbar-h);
