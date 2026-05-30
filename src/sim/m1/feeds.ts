@@ -33,6 +33,19 @@ export interface FeedConfig {
   halfLifeS: number;
   /** Freshness floor in [0,1]: below this the serve pays 0 (the hard cliff). */
   minAcceptableFreshness: number;
+  /**
+   * At/above this freshness the serve pays the FULL basePrice (the "fresh" band).
+   * E8 tuning: set to 0.75 (below Demand's 0.9 default) so a copy that crossed the
+   * ~923s light-gap — which lands at freshness 2^(-923/halfLife) ≈ 0.70–0.89 — can
+   * actually REACH the fresh band. That is what gives the prefetch POLICY an
+   * economic optimum: keeping a feed topped up converts STALE serving (+€2.5/s) to
+   * FRESH (+€5/s), a swing that beats the €50 prefetch cost over a serving window,
+   * so there is a non-trivial sweet-spot floor (measured ≈0.70) that beats both a
+   * too-low floor (wasted fetches) and a too-high floor (eviction churn). With the
+   * 0.9 default no fetched copy was ever fresh, so the lever had no payoff.
+   * PLACEHOLDER — tune later.
+   */
+  freshFreshness: number;
 }
 
 /**
@@ -41,21 +54,22 @@ export interface FeedConfig {
  */
 export const FEED_CONFIGS: readonly FeedConfig[] = [
   // High value, fast-staling: the headline imagery the customer wants current.
-  { id: "mars_imagery",   datasetId: "earth_imagery",   basePrice: 1000, halfLifeS: 1800, minAcceptableFreshness: 0.5 },
+  { id: "mars_imagery",   datasetId: "earth_imagery",   basePrice: 1000, halfLifeS: 1800, minAcceptableFreshness: 0.5,  freshFreshness: 0.75 },
   // Fast-staling weather: cheap, but it rots quickest — a constant refresh nag.
-  { id: "mars_weather",   datasetId: "earth_weather",   basePrice: 600,  halfLifeS: 2400, minAcceptableFreshness: 0.6 },
+  { id: "mars_weather",   datasetId: "earth_weather",   basePrice: 600,  halfLifeS: 2400, minAcceptableFreshness: 0.6,  freshFreshness: 0.75 },
   // Telemetry: mid value, mid half-life, tolerant floor — the steady middle.
-  { id: "mars_telemetry", datasetId: "earth_telemetry", basePrice: 800,  halfLifeS: 3600, minAcceptableFreshness: 0.5 },
+  { id: "mars_telemetry", datasetId: "earth_telemetry", basePrice: 800,  halfLifeS: 3600, minAcceptableFreshness: 0.5,  freshFreshness: 0.75 },
   // Science: high value, slow-staling — cache it once and it coasts for a while.
-  { id: "mars_science",   datasetId: "earth_science",   basePrice: 1200, halfLifeS: 5400, minAcceptableFreshness: 0.4 },
+  { id: "mars_science",   datasetId: "earth_science",   basePrice: 1200, halfLifeS: 5400, minAcceptableFreshness: 0.4,  freshFreshness: 0.75 },
   // Comms relay: low value, fast-staling, tolerant floor — easy to deprioritise.
-  { id: "mars_comms",     datasetId: "earth_comms",     basePrice: 500,  halfLifeS: 2100, minAcceptableFreshness: 0.55 },
+  { id: "mars_comms",     datasetId: "earth_comms",     basePrice: 500,  halfLifeS: 2100, minAcceptableFreshness: 0.55, freshFreshness: 0.75 },
 ];
 
-/** Compile a feed config into a live {@link Demand} (ramp curve, 0.9 fresh cap). */
+/** Compile a feed config into a live {@link Demand} (ramp curve; E8 fresh cap). */
 export function buildFeed(cfg: FeedConfig): Demand {
   const d = new Demand(cfg.id, cfg.datasetId, cfg.basePrice, cfg.halfLifeS);
   d.minAcceptableFreshness = cfg.minAcceptableFreshness;
+  d.freshFreshness = cfg.freshFreshness;
   return d;
 }
 

@@ -5,7 +5,16 @@ import { SimRng } from "./rng";
 import { loadEphemeris } from "./system-data";
 import { mixInt, mixFloat } from "./state-hash";
 import { saveGame, addAction, saveFromJSON, saveToJSON } from "./save";
-import { setTimeScale, prefetch, noop, KIND_SET_TIME_SCALE, KIND_PREFETCH } from "./action";
+import {
+  setTimeScale,
+  prefetch,
+  noop,
+  setPrefetchPolicy,
+  KIND_SET_TIME_SCALE,
+  KIND_PREFETCH,
+  KIND_SET_PREFETCH_POLICY,
+  type SimAction,
+} from "./action";
 import { M1Session } from "./m1/session";
 import { applySessionAction } from "./m1/apply-action";
 
@@ -94,6 +103,13 @@ function sessionStateHash(tick: number, rngState: bigint, s: M1Session): bigint 
     acc = mixFloat(acc, slot.capturedAtT);
     acc = mixFloat(acc, slot.halfLifeS);
   }
+  // E8 — fold the standing prefetch policy so a logged policy CHANGE moves the
+  // hash (the lever's state is part of the save). mode → id hash; the knobs are
+  // doubles via mixFloat.
+  acc = mixInt(acc, strHash(snap.policy.mode));
+  acc = mixFloat(acc, snap.policy.freshnessFloor);
+  acc = mixFloat(acc, snap.policy.blackoutLeadS);
+  acc = mixFloat(acc, snap.policy.maxConcurrentAuto);
   return acc;
 }
 
@@ -132,15 +148,20 @@ function replay(
   const session = new M1Session();
   const acc = newAccumulator();
 
-  // Index actions by the tick they apply at.
+  // Index actions by the tick they apply at. Session-mutating actions (prefetch
+  // AND set_prefetch_policy) are applied POST-step via the SHARED
+  // applySessionAction, so live + replay cannot drift; scale changes act on the
+  // clock fill rate (handled separately).
   const scaleAt = new Map<number, number>();
-  const prefetchAt = new Map<number, (typeof sg.actions)[number]>();
+  const sessionActionsAt = new Map<number, SimAction[]>();
   for (const a of sg.actions) {
     if (a.kind === KIND_SET_TIME_SCALE) {
       const v = a.payload.value;
       if (typeof v === "number") scaleAt.set(a.atTick, v);
-    } else if (a.kind === KIND_PREFETCH) {
-      prefetchAt.set(a.atTick, a);
+    } else if (a.kind === KIND_PREFETCH || a.kind === KIND_SET_PREFETCH_POLICY) {
+      const list = sessionActionsAt.get(a.atTick) ?? [];
+      list.push(a);
+      sessionActionsAt.set(a.atTick, list);
     }
   }
 
@@ -162,8 +183,8 @@ function replay(
       // charge land exactly as they did live, even when step() just started its
       // own miss-fetch (the one-in-flight gate then makes the prefetch a no-op
       // identically in both paths).
-      const pf = prefetchAt.get(tick);
-      if (pf !== undefined) applySessionAction(eph, session, pf, sg.dt);
+      const sas = sessionActionsAt.get(tick);
+      if (sas !== undefined) for (const sa of sas) applySessionAction(eph, session, sa, sg.dt);
       // A scale change scheduled at this tick affects the NEXT accumulate.
       const next = scaleAt.get(tick);
       if (next !== undefined) scale = next;
@@ -206,15 +227,30 @@ function noPrefetchSave() {
  * independent oracle for "what the live loop produces", to compare against the
  * scheduler-driven {@link replay}. The prefetch ticks are applied after step().
  */
-function liveDrive(prefetchTicks: number[], endTick: number, dt = GOLDEN_DT): M1Session {
+function liveDrive(
+  prefetchTicks: number[],
+  endTick: number,
+  dt = GOLDEN_DT,
+  policyActions: SimAction[] = [],
+): M1Session {
   const eph = loadEphemeris();
   const session = new M1Session();
   const pref = new Set(prefetchTicks);
+  // Index any standing-policy changes by the tick they apply at (post-drain).
+  const policyAt = new Map<number, SimAction[]>();
+  for (const a of policyActions) {
+    const list = policyAt.get(a.atTick) ?? [];
+    list.push(a);
+    policyAt.set(a.atTick, list);
+  }
   for (let tick = 1; tick <= endTick; tick++) {
     const tSeconds = tick * dt;
     session.step(eph, tSeconds, dt); // the frame's drain (accrue over this step's dt)
+    // Post-drain keypresses, at the current tick — main.ts's exact ordering. Policy
+    // changes apply via the SAME shared helper as a prefetch.
+    const pa = policyAt.get(tick);
+    if (pa !== undefined) for (const a of pa) applySessionAction(eph, session, a, dt);
     if (pref.has(tick)) {
-      // Post-drain keypress, at the current tick — main.ts's exact ordering.
       applySessionAction(eph, session, prefetch(tick), dt);
     }
   }
@@ -227,7 +263,7 @@ function liveDrive(prefetchTicks: number[], endTick: number, dt = GOLDEN_DT): M1
 // HERE as the regression guard. Any change to the economy fold, the session
 // loop, the prefetch action, the rng, or the scheduler moves this value.
 // ---------------------------------------------------------------------------
-const REPLAY_GOLDEN = 8387670477081443185n;
+const REPLAY_GOLDEN = 8072561960299808504n;
 
 describe("m1-session replay golden — action-driven economy + cache + fetch (E3)", () => {
   it("pins the M1-session replay state hash for the golden SaveGame (regression guard)", () => {
@@ -318,6 +354,42 @@ describe("m1-session replay golden — action-driven economy + cache + fetch (E3
     // times in the snapshot differ from the no-prefetch run (the fold is sensitive
     // to WHICH feed's leg launched WHEN, not just the count).
     expect(withP.session.snapshot().feeds).not.toEqual(without.session.snapshot().feeds);
+  });
+
+  it("E8: a run that TOGGLES the prefetch POLICY mid-run replays bit-identically (logged-intent / derived-automation split)", () => {
+    // This is the determinism teeth for E8's tame-it lever: the AUTOPILOT's
+    // per-step prefetches are a PURE function of (policy, state) run INSIDE step(),
+    // so they are NEVER logged — only the CHANGE of policy is a player action. A
+    // log that flips the policy to freshness mid-run must therefore replay
+    // bit-identically (the derived auto-prefetches reproduce with no extra log).
+    const POLICY_TICK = 60000; // ~1000 s — well after the first arrivals.
+    const sg = saveGame(SEED, GOLDEN_DT, { system: "data/system.json" });
+    addAction(sg, setTimeScale(1, 0));
+    addAction(sg, setTimeScale(10, 600));
+    // Switch the autopilot ON mid-run: blackout mode, 0.6 floor, 1200 s lead, cap 3.
+    addAction(sg, setPrefetchPolicy("freshness_blackout", 0.6, 1200, 3, POLICY_TICK));
+
+    const a = replay(sg, 1, 0.1, 40000, END_TICK);
+    const b = replay(sg, 1, 0.1, 40000, END_TICK);
+    // Same log twice → identical state (the autopilot is deterministic).
+    expect(a.hash).toBe(b.hash);
+    expect(a.balance).toBe(b.balance);
+
+    // And LIVE == REPLAY: the independent live-loop oracle, fed the SAME policy
+    // action post-drain, lands on the identical session state.
+    const live = liveDrive([], END_TICK, GOLDEN_DT, [
+      setPrefetchPolicy("freshness_blackout", 0.6, 1200, 3, POLICY_TICK),
+    ]);
+    expect(live.snapshot()).toEqual(a.session.snapshot());
+    expect(live.economy.balance).toBe(a.balance);
+
+    // The policy actually CHANGED the trajectory: turning the autopilot on spends
+    // €50/auto-prefetch and reshapes the cache, so the end balance differs from a
+    // run that left the policy at the default "manual".
+    const manual = replay(noPrefetchSave(), 1, 0.1, 40000, END_TICK);
+    expect(a.balance).not.toBe(manual.balance);
+    // The restored session carries the switched-on policy (save/load round-trips it).
+    expect(a.session.snapshot().policy.mode).toBe("freshness_blackout");
   });
 
   it("the SaveGame (incl. the prefetch action) survives the JSON round-trip and reproduces the hash", () => {

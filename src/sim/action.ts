@@ -38,6 +38,14 @@ export const KIND_SET_TIME_SCALE = "set_time_scale";
  * `atTick` is what makes it deterministic on replay.
  */
 export const KIND_PREFETCH = "prefetch";
+/**
+ * E8 (M1-06b) — the player CHANGES the standing prefetch policy (the tame-it
+ * lever). The autopilot's PER-STEP choices are a pure function of (policy, state)
+ * derived inside step(), so they need no logging; only this CHANGE of intent is a
+ * player action. Payload carries the policy knobs the UI can set: `mode`,
+ * `freshnessFloor`, `blackoutLeadS`, `maxConcurrentAuto`. Applied at `atTick`.
+ */
+export const KIND_SET_PREFETCH_POLICY = "set_prefetch_policy";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -85,6 +93,27 @@ export function setTimeScale(value: number, atTick = 0): SimAction {
  */
 export function prefetch(atTick = 0): SimAction {
   return simAction(KIND_PREFETCH, atTick, {});
+}
+
+/**
+ * E8 — change the standing prefetch policy at a tick. The knobs round-trip through
+ * the JSON payload (all numbers/strings), and applying it at `atTick` on replay
+ * sets the policy at the SAME instant it changed live — so the DERIVED autopilot
+ * prefetches reproduce bit-identically with no per-step logging.
+ */
+export function setPrefetchPolicy(
+  mode: string,
+  freshnessFloor: number,
+  blackoutLeadS: number,
+  maxConcurrentAuto: number,
+  atTick = 0,
+): SimAction {
+  return simAction(KIND_SET_PREFETCH_POLICY, atTick, {
+    mode,
+    freshnessFloor,
+    blackoutLeadS,
+    maxConcurrentAuto,
+  });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

@@ -36,6 +36,12 @@ import { M1Economy, OPENING_BALANCE, OPEX_RATE_PER_SECOND, revenueRatePerSecond 
 import { costMultiplier } from "./coherence";
 import { feasible, resolve, type ResolveOutcome } from "./resolver";
 import { buildFeeds, CACHE_SLOTS } from "./feeds";
+import {
+  defaultPolicy,
+  selectAutoPrefetches,
+  type PrefetchPolicy,
+  type PolicyFeedState,
+} from "./policy";
 
 /** Per-feed mutable fetch state — one in-flight data leg per feed at most. */
 interface FetchState {
@@ -96,6 +102,16 @@ export interface SessionRenderState {
   fetchesInFlight: number;
   /** Peak cache freshness across the held slots, in [0,1] (the Mars-node saturation). */
   peakCacheFreshness: number;
+
+  // --- E8 prefetch POLICY (the tame-it lever) readout ---
+  /** The active policy mode the autopilot is running. */
+  policyMode: PrefetchPolicy["mode"];
+  /** The freshness floor the autopilot tops up to (the tunable knob), in [0,1]. */
+  policyFloor: number;
+  /** Feed ids the AUTOPILOT launched a leg for THIS step (the relief, firing). */
+  autoPrefetched: string[];
+  /** True iff at least one of this step's auto-prefetches was a blackout pre-stage. */
+  autoBlackoutPrestage: boolean;
 }
 
 /** JSON-safe per-feed fetch capture. */
@@ -121,6 +137,8 @@ export interface SessionSnapshot {
   slots: SlotSnapshot[];
   /** The economy's on-hand balance, by value. */
   balance: number;
+  /** E8 — the standing prefetch policy (so save/load round-trips the lever). */
+  policy: PrefetchPolicy;
 }
 
 export class M1Session {
@@ -132,6 +150,15 @@ export class M1Session {
   coherence: Level;
   /** The shared wallet across all feeds. */
   readonly economy: M1Economy;
+
+  /**
+   * E8 — the STANDING prefetch policy (the tame-it lever). Default mode "manual"
+   * so out-of-the-box behaviour is UNCHANGED (only the P key acts); the player
+   * raises the unit of command to "declared intent" by switching it on. Changing
+   * it is a logged player action; the autopilot's per-step choices it drives are
+   * DERIVED inside step() and need no logging (the determinism contract).
+   */
+  policy: PrefetchPolicy = defaultPolicy();
 
   /** Per-feed fetch state, keyed by feed id (one in-flight leg per feed). */
   private fetches = new Map<string, FetchState>();
@@ -164,6 +191,13 @@ export class M1Session {
     return fs;
   }
 
+  /** The Demand for a feed id (throws on an unknown id — feeds are fixed). */
+  private feedById(id: string): Demand {
+    const f = this.feeds.find((feed) => feed.id === id);
+    if (f === undefined) throw new Error(`unknown feed: ${id}`);
+    return f;
+  }
+
   /** True iff THIS feed's data leg is in flight. */
   isFetchingFeed(id: string): boolean {
     return this.fetchOf(id).inFlight;
@@ -181,14 +215,24 @@ export class M1Session {
 
   /**
    * Advance ALL feeds to sim-time t over `dtSeconds` of elapsed sim-time. PURE of
-   * (eph, t, prior state). Ordering, per feed: (1) land any arrival into the shared
-   * cache BEFORE resolving, so the landing step is a hit; (2) resolve against the
-   * cache; (3) on a miss with the link up and no leg already in flight for that
-   * feed, start its fetch. After all feeds resolve, the economy accrues ONE summed
-   * step: Σ revenueRate(feed band) over feeds, minus opex for the occupied slots.
+   * (eph, t, prior state). Ordering: (1) land any arrivals into the shared cache
+   * BEFORE resolving, so a landing step is a hit; (2) E8 AUTOPILOT — the standing
+   * prefetch policy reacts to the freshly-landed cache and launches its top-ups
+   * (a PURE function of policy + state, so replay needs no logging); (3) resolve
+   * every feed against the cache; (4) on a miss with the link up and no leg already
+   * in flight, start a natural miss-fetch (the autopilot's no-leg launches above
+   * suppress the double-fire); (5) the economy accrues ONE summed step: Σ
+   * revenueRate(feed band) over feeds, minus opex for the occupied slots.
    *
-   * The accrual is a single fold over dtSeconds, so the balance is DT-invariant
-   * (same sim-time ⇒ same balance at 1× or 1000×).
+   * The accrual itself is a single fold over dtSeconds, so the per-step REVENUE/OPEX
+   * is DT-invariant (the same band held for the same sim-time accrues the same € at
+   * 1× or 1000×). NOTE the autopilot (step 2) is the one piece that is NOT bit-DT-
+   * invariant: it evaluates once per tick, so a coarser dt samples the policy at
+   * different sim-instants and launches legs at slightly different moments → a
+   * different balance. That is fine for the determinism contract, which is fixed-dt:
+   * REPLAY always re-steps at DT (1/60), so a recorded run is bit-identical, and
+   * LIVE==REPLAY holds across all frame-slicings/scales at that fixed dt. (The
+   * manual/prefetch-only path, with no per-tick autopilot, IS bit-DT-invariant.)
    */
   step(eph: Ephemeris, t: number, dtSeconds: number = DT): SessionRenderState {
     // 1. LAND arrivals first, across every feed, so a feed that lands its sample
@@ -202,7 +246,48 @@ export class M1Session {
       }
     }
 
-    // 2. RESOLVE every feed against the shared cache + its own link feasibility.
+    // 2. AUTOPILOT (E8 — the tame-it lever). The standing policy reacts to the
+    //    FRESHLY-LANDED cache: a pure function of (policy, state, geometry, t)
+    //    picks which feeds to top up THIS step, then we launch each leg + charge
+    //    €50. Because the selection is PURE and happens INSIDE step(), replay
+    //    reproduces these auto-prefetches with NO logging — only a CHANGE to the
+    //    policy is a recorded player intent. The no-leg guard below (step 4) means
+    //    a feed the autopilot just launched does not also fire a natural miss-fetch.
+    const autoPrefetched: string[] = [];
+    let autoBlackoutPrestage = false;
+    if (this.policy.mode !== "manual") {
+      const pfStates: PolicyFeedState[] = this.feeds.map((feed) => ({
+        id: feed.id,
+        datasetId: feed.datasetId,
+        sourceId: feed.sourceId,
+        customerId: feed.customerId,
+        inFlight: this.fetchOf(feed.id).inFlight,
+      }));
+      const targets = selectAutoPrefetches(this.policy, pfStates, this.cache, eph, t);
+      for (const id of targets) {
+        const feed = this.feedById(id);
+        const fs = this.fetchOf(id);
+        // selectAutoPrefetches only returns eligible (link-up, no-leg) feeds, but
+        // re-check the guard defensively so we never double-launch a leg.
+        if (fs.inFlight) continue;
+        // A blackout pre-stage is one where the link is up now but forecast down
+        // within the lead — record it for the render cue (the relief firing).
+        if (
+          this.policy.mode === "freshness_blackout" &&
+          !feasible(eph, t + this.policy.blackoutLeadS, feed.sourceId, feed.customerId, ["sun"])
+        ) {
+          autoBlackoutPrestage = true;
+        }
+        const d = eph.distanceBetween(feed.sourceId, feed.customerId, t);
+        fs.launchT = t;
+        fs.arrivalT = t + oneWaySeconds(d);
+        fs.inFlight = true;
+        this.economy.chargePrefetch();
+        autoPrefetched.push(id);
+      }
+    }
+
+    // 3. RESOLVE every feed against the shared cache + its own link feasibility.
     const feedStates: FeedRenderState[] = [];
     let summedRevenueRate = 0;
     for (const feed of this.feeds) {
@@ -210,8 +295,10 @@ export class M1Session {
       const result = resolve(eph, t, feed, this.cache, linkOpen);
       summedRevenueRate += revenueRatePerSecond(result.outcome);
 
-      // 3. A MISS with the link up and no leg already crawling for THIS feed starts
-      //    its data leg. blackout_miss (link down) does NOT start a fetch.
+      // 4. A MISS with the link up and no leg already crawling for THIS feed starts
+      //    its data leg. blackout_miss (link down) does NOT start a fetch. The
+      //    autopilot above may already have launched this feed's leg — the
+      //    !fs.inFlight guard then skips the natural miss-fetch (no double-fire).
       const fs = this.fetchOf(feed.id);
       if (result.outcome === "miss" && !fs.inFlight) {
         const d = eph.distanceBetween(feed.sourceId, feed.customerId, t);
@@ -234,7 +321,7 @@ export class M1Session {
       });
     }
 
-    // 4. ECONOMY: one summed accrual over this step's dt. Revenue is the sum across
+    // 5. ECONOMY: one summed accrual over this step's dt. Revenue is the sum across
     //    feeds (each band's rate); opex scales with the OCCUPIED slots (you pay to
     //    run each held slot) × the coherence cost multiplier. The balance is a pure,
     //    DT-invariant fold of the deterministic step sequence.
@@ -254,6 +341,10 @@ export class M1Session {
       bankrupt: this.economy.bankrupt(),
       fetchesInFlight: this.countFetchesInFlight(),
       peakCacheFreshness: this.peakCacheFreshness(t),
+      policyMode: this.policy.mode,
+      policyFloor: this.policy.freshnessFloor,
+      autoPrefetched,
+      autoBlackoutPrestage,
     };
   }
 
@@ -329,6 +420,22 @@ export class M1Session {
     return best;
   }
 
+  /**
+   * E8 — set the standing prefetch policy (the tame-it lever). Knobs are clamped
+   * to sane ranges so a malformed action can never put the autopilot in an
+   * impossible state. Pure mutation; the caller (live or replay) applies it at the
+   * same tick via the shared applySessionAction, so the DERIVED auto-prefetches
+   * reproduce bit-identically.
+   */
+  setPolicy(p: PrefetchPolicy): void {
+    this.policy = {
+      mode: p.mode,
+      freshnessFloor: Math.max(0, Math.min(0.95, p.freshnessFloor)),
+      blackoutLeadS: Math.max(0, p.blackoutLeadS),
+      maxConcurrentAuto: Math.max(0, Math.trunc(p.maxConcurrentAuto)),
+    };
+  }
+
   /** Capture all mutable session state by value for a fast-load snapshot. */
   snapshot(): SessionSnapshot {
     const feeds: FeedFetchSnapshot[] = this.feeds.map((feed) => {
@@ -338,7 +445,9 @@ export class M1Session {
     const slots: SlotSnapshot[] = this.cache
       .entries()
       .map((s) => ({ datasetId: s.datasetId, capturedAtT: s.capturedAtT, halfLifeS: s.halfLifeS }));
-    return { feeds, slots, balance: this.economy.balance };
+    // Capture the policy by value (a flat plain object) so save/load round-trips
+    // the lever and a restored session resumes the same standing intent.
+    return { feeds, slots, balance: this.economy.balance, policy: { ...this.policy } };
   }
 
   /** Restore all mutable session state from a snapshot (the ephemeris is unchanged). */
@@ -357,5 +466,8 @@ export class M1Session {
       this.cache.store(slot.datasetId, slot.capturedAtT, slot.halfLifeS, slot.capturedAtT);
     }
     this.economy.balance = s.balance;
+    // Restore the standing policy if the snapshot carries one (tolerate older
+    // snapshots that predate E8 — they keep the current/default policy).
+    if (s.policy !== undefined) this.policy = { ...s.policy };
   }
 }

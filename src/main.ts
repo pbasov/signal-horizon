@@ -21,8 +21,9 @@ import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
 import { M1Session, type SessionRenderState } from "./sim/m1/session";
 import { saveGame, addAction } from "./sim/save";
-import { setTimeScale, prefetch as prefetchAction } from "./sim/action";
+import { setTimeScale, prefetch as prefetchAction, setPrefetchPolicy } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
+import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
 import { Orrery } from "./orrery/orrery";
@@ -89,6 +90,10 @@ let demand: SessionRenderState = {
   bankrupt: false,
   fetchesInFlight: 0,
   peakCacheFreshness: 0,
+  policyMode: session.policy.mode,
+  policyFloor: session.policy.freshnessFloor,
+  autoPrefetched: [],
+  autoBlackoutPrestage: false,
 };
 
 // --- action log -------------------------------------------------------------
@@ -106,6 +111,22 @@ function recordScale(): void {
   if (s === lastScale) return;
   lastScale = s;
   addAction(save, setTimeScale(s, clock.tick));
+}
+
+/** The policy modes in cycle order for the 'a' key (manual → freshness → blackout). */
+const POLICY_CYCLE: PrefetchMode[] = ["manual", "freshness", "freshness_blackout"];
+
+/**
+ * E8 — apply + LOG a prefetch-policy change at the current tick. The policy CHANGE
+ * is a player intent recorded as a SimAction; the autopilot's per-step prefetches
+ * it drives are DERIVED inside step() and need no logging. Applied via the SHARED
+ * applySessionAction so live + replay set the policy at the SAME tick.
+ */
+function applyPolicy(mode: PrefetchMode, floor: number): void {
+  const p = session.policy;
+  const action = setPrefetchPolicy(mode, floor, p.blackoutLeadS, p.maxConcurrentAuto, clock.tick);
+  applySessionAction(eph, session, action, DT);
+  addAction(save, action);
 }
 
 // --- audio (M1-11) ----------------------------------------------------------
@@ -144,6 +165,10 @@ function tickSim(t: number): void {
   const slice: CueDemandSlice = aggregateCueSlice(demand);
   emitCueTransition(cueBus, prevCue, slice, t);
   prevCue = slice;
+  // E8 — a subtle audible cue when the autopilot PRE-STAGES ahead of a forecast
+  // blackout (the tame-it lever acting): the relief you can hear. Only on the
+  // firing step (autoBlackoutPrestage is set by that step's selectAutoPrefetches).
+  if (demand.autoBlackoutPrestage) cueBus.emit("prestage", t);
 }
 
 /** Worst-band-wins aggregate of the roster for the audio cue channel. */
@@ -249,8 +274,26 @@ window.addEventListener("keydown", (e) => {
         for (const ev of mission.launch(clock.seconds)) log.append(ev);
       }
     }
+  } else if (k === "a" || k === "A") {
+    // E8 — CYCLE the prefetch policy mode: manual → freshness → freshness_blackout
+    // → manual. Switching it on is the tame-it lever: the autopilot takes over the
+    // hand-cranking. The change is the logged player intent.
+    const i = POLICY_CYCLE.indexOf(session.policy.mode);
+    const next = POLICY_CYCLE[(i + 1) % POLICY_CYCLE.length];
+    applyPolicy(next, session.policy.freshnessFloor);
+  } else if (k === "[") {
+    // E8 — lower the autopilot's freshness floor (−0.05, clamped to [0, 0.95]).
+    applyPolicy(session.policy.mode, clamp01floor(session.policy.freshnessFloor - 0.05));
+  } else if (k === "]") {
+    // E8 — raise the autopilot's freshness floor (+0.05, clamped to [0, 0.95]).
+    applyPolicy(session.policy.mode, clamp01floor(session.policy.freshnessFloor + 0.05));
   }
 });
+
+/** Clamp a freshness floor to [0, 0.95] (the UI-tunable range), rounded to a step. */
+function clamp01floor(f: number): number {
+  return Math.max(0, Math.min(0.95, Math.round(f * 100) / 100));
+}
 
 // --- main loop --------------------------------------------------------------
 let last = performance.now();
@@ -307,6 +350,10 @@ function frame(now: number): void {
       netRatePerSecond: demand.netRatePerSecond,
       runway: demand.runway,
       bankrupt: demand.bankrupt,
+      policyMode: demand.policyMode,
+      policyFloor: demand.policyFloor,
+      autoPrefetched: demand.autoPrefetched,
+      autoBlackoutPrestage: demand.autoBlackoutPrestage,
     },
   };
 

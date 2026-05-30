@@ -31,7 +31,9 @@ export type CueKind =
   /** The cached copy decayed below the demand's min-acceptable (it went stale). */
   | "stale"
   /** The link is down with no usable cache — a blackout miss. */
-  | "blackout";
+  | "blackout"
+  /** E8 — the autopilot fired a blackout PRE-STAGE (the tame-it lever acting). */
+  | "prestage";
 
 /** A single cue the sim emits and the audio sink renders. Plain data — no DOM. */
 export interface CueEvent {
@@ -142,6 +144,10 @@ const TONES: Record<CueKind, Tone> = {
   fetch_arrival: { f0: 523.25, f1: 783.99, type: "sine", dur: 0.16, peak: 0.45 },
   stale: { f0: 392, f1: 277.18, type: "sine", dur: 0.18, peak: 0.32 },
   blackout: { f0: 220, f1: 110, type: "sawtooth", dur: 0.3, peak: 0.4 },
+  // E8 — a SUBTLE, confident rising blip when the autopilot pre-stages ahead of a
+  // forecast blackout: quieter than a hit, a soft "I've got it" the player learns
+  // to trust. Keeps the relief audible without nagging.
+  prestage: { f0: 659.25, f1: 987.77, type: "sine", dur: 0.1, peak: 0.22 },
 };
 
 /**

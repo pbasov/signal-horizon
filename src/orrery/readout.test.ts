@@ -5,6 +5,7 @@ import {
   freshnessBand,
   feedGlyphState,
   feedLabel,
+  policyLabel,
   CONJUNCTION_WATCH_RSUN,
   CONJUNCTION_CRIT_RSUN,
 } from "./readout";
@@ -44,6 +45,10 @@ const demand = (over: Partial<DemandReadout> = {}): DemandReadout => ({
   netRatePerSecond: 3,
   runway: Infinity,
   bankrupt: false,
+  policyMode: "manual",
+  policyFloor: 0.7,
+  autoPrefetched: [],
+  autoBlackoutPrestage: false,
   ...over,
 });
 
@@ -192,5 +197,37 @@ describe("deriveReadout — MULTI-FEED projection", () => {
     const r = deriveReadout(frame({ demand: demand({ slotsUsed: 2, slotCapacity: 3 }) }));
     expect(r.slotsUsed).toBe(2);
     expect(r.slotCapacity).toBe(3);
+  });
+
+  it("E8 — surfaces the prefetch POLICY (the tame-it lever) on the readout", () => {
+    const manual = deriveReadout(frame({ demand: demand({ policyMode: "manual" }) }));
+    expect(manual.policyLabel).toBe("MANUAL");
+    expect(manual.policyFiring).toBe(false);
+    expect(manual.policyPrestaging).toBe(false);
+
+    const auto = deriveReadout(
+      frame({ demand: demand({ policyMode: "freshness", policyFloor: 0.7, autoPrefetched: ["mars_comms"] }) }),
+    );
+    expect(auto.policyLabel).toBe("AUTO @ 70%");
+    expect(auto.policyFiring).toBe(true);
+
+    const blk = deriveReadout(
+      frame({ demand: demand({ policyMode: "freshness_blackout", policyFloor: 0.6, autoBlackoutPrestage: true }) }),
+    );
+    expect(blk.policyLabel).toBe("AUTO+BLK @ 60%");
+    expect(blk.policyPrestaging).toBe(true);
+  });
+});
+
+describe("policyLabel — the glanceable tame-it lever label", () => {
+  it("reads MANUAL when the autopilot is off", () => {
+    expect(policyLabel("manual", 0.7)).toBe("MANUAL");
+  });
+  it("reads AUTO @ floor% in freshness mode", () => {
+    expect(policyLabel("freshness", 0.7)).toBe("AUTO @ 70%");
+    expect(policyLabel("freshness", 0.55)).toBe("AUTO @ 55%");
+  });
+  it("reads AUTO+BLK @ floor% in blackout pre-staging mode", () => {
+    expect(policyLabel("freshness_blackout", 0.6)).toBe("AUTO+BLK @ 60%");
   });
 });

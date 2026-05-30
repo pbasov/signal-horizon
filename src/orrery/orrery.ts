@@ -198,6 +198,7 @@ export class Orrery {
   private roFreshVal!: HTMLElement;
   private roFreshFill!: HTMLElement;
   private roSlotsVal!: HTMLElement;
+  private roPolicyVal!: HTMLElement;
   private roFeeds!: HTMLElement;
   private roCountRow!: HTMLElement;
   private roCountVal!: HTMLElement;
@@ -409,6 +410,10 @@ export class Orrery {
       `<div class="ro-bar ro-freshbar"><span class="ro-fill"></span></div>` +
       `<div class="ro-row ro-slots"><span class="ro-lab">SLOTS</span>` +
       `<span class="ro-val">—</span></div>` +
+      // E8 — the prefetch POLICY (the tame-it lever): MANUAL vs AUTO @ NN%, lit
+      // when the autopilot is firing; the relief made glanceable.
+      `<div class="ro-row ro-policy"><span class="ro-lab">PREFETCH</span>` +
+      `<span class="ro-val">—</span></div>` +
       // E7 — the per-feed map: the Mini-Metro at-a-glance roster. Rows are built
       // lazily on the first paint (one per feed) and mutated in place after.
       `<div class="ro-feeds"></div>` +
@@ -424,6 +429,7 @@ export class Orrery {
     this.roFreshVal = box.querySelector(".ro-fresh .ro-val") as HTMLElement;
     this.roFreshFill = box.querySelector(".ro-freshbar .ro-fill") as HTMLElement;
     this.roSlotsVal = box.querySelector(".ro-slots .ro-val") as HTMLElement;
+    this.roPolicyVal = box.querySelector(".ro-policy .ro-val") as HTMLElement;
     this.roFeeds = box.querySelector(".ro-feeds") as HTMLElement;
     this.roCountRow = box.querySelector(".ro-count") as HTMLElement;
     this.roCountVal = box.querySelector(".ro-count .ro-val") as HTMLElement;
@@ -794,6 +800,21 @@ export class Orrery {
     // SLOTS — occupied / capacity, the contention readout (amber when full).
     setN(this.roSlotsVal, `${r.slotsUsed}/${r.slotCapacity}`);
     setC(this.roSlotsVal, `ro-val ${r.slotsUsed >= r.slotCapacity ? "warn" : "good"}`);
+
+    // PREFETCH POLICY (E8 — the tame-it lever). MANUAL is the dim hand-crank
+    // baseline; AUTO @ NN% is the autopilot ON (watch/cyan = under control), and
+    // it lights "good"/green the step the autopilot actually FIRES — the relief
+    // made glanceable. A blackout pre-stage gets the brightest cue.
+    setN(this.roPolicyVal, r.policyLabel);
+    const pTone =
+      r.policyMode === "manual"
+        ? "dead"
+        : r.policyPrestaging
+          ? "good"
+          : r.policyFiring
+            ? "good"
+            : "watch";
+    setC(this.roPolicyVal, `ro-val ${pTone}`);
 
     // PER-FEED MAP — the Mini-Metro roster: one row per feed with a state glyph
     // (◆ fresh / ◇ stale / ▸ fetching / ○ miss / ▰ blackout), the freshness %, and

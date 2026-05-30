@@ -47,6 +47,8 @@ export class StatusStrip {
   private readonly em: LabelCell;
   private readonly focus: LabelCell;
   private readonly cam: LabelCell;
+  /** E8 — the prefetch-policy readout cell: "AUTO 70%" / "AUTO+BLK 70%" / "MANUAL". */
+  private readonly policy: LabelCell;
 
   /** The trailing alarm cell, present in the DOM only while occulted. */
   private alarm: HTMLElement | null = null;
@@ -82,6 +84,9 @@ export class StatusStrip {
     // --- CAM ---
     this.cam = makeLabelCell("", "CAM");
 
+    // --- PREFETCH policy (E8 — the tame-it lever) ---
+    this.policy = makeLabelCell("", "PREFETCH");
+
     // --- elastic spacer ---
     const spacer = document.createElement("div");
     spacer.className = "cell spacer";
@@ -102,7 +107,13 @@ export class StatusStrip {
     appendKeys(keys, "Space");
     keys.append(" pause ");
     appendKeys(keys, ",", ".");
-    keys.append(" speed");
+    keys.append(" speed ");
+    appendKeys(keys, "P");
+    keys.append(" prefetch ");
+    appendKeys(keys, "A");
+    keys.append(" policy ");
+    appendKeys(keys, "[", "]");
+    keys.append(" floor");
 
     this.element.append(
       this.tabsCell,
@@ -112,6 +123,7 @@ export class StatusStrip {
       this.em.cell,
       this.focus.cell,
       this.cam.cell,
+      this.policy.cell,
       spacer,
       keys,
     );
@@ -168,6 +180,21 @@ export class StatusStrip {
 
     // CAM
     setText(this.cam.val, state.cameraPreset);
+
+    // PREFETCH policy (E8 — the tame-it lever). MANUAL is the hand-crank baseline
+    // (neutral); AUTO @ floor% is the autopilot ON (cyan = under control); the +BLK
+    // suffix marks blackout pre-staging armed, and the cell flashes cyan-bright the
+    // step a pre-stage actually FIRES (the relief you can see).
+    const d = state.demand;
+    if (d.policyMode === "manual") {
+      setText(this.policy.val, "MANUAL");
+      this.policy.val.className = "val";
+    } else {
+      const floorPct = Math.round(d.policyFloor * 100);
+      const tag = d.policyMode === "freshness_blackout" ? "AUTO+BLK" : "AUTO";
+      setText(this.policy.val, `${tag} ${floorPct}%`);
+      this.policy.val.className = d.autoPrefetched.length > 0 ? "val green" : "val cyan";
+    }
 
     // solar-occult alarm (created/removed dynamically)
     if (state.losOcculted && !this.alarm) {

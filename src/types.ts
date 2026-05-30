@@ -88,6 +88,16 @@ export interface DemandReadout {
   runway: number;
   /** True once the balance has gone negative — the kill condition. */
   bankrupt: boolean;
+
+  // --- E8 prefetch POLICY (the tame-it lever) — surfaced for the render relief ---
+  /** Active autopilot mode: "manual" | "freshness" | "freshness_blackout". */
+  policyMode: "manual" | "freshness" | "freshness_blackout";
+  /** The freshness floor the autopilot tops up to (the tunable knob), in [0,1]. */
+  policyFloor: number;
+  /** Feed ids the autopilot launched THIS step (the relief firing). */
+  autoPrefetched: string[];
+  /** True iff at least one of this step's auto-prefetches was a blackout pre-stage. */
+  autoBlackoutPrestage: boolean;
 }
 
 /** Per-frame snapshot the panels render from. */

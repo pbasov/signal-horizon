@@ -78,6 +78,16 @@ export interface Readout {
   approach: number;
   /** True once approach has entered the alarm band (≤ CRIT margin). */
   approachAlarm: boolean;
+
+  // --- E8 prefetch POLICY (the tame-it lever) glanceable readout ---
+  /** Active autopilot mode. */
+  policyMode: "manual" | "freshness" | "freshness_blackout";
+  /** A short policy label: "MANUAL" / "AUTO @ 70%" / "AUTO+BLK @ 70%". */
+  policyLabel: string;
+  /** True iff the autopilot launched at least one leg this step (firing). */
+  policyFiring: boolean;
+  /** True iff a blackout pre-stage fired this step (the marquee relief). */
+  policyPrestaging: boolean;
 }
 
 /** Banded freshness for the redundant, colour-off channel. */
@@ -105,6 +115,20 @@ export function conjunctionApproach(marginSolarRadii: number, occulted: boolean)
 /** Short display label for a feed id: the part after "mars_", uppercased. */
 export function feedLabel(id: string): string {
   return id.replace(/^mars_/, "").toUpperCase();
+}
+
+/**
+ * Short glanceable label for the prefetch policy (the tame-it lever): "MANUAL"
+ * when the autopilot is off, else "AUTO @ NN%" (or "AUTO+BLK @ NN%" in blackout
+ * pre-staging mode) — the floor the autopilot tops the cache up to.
+ */
+export function policyLabel(
+  mode: "manual" | "freshness" | "freshness_blackout",
+  floor: number,
+): string {
+  if (mode === "manual") return "MANUAL";
+  const pct = Math.round(Math.max(0, Math.min(1, floor)) * 100);
+  return `${mode === "freshness_blackout" ? "AUTO+BLK" : "AUTO"} @ ${pct}%`;
 }
 
 /** The compact at-a-glance state for one feed's current readout. */
@@ -171,5 +195,9 @@ export function deriveReadout(fs: FrameState): Readout {
     occulted: fs.losOcculted,
     approach,
     approachAlarm: approach > 0 && fs.losMarginSolarRadii <= CONJUNCTION_CRIT_RSUN,
+    policyMode: d.policyMode,
+    policyLabel: policyLabel(d.policyMode, d.policyFloor),
+    policyFiring: d.autoPrefetched.length > 0,
+    policyPrestaging: d.autoBlackoutPrestage,
   };
 }

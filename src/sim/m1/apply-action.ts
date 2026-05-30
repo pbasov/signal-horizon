@@ -18,8 +18,9 @@
  * DOM / wall-clock / RNG.
  */
 import type { Ephemeris } from "../ephemeris";
-import { KIND_PREFETCH, type SimAction } from "../action";
+import { KIND_PREFETCH, KIND_SET_PREFETCH_POLICY, type SimAction } from "../action";
 import type { M1Session } from "./session";
+import type { PrefetchMode, PrefetchPolicy } from "./policy";
 
 /**
  * Apply any session-mutating action recorded at `tick` to `session`, AFTER that
@@ -45,5 +46,37 @@ export function applySessionAction(
     // eligible); coerce to the boolean "did it mutate" the caller expects.
     return session.prefetch(eph, action.atTick * dt) !== null;
   }
+  if (action.kind === KIND_SET_PREFETCH_POLICY) {
+    // E8 — the player CHANGED the standing policy (the tame-it lever). Apply it at
+    // the SAME tick in live + replay so the autopilot's DERIVED per-step choices
+    // (a pure function of policy + state, run inside step()) reproduce
+    // bit-identically with no per-step logging. The mutation always "took", so
+    // return true (the live caller treats it as a state change).
+    session.setPolicy(policyFromPayload(action));
+    return true;
+  }
   return false;
+}
+
+/** The valid policy modes, used to validate a replayed payload defensively. */
+const POLICY_MODES: readonly PrefetchMode[] = ["manual", "freshness", "freshness_blackout"];
+
+/**
+ * Read a {@link PrefetchPolicy} out of a set_prefetch_policy action payload.
+ * Tolerant of missing/garbage fields (an older or hand-edited save) — it falls
+ * back to safe defaults so replay never throws; {@link M1Session.setPolicy}
+ * then clamps the numeric knobs.
+ */
+function policyFromPayload(action: SimAction): PrefetchPolicy {
+  const p = action.payload;
+  const rawMode = typeof p.mode === "string" ? p.mode : "manual";
+  const mode = (POLICY_MODES as readonly string[]).includes(rawMode)
+    ? (rawMode as PrefetchMode)
+    : "manual";
+  return {
+    mode,
+    freshnessFloor: typeof p.freshnessFloor === "number" ? p.freshnessFloor : 0.6,
+    blackoutLeadS: typeof p.blackoutLeadS === "number" ? p.blackoutLeadS : 1200,
+    maxConcurrentAuto: typeof p.maxConcurrentAuto === "number" ? p.maxConcurrentAuto : 3,
+  };
 }
