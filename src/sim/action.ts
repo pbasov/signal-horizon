@@ -46,6 +46,22 @@ export const KIND_PREFETCH = "prefetch";
  * `freshnessFloor`, `blackoutLeadS`, `maxConcurrentAuto`. Applied at `atTick`.
  */
 export const KIND_SET_PREFETCH_POLICY = "set_prefetch_policy";
+/**
+ * M2c — the player DEPLOYS a GROUND STATION (the build-the-monument loop, GDD §3).
+ * Payload carries the candidate SITE index the deploy targets (a deterministic,
+ * keyed pick from a fixed candidate list — no globe-raycast UI yet); the session
+ * resolves the index to a lat/lon, charges €, and adds the station to the roster.
+ * Applied at `atTick` via the shared applier so live + replay agree.
+ */
+export const KIND_DEPLOY_GROUND = "deploy_ground";
+/**
+ * M2c — the player LAUNCHES a SATELLITE (GDD §4.7 launch market). Payload carries
+ * the launch-preset id (LEO/MEO/GEO). The session charges the preset's €, rolls the
+ * deterministic failure chance from the SEEDED splitmix64 PRNG, and on success adds
+ * the sat to the roster (a failed launch eats the € and adds nothing). Applied at
+ * `atTick` so the recorded roll + outcome replay bit-identically.
+ */
+export const KIND_LAUNCH_SAT = "launch_sat";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -114,6 +130,24 @@ export function setPrefetchPolicy(
     blackoutLeadS,
     maxConcurrentAuto,
   });
+}
+
+/**
+ * M2c — deploy a ground station at a candidate SITE index, at a tick. The session
+ * resolves the index to a fixed lat/lon, so recording the index (not the lat/lon)
+ * keeps the action small and the resolution deterministic on both paths.
+ */
+export function deployGround(siteIndex: number, atTick = 0): SimAction {
+  return simAction(KIND_DEPLOY_GROUND, atTick, { siteIndex: Math.trunc(siteIndex) });
+}
+
+/**
+ * M2c — launch a satellite into a preset orbit, at a tick. The preset id round-trips
+ * through the payload; the launch's deterministic failure roll is drawn at `atTick`
+ * inside the session (from the seeded PRNG), so live + replay reach the same outcome.
+ */
+export function launchSat(presetId: string, atTick = 0): SimAction {
+  return simAction(KIND_LAUNCH_SAT, atTick, { presetId });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

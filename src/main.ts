@@ -6,7 +6,9 @@
  *        R reset camera · F cycle focus · Space pause · , / . time scale ·
  *        P prefetch (pre-position fresh data into the Mars cache) · A policy ·
  *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record) ·
- *        H toggle the COVERAGE HEATMAP · D cycle its dimension (M2b, render-only)
+ *        H toggle the COVERAGE HEATMAP · D cycle its dimension (M2b) ·
+ *        B deploy a ground station · L launch a satellite · ; cycle launch preset
+ *        (M2c — the build-the-monument loop: the heatmap reads the LIVE roster)
  *
  * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
  * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
@@ -27,8 +29,23 @@ import { parseRun, type RunContext } from "./sim/m1/parse";
 import { OPENING_BALANCE } from "./sim/m1/economy";
 import { conjunctionApproach } from "./orrery/readout";
 import { saveGame, addAction } from "./sim/save";
-import { setTimeScale, prefetch as prefetchAction, setPrefetchPolicy } from "./sim/action";
+import {
+  setTimeScale,
+  prefetch as prefetchAction,
+  setPrefetchPolicy,
+  deployGround as deployGroundAction,
+  launchSat as launchSatAction,
+} from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
+import { applyBuildAction } from "./sim/m2/apply-build-action";
+import { BuildSession } from "./sim/m2/session";
+import { LAUNCH_PRESETS } from "./sim/m2/launch";
+import { CANDIDATE_SITES } from "./sim/m2/sites";
+import { GeodesicGrid } from "./sim/coverage/grid";
+import { DemandField } from "./sim/coverage/demand";
+import { scoreCoverageAt } from "./sim/coverage/score";
+import type { Vec3 } from "./sim/ephemeris";
+import type { BuildRenderState } from "./orrery/orrery";
 import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, buildGrid } from "./wm/presets";
@@ -84,6 +101,56 @@ const mission = new Mission(eph);
 // The standing Mars-imagery demand: drives the live cache-miss→fetch→arrive→hit
 // loop. When it starts a fetch, we launch the Mission packet to render the wait.
 const session = new M1Session();
+
+// --- M2c — the BUILD SESSION (the build-the-monument loop) ------------------
+// The placeable-asset roster + € wallet + launch PRNG. A SEPARATE deterministic
+// world from the M1 cache session (its own snapshot/golden), driven by logged
+// deploy/launch actions. The coverage heatmap (M2b) now reads THIS live roster, so
+// deploying a ground station / launching a sat grows the coverage web (§1/§5 the
+// monument). The covered-demand SCORE is computed from the same pure roster so the
+// readout rises as you build. f64→f32 happens only in the orrery; main.ts hands the
+// orrery f64 world positions + the pure score.
+const build = new BuildSession();
+// The coverage grid + demand field (built once) for the live coverage score. Pure
+// reads; nothing here mutates sim state. Scratch positions grow with the roster.
+const buildCoverageGrid = GeodesicGrid.build();
+const buildCoverageDemand = DemandField.build(buildCoverageGrid);
+let buildScratchPos: Vec3[] = [];
+// The candidate-site cursor: B cycles which candidate the next deploy targets, so a
+// keyed/list deploy needs no globe-raycast (raycast placement is later polish).
+let deploySiteCursor = 0;
+// The launch-preset cursor: L launches into the selected preset; ; cycles it.
+let launchPresetCursor = 0;
+
+/**
+ * M2c — build the orrery's per-frame {@link BuildRenderState}: the roster's pure
+ * world positions + eirps (for the heatmap sweep + markers) and the live covered-
+ * demand fraction (the monument readout). PURE reads of the build session; computed
+ * here in main.ts (orchestration) so the orrery stays a thin painter and src/sim
+ * stays render-free. Allocates only when the roster grows (scratch reuse).
+ */
+function buildRenderState(): BuildRenderState {
+  const t = clock.seconds;
+  buildScratchPos = build.worldPositions(eph, t, buildScratchPos);
+  const eirps = build.roster.eirps();
+  const earth = eph.position("earth", t);
+  const earthR = eph.radiusMeters("earth");
+  const score = scoreCoverageAt(buildCoverageGrid, buildCoverageDemand, eirps, buildScratchPos, earth, earthR);
+  const list = build.roster.list();
+  return {
+    assets: list.map((a, i) => ({
+      id: a.id,
+      kind: a.kind,
+      posM: buildScratchPos[i],
+      eirp: eirps[i],
+    })),
+    coveredDemandFraction: score.coveredDemandFraction,
+    groundCount: build.roster.groundCount,
+    satCount: build.roster.satCount,
+    balanceEur: build.balance,
+    bankrupt: build.bankrupt,
+  };
+}
 // Latest render-facing resolve state; refreshed by tickSim() each fixed tick. The
 // boot tickSim(clock.seconds) below runs the FIRST real step and overwrites this;
 // the placeholder is just a well-typed idle roster (no serves, empty cache) so the
@@ -148,6 +215,57 @@ function applyPolicy(mode: PrefetchMode, floor: number): void {
   const action = setPrefetchPolicy(mode, floor, p.blackoutLeadS, p.maxConcurrentAuto, clock.tick);
   applySessionAction(eph, session, action, DT);
   addAction(save, action);
+}
+
+/**
+ * M2c — DEPLOY a ground station at the selected candidate site, recorded + applied
+ * via the SHARED applyBuildAction at the current tick (live + replay agree). Logs a
+ * NOTICE line so the build is felt; advances the site cursor so the next B targets
+ * the next candidate. The coverage web grows immediately (the heatmap reads the live
+ * roster). Building can overspend — that is the build-vs-budget tension (§3/§4.9).
+ */
+function deployGroundStation(): void {
+  const site = CANDIDATE_SITES[deploySiteCursor % CANDIDATE_SITES.length];
+  const action = deployGroundAction(deploySiteCursor, clock.tick);
+  const res = applyBuildAction(eph, build, action, DT);
+  if (res && res.kind === "ground_deployed") {
+    addAction(save, action);
+    log.append({
+      tSim: clock.seconds,
+      sev: build.bankrupt ? "warn" : "info",
+      entity: "DEPLOY",
+      value: `−€${Math.round(res.costEur)}`,
+      msg: `ground station over ${site.label} — coverage growing${build.bankrupt ? " (OVERSPENT)" : ""}`,
+    });
+    deploySiteCursor = (deploySiteCursor + 1) % CANDIDATE_SITES.length;
+  }
+}
+
+/**
+ * M2c — LAUNCH a satellite into the selected preset, recorded + applied via the
+ * SHARED applyBuildAction at the current tick. The deterministic failure roll is
+ * drawn inside the build session from the seeded PRNG, so the outcome replays. On
+ * success the sat joins the roster + starts covering cells; on failure the € is
+ * spent for nothing (the §4.7 launch risk). Always RECORDS the action (the launch
+ * happened either way — the roll is what differs, and it replays from the log).
+ */
+function launchSatellite(): void {
+  const preset = LAUNCH_PRESETS[launchPresetCursor % LAUNCH_PRESETS.length];
+  const action = launchSatAction(preset.id, clock.tick);
+  const res = applyBuildAction(eph, build, action, DT);
+  if (res && (res.kind === "sat_launched" || res.kind === "launch_failed")) {
+    addAction(save, action);
+    const ok = res.kind === "sat_launched";
+    log.append({
+      tSim: clock.seconds,
+      sev: ok ? "info" : "error",
+      entity: "LAUNCH",
+      value: `−€${Math.round(res.costEur)}`,
+      msg: ok
+        ? `${preset.label} reached orbit — coverage growing`
+        : `${preset.label} FAILED on ascent — € lost, no sat`,
+    });
+  }
 }
 
 // --- audio (M1-11) ----------------------------------------------------------
@@ -218,6 +336,9 @@ const orrery = new Orrery({
     const p = mission.packet;
     return p ? { fromId: p.fromId, toId: p.toId, progress: p.progress, freshness: p.freshness } : null;
   },
+  // M2c — hand the orrery the live build roster + coverage score each frame (only
+  // read when the heatmap is up, so it costs nothing while the shell is off).
+  build: () => buildRenderState(),
 });
 
 const log = new SystemLog();
@@ -365,6 +486,24 @@ window.addEventListener("keydown", (e) => {
     // M2b — CYCLE the heatmap's information dimension (connectivity → bandwidth →
     // latency). A free key beside the camera controls; render-only.
     orrery.cycleDimension();
+  } else if (k === "b" || k === "B") {
+    // M2c — DEPLOY a ground station at the next candidate site (the cheap, instant
+    // coverage lever). Recorded + applied via the shared applier; the web grows.
+    deployGroundStation();
+  } else if (k === "l" || k === "L") {
+    // M2c — LAUNCH a satellite into the selected preset (the pricier, bigger
+    // coverage lever, with a deterministic failure chance — the §4.7 launch market).
+    launchSatellite();
+  } else if (k === ";") {
+    // M2c — cycle the selected launch preset (LEO → MEO → GEO) for the next L.
+    launchPresetCursor = (launchPresetCursor + 1) % LAUNCH_PRESETS.length;
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "LAUNCH-SEL",
+      value: LAUNCH_PRESETS[launchPresetCursor].label,
+      msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
+    });
   }
   else if (k === " ") {
     e.preventDefault();

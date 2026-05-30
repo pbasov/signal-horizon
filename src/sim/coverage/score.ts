@@ -15,10 +15,10 @@
  * coverage field (each itself pure). No three, no DOM, no wall-clock, no RNG.
  */
 
-import type { Ephemeris } from "../ephemeris";
+import type { Ephemeris, Vec3 } from "../ephemeris";
 import type { GeodesicGrid } from "./grid";
 import type { DemandField } from "./demand";
-import { type Asset, type CellCoverage, coverageOf } from "./field";
+import { type Asset, type CellCoverage, coverageOf, coverageDimsAt } from "./field";
 
 /** The multi-axis coverage score (a demand-weighted rollup; no single scalar). */
 export interface CoverageScore {
@@ -64,6 +64,61 @@ export function scoreCoverage(
     const cov: CellCoverage = coverageOf(eph, cell, assets, t, bodyId);
     if (cov.connectivity <= 0) continue;
     const w = demand.of(cell.id);
+    cellsCovered++;
+    coveredDemand += w;
+    demandWeightedBandwidth += w * cov.bandwidth;
+    demandLatencyAccum += w * cov.latencyS;
+    if (cov.latencyS > worstCoveredLatencyS) worstCoveredLatencyS = cov.latencyS;
+  }
+
+  const totalDemand = demand.total;
+  return {
+    cellsCovered,
+    cellsTotal: grid.size,
+    coveredDemand,
+    totalDemand,
+    coveredDemandFraction: totalDemand > 0 ? coveredDemand / totalDemand : 0,
+    demandWeightedBandwidth,
+    demandWeightedMeanLatencyS: coveredDemand > 0 ? demandLatencyAccum / coveredDemand : 0,
+    worstCoveredLatencyS,
+  };
+}
+
+/**
+ * M2c — score a whole grid from PRECOMPUTED asset world positions (not the
+ * ephemeris). This is the score the M2c BUILD ROSTER uses: a launched sat's orbit
+ * is not in the ephemeris, so its world position is computed by the roster's pure
+ * Kepler propagation and handed in here alongside the body's position + radius. It
+ * reuses the SAME allocation-free gates as the heatmap render's {@link coverageDimsAt}
+ * (sin-elevation horizon mask + inverse-square link budget), so the score the
+ * player SEES rise as they build matches the cells the heatmap lights. Pure.
+ *
+ * `assetEirps` + `assetPositions` are indexed alike (roster order). `out` is an
+ * optional reusable per-cell scratch (one {@link CellCoverage} per cell) so a
+ * per-frame score allocates nothing.
+ */
+export function scoreCoverageAt(
+  grid: GeodesicGrid,
+  demand: DemandField,
+  assetEirps: number[],
+  assetPositions: Vec3[],
+  bodyCenter: Vec3,
+  bodyRadiusM: number,
+  out?: CellCoverage[],
+): CoverageScore {
+  let cellsCovered = 0;
+  let coveredDemand = 0;
+  let demandWeightedBandwidth = 0;
+  let demandLatencyAccum = 0;
+  let worstCoveredLatencyS = 0;
+
+  const cells = grid.cells;
+  for (let i = 0; i < cells.length; i++) {
+    const cov: CellCoverage =
+      out?.[i] ?? { cellId: cells[i].id, connectivity: 0, bandwidth: 0, latencyS: Infinity, links: [] };
+    coverageDimsAt(cells[i], assetEirps, assetPositions, bodyCenter, bodyRadiusM, cov);
+    if (cov.connectivity <= 0) continue;
+    const w = demand.of(cells[i].id);
     cellsCovered++;
     coveredDemand += w;
     demandWeightedBandwidth += w * cov.bandwidth;

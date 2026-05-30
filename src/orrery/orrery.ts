@@ -19,7 +19,9 @@ import type { Ephemeris, Vec3 } from "../sim/ephemeris";
 import type { Readout, FeedGlyphState } from "./readout";
 import { fmtDuration, fmtPct } from "../format";
 import { GeodesicGrid } from "../sim/coverage/grid";
-import { type Asset, type CellCoverage, coverageDimsAt, satAsset } from "../sim/coverage/field";
+import { type CellCoverage, coverageDimsAt } from "../sim/coverage/field";
+import { DemandField } from "../sim/coverage/demand";
+import { scoreCoverageAt } from "../sim/coverage/score";
 import { CoverageOverlay } from "./coverage-overlay";
 import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
 
@@ -73,10 +75,40 @@ export interface PacketRenderState {
   freshness: number;
 }
 
+/** M2c — one placeable asset's render descriptor (the orrery draws a marker for it
+ * + uses its world position to drive the live coverage heatmap). */
+export interface BuildAssetRender {
+  id: string;
+  kind: "ground" | "sat";
+  /** World position (metres, ecliptic) at the frame's sim-time — the roster's pure
+   * Kepler/surface position. The orrery rebases it like any body. */
+  posM: Vec3;
+  /** Link budget EIRP (drives the coverage sweep). */
+  eirp: number;
+}
+
+/** M2c — the LIVE build roster + coverage score the orrery renders (the monument).
+ * Supplied per-frame by main.ts from the pure BuildSession; the orrery reads it to
+ * (1) draw ground-station + sat markers, (2) sweep the heatmap off the LIVE roster,
+ * and (3) show the coverage-score readout that rises as you build. */
+export interface BuildRenderState {
+  assets: BuildAssetRender[];
+  /** Covered-demand fraction ∈ [0,1] — the headline "the web grew" readout. */
+  coveredDemandFraction: number;
+  /** Ground-station + launched-sat counts (the "size of the monument"). */
+  groundCount: number;
+  satCount: number;
+  /** On-hand € (build-vs-budget) + bankruptcy (overspent). */
+  balanceEur: number;
+  bankrupt: boolean;
+}
+
 export interface OrreryCtx {
   eph: Ephemeris;
   now(): number;
   packet(): PacketRenderState | null;
+  /** M2c — the live build roster + coverage score (null until wired). */
+  build?(): BuildRenderState | null;
 }
 
 interface BodySpec {
@@ -100,12 +132,11 @@ const RING_IDS = ["earth", "mars", "moon", "sat_leo", "sat_geo"];
 const RING_SAMPLES = 180;
 const FOCUS_ORDER = ["sun", "earth", "mars", "moon"];
 
-/** The Earth-orbit SYSTEM SATS used as live coverage assets for the M2b heatmap
- * (the dataset's full sat roster — LEO/GEO/MEO). Read straight off the ephemeris;
- * NO session wiring (the replay golden stays untouched). */
-const COVERAGE_SAT_IDS = ["sat_leo", "sat_geo", "sat_meo_inc", "sat_meo_polar"];
 /** The body the coverage grid sits on. */
 const COVERAGE_BODY_ID = "earth";
+/** Max placed-asset markers the orrery draws at once (the marker pool size). The
+ * coverage sweep itself is unbounded; only the on-screen marker glyphs are capped. */
+const MAX_BUILD_MARKERS = 48;
 /** Earth billboard px (mirrors the BODIES "earth" entry) — used to size the shell
  * so it hugs the Earth disc on screen. Kept in one place. */
 const EARTH_BILLBOARD_PX = 40;
@@ -240,22 +271,30 @@ export class Orrery {
   private dragging = false;
   private lastPtr = { x: 0, y: 0 };
 
-  // --- M2b coverage heatmap (GDD §5 view #2 — the monument) ------------------
+  // --- M2b/M2c coverage heatmap (GDD §5 view #2 — the monument) --------------
   /** The static geodesic grid (built once) the shell mesh + coverage sweep use. */
   private coverageGrid = GeodesicGrid.build();
-  /** Live coverage assets = the dataset's Earth-orbit sats (positions via eph). */
-  private coverageAssets: Asset[];
+  /** The demand field over the grid (built once) — the score's denominator. */
+  private demandField = DemandField.build(this.coverageGrid);
   /** The shell mesh + per-frame re-colour (the heatmap render). */
   private coverageOverlay: CoverageOverlay;
   /** Preallocated per-cell coverage results — reused every frame (no alloc storm). */
   private coverageScratch: CellCoverage[];
   /** Active heatmap dimension (connectivity/bandwidth/latency); the 'd' key cycles it. */
   private coverageDimension: CoverageDimension = "connectivity";
-  /** Per-frame scratch: each asset's EIRP (constant) + world position (reused). */
+  /** M2c — the latest covered-demand fraction (the live monument readout). */
+  private coveredDemandFraction = 0;
+  /** Per-frame scratch: each asset's EIRP + world position (grown as the roster grows). */
   private coverageEirps: number[] = [];
-  private coverageSatPos: Vec3[] = [];
+  private coverageAssetPos: Vec3[] = [];
   /** Scratch for Earth's rebased shell position (no per-frame Vector3 alloc). */
   private _shellPos = new THREE.Vector3();
+
+  // --- M2c placed-asset markers (ground stations + launched sats) ------------
+  /** Pooled marker billboards reused across frames (no per-frame mesh alloc). */
+  private buildMarkers: THREE.Mesh[] = [];
+  /** Latest build render state (roster + coverage score), set per-frame by main.ts. */
+  private buildState: BuildRenderState | null = null;
 
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
@@ -300,12 +339,12 @@ export class Orrery {
     this.linkLine = this.buildLink();
     this.scene.add(this.linkLine);
 
-    // M2b — the coverage heatmap shell. Build the static grid mesh ONCE, wire the
-    // dataset's sats as live coverage assets, and preallocate the per-cell coverage
-    // results so the per-frame sweep + re-colour allocate nothing (X-02).
-    this.coverageAssets = COVERAGE_SAT_IDS.map((id) => satAsset(id, id));
-    this.coverageEirps = this.coverageAssets.map((a) => a.eirp);
-    this.coverageSatPos = this.coverageAssets.map(() => [0, 0, 0] as Vec3);
+    // M2b/M2c — the coverage heatmap shell. Build the static grid mesh ONCE and
+    // preallocate the per-cell coverage results so the per-frame sweep + re-colour
+    // allocate nothing (X-02). The coverage ASSETS are now the LIVE PLAYER ROSTER
+    // (M2c): the eirps + world positions arrive per-frame via the build provider, so
+    // the heatmap grows as the player deploys/launches. The scratch arrays grow to
+    // fit the roster on demand (only when an asset is added — never per frame).
     this.coverageScratch = this.coverageGrid.cells.map((c) => ({
       cellId: c.id,
       connectivity: 0,
@@ -315,6 +354,16 @@ export class Orrery {
     }));
     this.coverageOverlay = new CoverageOverlay(this.coverageGrid);
     this.scene.add(this.coverageOverlay.mesh);
+
+    // M2c — a pool of placed-asset marker billboards (ground stations + sats),
+    // built once + hidden; updateBuildMarkers shows/positions them from the roster.
+    for (let i = 0; i < MAX_BUILD_MARKERS; i++) {
+      const m = this.buildSignalDisc([0.62, 1.0, 0.78]); // signal-green: a built asset.
+      m.visible = false;
+      m.renderOrder = 11; // over the body billboards so a marker reads on the globe.
+      this.buildMarkers.push(m);
+      this.scene.add(m);
+    }
 
     this.attachInput();
   }
@@ -643,8 +692,17 @@ export class Orrery {
     // packet + link
     this.updatePacketAndLink(t, focusAbs, worldPerPx);
 
-    // M2b — the coverage heatmap shell (only when toggled on).
-    if (this.coverageOverlay.visible) this.updateCoverageHeatmap(t, focusAbs, worldPerPx);
+    // M2c — pull the live build roster + coverage score for this frame (the monument).
+    this.buildState = this.ctx.build?.() ?? null;
+
+    // M2b/M2c — the coverage heatmap shell (only when toggled on), now swept off the
+    // LIVE roster, plus the placed-asset markers so the built network is visible.
+    if (this.coverageOverlay.visible) {
+      this.updateCoverageHeatmap(t, focusAbs, worldPerPx);
+      this.updateBuildMarkers(focusAbs, worldPerPx);
+    } else {
+      for (const m of this.buildMarkers) m.visible = false;
+    }
 
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);
@@ -733,19 +791,45 @@ export class Orrery {
     // Earth world position (f64 m) + radius for the coverage sweep.
     const earthAbs = this.ctx.eph.position(COVERAGE_BODY_ID, t);
     const earthR = this.ctx.eph.radiusMeters(COVERAGE_BODY_ID);
-    // Sat world positions at t (reused scratch — no per-frame Vec3 alloc).
-    for (let i = 0; i < this.coverageAssets.length; i++) {
-      const p = this.ctx.eph.position(this.coverageAssets[i].ephemerisId ?? this.coverageAssets[i].id, t);
-      const out = this.coverageSatPos[i];
-      out[0] = p[0];
-      out[1] = p[1];
-      out[2] = p[2];
+
+    // M2c — the coverage assets are the LIVE PLAYER ROSTER: read their eirps + world
+    // positions (already computed by the pure roster) out of the build provider into
+    // the reused scratch (grown only when the roster grew — never per frame).
+    const build = this.buildState;
+    const assets = build?.assets ?? [];
+    const n = assets.length;
+    while (this.coverageEirps.length < n) {
+      this.coverageEirps.push(0);
+      this.coverageAssetPos.push([0, 0, 0] as Vec3);
     }
+    this.coverageEirps.length = n;
+    this.coverageAssetPos.length = n;
+    for (let i = 0; i < n; i++) {
+      this.coverageEirps[i] = assets[i].eirp;
+      const out = this.coverageAssetPos[i] ?? ([0, 0, 0] as Vec3);
+      out[0] = assets[i].posM[0];
+      out[1] = assets[i].posM[1];
+      out[2] = assets[i].posM[2];
+      this.coverageAssetPos[i] = out;
+    }
+
     // Whole-grid coverage sweep into the preallocated scratch (allocation-free).
     const cells = this.coverageGrid.cells;
     for (let id = 0; id < cells.length; id++) {
-      coverageDimsAt(cells[id], this.coverageEirps, this.coverageSatPos, earthAbs, earthR, this.coverageScratch[id]);
+      coverageDimsAt(cells[id], this.coverageEirps, this.coverageAssetPos, earthAbs, earthR, this.coverageScratch[id]);
     }
+    // The covered-demand fraction (the live monument readout) — reuses the per-cell
+    // scratch the sweep just filled, so this is a cheap demand-weighted rollup.
+    this.coveredDemandFraction = scoreCoverageAt(
+      this.coverageGrid,
+      this.demandField,
+      this.coverageEirps,
+      this.coverageAssetPos,
+      earthAbs,
+      earthR,
+      this.coverageScratch,
+    ).coveredDemandFraction;
+
     // Re-colour the shell on the active dimension (writes into the preallocated buffer).
     this.coverageOverlay.updateColors(this.coverageScratch, this.coverageDimension);
 
@@ -756,6 +840,29 @@ export class Orrery {
     const dist = this.camera.position.distanceTo(this._shellPos);
     const shellRadius = (EARTH_BILLBOARD_PX * worldPerPx * dist) / 2;
     this.coverageOverlay.place(this._shellPos, shellRadius);
+  }
+
+  /**
+   * M2c — draw the PLACED ASSET markers (ground stations + launched sats) from the
+   * live roster: each asset's pure world position is rebased like a body and shown
+   * as a small signal-green billboard, so the monument you BUILT is visible on the
+   * globe. Pooled + reused (no per-frame mesh alloc); markers beyond the pool cap
+   * are simply not drawn (the heatmap still scores them).
+   */
+  private updateBuildMarkers(focusAbs: Vec3, worldPerPx: number): void {
+    const assets = this.buildState?.assets ?? [];
+    let slot = 0;
+    for (const a of assets) {
+      if (slot >= this.buildMarkers.length) break;
+      const m = this.buildMarkers[slot];
+      this.renderInto(this._rp, a.posM, focusAbs);
+      m.position.copy(this._rp);
+      // Ground stations read a hair smaller than launched sats (the §8 size cue).
+      this.sizeBillboard(m, a.kind === "ground" ? 7 : 9, worldPerPx);
+      m.visible = true;
+      slot++;
+    }
+    for (let i = slot; i < this.buildMarkers.length; i++) this.buildMarkers[i].visible = false;
   }
 
   /**
@@ -890,17 +997,27 @@ export class Orrery {
     set("tl", `<b>${this.presetName()}</b>\nfocus <span class="k">${this.focusId.toUpperCase()}</span>`);
     set("tr", `fov ${this.cur.fov.toFixed(0)}°\ndist ${this.cur.dist.toFixed(2)}`);
     // bl — when the heatmap is up, name the active coverage dimension (the §8
-    // per-dimension hue the shell is painting), so the colour reads unambiguously.
-    set(
-      "bl",
-      this.coverageOverlay.visible
-        ? `drag orbit · wheel zoom\nCOVERAGE <span class="k">${this.dimensionLabel()}</span>`
-        : `drag orbit · wheel zoom`,
-    );
+    // per-dimension hue the shell is painting) + the LIVE coverage-score readout
+    // (the covered-demand fraction that rises as you build — the monument growing)
+    // + the build budget, so the build-vs-budget tension reads at a glance.
+    if (this.coverageOverlay.visible) {
+      const pct = Math.round(this.coveredDemandFraction * 100);
+      const b = this.buildState;
+      const monument = b
+        ? ` · ${b.groundCount}gs/${b.satCount}sat · €${Math.round(b.balanceEur)}${b.bankrupt ? " OVERSPENT" : ""}`
+        : "";
+      set(
+        "bl",
+        `drag orbit · wheel zoom\nCOVERAGE <span class="k">${this.dimensionLabel()}</span> · ` +
+          `DEMAND <span class="k">${pct}%</span>${monument}`,
+      );
+    } else {
+      set("bl", `drag orbit · wheel zoom`);
+    }
     set(
       "br",
       `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus\n` +
-        `<span class="k">H</span> heatmap · <span class="k">D</span> dimension`,
+        `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch`,
     );
   }
 
