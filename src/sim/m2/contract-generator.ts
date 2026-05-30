@@ -25,7 +25,7 @@
 import { DEG_RAD } from "../ephemeris";
 import type { SimRng } from "../rng";
 import type { GeodesicGrid } from "../coverage/grid";
-import type { DemandField } from "../coverage/demand";
+import type { DemandReader } from "../coverage/demand";
 import {
   type Contract,
   type ContractTarget,
@@ -105,7 +105,7 @@ export class ContractGenerator {
     contracts: Contract[],
     rng: SimRng,
     grid: GeodesicGrid,
-    demand: DemandField,
+    demand: DemandReader,
     nowS: number,
   ): Contract[] {
     const offered: Contract[] = [];
@@ -127,7 +127,7 @@ export class ContractGenerator {
   }
 
   /** Draw one OFFERED contract: an RNG-picked target + an RNG-jittered term. */
-  private draw(rng: SimRng, grid: GeodesicGrid, demand: DemandField, offeredAtS: number): Contract {
+  private draw(rng: SimRng, grid: GeodesicGrid, demand: DemandReader, offeredAtS: number): Contract {
     const idx = rng.nextIntRange(0, CONTRACT_TARGETS.length - 1);
     const tgt = CONTRACT_TARGETS[idx];
     const term = DEFAULT_TERM_SECONDS + rng.nextDoubleRange(-TERM_JITTER_SECONDS, TERM_JITTER_SECONDS);

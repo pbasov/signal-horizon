@@ -38,7 +38,8 @@ import { SimRng } from "../rng";
 import { M1Economy } from "../m1/economy";
 import { GeodesicGrid } from "../coverage/grid";
 import { DemandField } from "../coverage/demand";
-import { servedFractionAt } from "../coverage/score";
+import { DynamicDemand, GROWTH_INTEGRATION_SECONDS } from "../coverage/dynamic-demand";
+import { servedFractionAt, servedQualityAt } from "../coverage/score";
 import type { CellCoverage } from "../coverage/field";
 import { Roster, type RosterSnapshot } from "./roster";
 import { CANDIDATE_SITES, GROUND_DEPLOY_COST, GROUND_EIRP, STARTER } from "./sites";
@@ -106,6 +107,13 @@ export interface BuildSnapshot {
   generator: GeneratorSnapshot;
   /** M2d — the sim-time the session has been STEPPED to (so revenue resumes seamlessly). */
   lastStepS: number;
+  /** M2e — the ESCALATION ENGINE's live per-cell demand (grows under service). Folds
+   * into the replay hash so the dynamic demand reproduces on replay/restore. */
+  demand: number[];
+  /** M2e — the sim-time growth was last integrated to + the next cadence boundary (so a
+   * save/restore resumes the escalation engine on the exact same cadence). */
+  lastGrowthAtS: number;
+  nextGrowthAtS: number;
 }
 
 export class BuildSession {
@@ -121,9 +129,26 @@ export class BuildSession {
 
   // --- M2d: the contract economy ---------------------------------------------
   /** The coverage grid + demand field the contracts target + the served fraction
-   * reads (built once; the SAME default-level grid the live render scores). Pure. */
+   * reads (built once; the SAME default-level grid the live render scores). Pure.
+   *
+   * M2e — the demand is now DYNAMIC (the escalation engine): a per-cell CURRENT demand
+   * that GROWS where the network serves (GDD §3b). It exposes the SAME read surface as a
+   * static {@link DemandField} (`of`/`total`), so the contract served-fraction + score
+   * readers use it as a drop-in CURRENT field; the session advances its growth each step. */
   private readonly grid: GeodesicGrid;
-  private readonly demand: DemandField;
+  private readonly demand: DynamicDemand;
+  /** M2e — reusable per-cell served-quality scratch (0/1 per cell) the demand growth
+   * reads (grown to the grid size once; no per-step allocation after that). */
+  private servedQuality: number[] = [];
+  /** M2e — the sim-time the demand growth was last integrated to, and the next cadence
+   * boundary it fires at. Triggering on the sim-time `t` (which a fixed-step caller hits
+   * EXACTLY at tick multiples, e.g. tick·(1/60) === 60 at tick 3600) — rather than on a
+   * drifting elapsed-time accumulator — is what makes growth DT-INVARIANT: a fine (dt=1/60)
+   * and a coarse (dt=60) caller both fire at the SAME boundary t and sample the SAME
+   * geometry there, so the discontinuous 0/1 served-quality gate can't flip between them.
+   * Both fold into the snapshot so growth resumes exactly mid-cadence after save/restore. */
+  private lastGrowthAtS = 0;
+  private nextGrowthAtS = GROWTH_INTEGRATION_SECONDS;
   /** Every contract this session has seen, in offer order (offered/active/done/failed). */
   private readonly contractList: Contract[] = [];
   /** The deterministic offer generator (draws targets/terms/intervals from {@link rng}). */
@@ -153,7 +178,9 @@ export class BuildSession {
     this.economy = new M1Economy(openingBalance);
     this.rng = new SimRng(seed);
     this.grid = grid ?? GeodesicGrid.build();
-    this.demand = demand ?? DemandField.build(this.grid);
+    // M2e — build the DYNAMIC demand from the static baseline (the M2a field stays the
+    // immutable floor the dynamic overlay grows above + decays back toward).
+    this.demand = DynamicDemand.build(this.grid, demand ?? DemandField.build(this.grid));
     // Boot with a SMALL starter roster so the coverage web is not empty but building
     // still matters (a couple of ground stations over demand + one LEO sat).
     for (const s of STARTER.grounds) {
@@ -300,7 +327,9 @@ export class BuildSession {
    * call it once per fixed tick with that tick's dt (mirrors the M1 session's step()).
    */
   step(eph: Ephemeris, t: number, dtSeconds: number): void {
-    // (1) Advance the offer generator (offer/expire contracts deterministically).
+    // (1) Advance the offer generator (offer/expire contracts deterministically). It
+    // reads the CURRENT (dynamic) demand, so an offer over a region that has grown is
+    // priced off the bigger demand — the §4.9 + §3b coupling.
     this.generator.step(this.contractList, this.rng, this.grid, this.demand, t);
 
     // (1b) Expire stale OFFERS (cheap — no coverage needed) and note any ACTIVE ones.
@@ -310,35 +339,73 @@ export class BuildSession {
       else if (c.state === "active") anyActive = true;
     }
     this.lastStepS = t;
-    if (!anyActive) return; // nothing to serve → skip the coverage sweep (perf).
 
-    // (2)+(3) Accrue revenue + advance state machines. Precompute the roster positions
-    // ONCE for this step's t (all active contracts read the same coverage instant).
-    this.scratchPos = this.roster.worldPositions(eph, t, this.scratchPos);
+    // Precompute the roster world positions + body geometry ONCE for this step's t (the
+    // same instant the revenue read + the escalation sweep use). Cheap when the roster is
+    // empty; this is the only Kepler propagation of the step.
+    let positionsReady = false;
     const eirps = this.cachedEirps();
-    const center = eph.position("earth", t);
-    const radius = eph.radiusMeters("earth");
+    let center: Vec3 = [0, 0, 0];
+    let radius = 0;
+    const ensurePositions = (): void => {
+      if (positionsReady) return;
+      this.scratchPos = this.roster.worldPositions(eph, t, this.scratchPos);
+      center = eph.position("earth", t);
+      radius = eph.radiusMeters("earth");
+      positionsReady = true;
+    };
 
-    let netDelta = 0; // ONE summed wallet apply for DT-invariance.
-    for (const c of this.contractList) {
-      if (c.state !== "active") continue;
-      const frac = servedFractionAt(
-        this.grid,
-        this.demand,
-        c.cellIds,
-        c.qualityThreshold,
-        eirps,
-        this.scratchPos,
-        center,
-        radius,
-        this.scratchCov,
-      );
-      const earned = contractRevenueRatePerSecond(c, frac) * dtSeconds;
-      netDelta += earned;
-      recordEarned(c, earned);
-      stepActiveContract(c, frac, dtSeconds);
+    // (2)+(3) Accrue revenue + advance state machines, reading the CURRENT (dynamic) demand
+    // (so a contract over a region whose demand has GROWN is harder to keep at full serve —
+    // the served fraction is weighted by the now-bigger demand: the escalation BITE). The
+    // revenue is accrued BEFORE the demand growth below, so a step's € is keyed on the demand
+    // at the START of the step — making it DT-invariant w.r.t. the growth cadence (both a fine
+    // and a coarse caller accrue over the same piecewise-constant demand). One summed wallet
+    // apply() for DT-invariance.
+    if (anyActive) {
+      ensurePositions();
+      let netDelta = 0;
+      for (const c of this.contractList) {
+        if (c.state !== "active") continue;
+        const frac = servedFractionAt(
+          this.grid,
+          this.demand,
+          c.cellIds,
+          c.qualityThreshold,
+          eirps,
+          this.scratchPos,
+          center,
+          radius,
+          this.scratchCov,
+        );
+        const earned = contractRevenueRatePerSecond(c, frac) * dtSeconds;
+        netDelta += earned;
+        recordEarned(c, earned);
+        stepActiveContract(c, frac, dtSeconds);
+      }
+      if (netDelta !== 0) this.economy.apply(netDelta);
     }
-    if (netDelta !== 0) this.economy.apply(netDelta);
+
+    // (4) THE ESCALATION ENGINE (M2e). Once sim-time crosses the next fixed-cadence boundary,
+    // sample the whole-grid served-quality at t and advance the dynamic demand by the EXACT
+    // CLOSED-FORM logistic flow over the elapsed time since the last fire — a cell served
+    // at/above the bar GAINS demand (GDD §3b generator 1, "demand grows where you serve"), so
+    // its served-fraction erodes under fixed capacity → revenue dips → you must EXPAND. Firing
+    // on a fixed sim-time cadence (not every 1/60 s tick) keeps the per-tick cost flat AND
+    // keeps growth DT-invariant (see {@link lastGrowthAtS}). Runs even with no active contract
+    // — demand grows wherever the network serves, contract or not.
+    if (t >= this.nextGrowthAtS) {
+      ensurePositions();
+      // The growth bar mirrors the contract quality bar (connectivity ≥ 1): demand grows on
+      // the same "is it served?" gate the heatmap + contracts read.
+      servedQualityAt(this.grid, 1, eirps, this.scratchPos, center, radius, this.servedQuality, this.scratchCov);
+      this.demand.step(this.servedQuality, t - this.lastGrowthAtS);
+      this.lastGrowthAtS = t;
+      // Advance the boundary to the next un-crossed cadence multiple (catch up if a big dt
+      // jumped several; integrating the whole gap in one closed-form step is exact for the
+      // flow, so a single fire suffices).
+      while (this.nextGrowthAtS <= t) this.nextGrowthAtS += GROWTH_INTEGRATION_SECONDS;
+    }
   }
 
   /** The summed € revenue RATE (per sim-second) of all ACTIVE contracts at sim-time t,
@@ -386,6 +453,9 @@ export class BuildSession {
       contracts: this.contractList.map(cloneContract),
       generator: this.generator.snapshot(),
       lastStepS: this.lastStepS,
+      demand: this.demand.snapshot(),
+      lastGrowthAtS: this.lastGrowthAtS,
+      nextGrowthAtS: this.nextGrowthAtS,
     };
   }
 
@@ -399,5 +469,16 @@ export class BuildSession {
     if (s.contracts) for (const c of s.contracts) this.contractList.push(cloneContract(c));
     if (s.generator) this.generator.restore(s.generator);
     this.lastStepS = s.lastStepS ?? 0;
+    if (s.demand) this.demand.restore(s.demand);
+    this.lastGrowthAtS = s.lastGrowthAtS ?? 0;
+    this.nextGrowthAtS = s.nextGrowthAtS ?? GROWTH_INTEGRATION_SECONDS;
+  }
+
+  /**
+   * M2e — a read-only view of the CURRENT dynamic demand (the escalation engine's live
+   * field). The live render reads this to (a) drive the heatmap/score off the GROWING
+   * demand and (b) show the rising-demand / eroding-coverage readout. Pure read. */
+  get demandField(): DynamicDemand {
+    return this.demand;
   }
 }

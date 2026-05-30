@@ -101,6 +101,11 @@ export interface BuildRenderState {
   /** On-hand € (build-vs-budget) + bankruptcy (overspent). */
   balanceEur: number;
   bankrupt: boolean;
+  /** M2e — the ESCALATION ENGINE readout: the CURRENT total demand (grows where you serve)
+   * vs the BASELINE it started from. demandGrowth = total/baseline − 1 ∈ [0,2] is how far the
+   * served network has grown the demand — the "I solved this, and now it's bigger" cue. */
+  totalDemand: number;
+  baselineDemand: number;
 }
 
 export interface OrreryCtx {
@@ -1001,15 +1006,26 @@ export class Orrery {
     // (the covered-demand fraction that rises as you build — the monument growing)
     // + the build budget, so the build-vs-budget tension reads at a glance.
     if (this.coverageOverlay.visible) {
-      const pct = Math.round(this.coveredDemandFraction * 100);
       const b = this.buildState;
+      // The covered-demand fraction reflects the CURRENT (M2e dynamic) demand when the build
+      // provider supplies it (it scores against the growing field); fall back to the orrery's
+      // own static sweep when there is no build state yet.
+      const pct = Math.round((b?.coveredDemandFraction ?? this.coveredDemandFraction) * 100);
       const monument = b
         ? ` · ${b.groundCount}gs/${b.satCount}sat · €${Math.round(b.balanceEur)}${b.bankrupt ? " OVERSPENT" : ""}`
         : "";
+      // M2e — the ESCALATION readout: how far the served network has grown total demand above
+      // the baseline it started from (the "I solved this, and now it's bigger" cue). Rises as
+      // served regions' demand balloons; the covered % erodes against it under fixed capacity.
+      let escalation = "";
+      if (b && b.baselineDemand > 0) {
+        const growthPct = Math.round((b.totalDemand / b.baselineDemand - 1) * 100);
+        escalation = ` · DEMAND·GROWTH <span class="k">+${growthPct}%</span>`;
+      }
       set(
         "bl",
         `drag orbit · wheel zoom\nCOVERAGE <span class="k">${this.dimensionLabel()}</span> · ` +
-          `DEMAND <span class="k">${pct}%</span>${monument}`,
+          `COVERED <span class="k">${pct}%</span>${escalation}${monument}`,
       );
     } else {
       set("bl", `drag orbit · wheel zoom`);

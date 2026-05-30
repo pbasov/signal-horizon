@@ -31,7 +31,7 @@
  */
 
 import type { GeodesicGrid } from "../coverage/grid";
-import type { DemandField } from "../coverage/demand";
+import type { DemandReader } from "../coverage/demand";
 import { latLonToUnit, _vec } from "../coverage/grid";
 
 const { dot } = _vec;
@@ -146,7 +146,7 @@ export const DEFAULT_TARGET_RADIUS_DEG = 22.0;
  */
 export function resolveTargetCells(
   grid: GeodesicGrid,
-  demand: DemandField,
+  demand: DemandReader,
   target: ContractTarget,
 ): { cellIds: number[]; regionDemand: number } {
   const center = latLonToUnit(target.latRad, target.lonRad);
@@ -183,7 +183,7 @@ export function resolveTargetCells(
 export function offerContract(
   id: string,
   grid: GeodesicGrid,
-  demand: DemandField,
+  demand: DemandReader,
   target: ContractTarget,
   offeredAtS: number,
   termSeconds = DEFAULT_TERM_SECONDS,

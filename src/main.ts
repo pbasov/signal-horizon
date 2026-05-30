@@ -46,7 +46,6 @@ import { BuildSession } from "./sim/m2/session";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
 import { GeodesicGrid } from "./sim/coverage/grid";
-import { DemandField } from "./sim/coverage/demand";
 import { scoreCoverageAt } from "./sim/coverage/score";
 import type { Vec3 } from "./sim/ephemeris";
 import type { BuildRenderState } from "./orrery/orrery";
@@ -116,10 +115,11 @@ const session = new M1Session();
 // readout rises as you build. f64→f32 happens only in the orrery; main.ts hands the
 // orrery f64 world positions + the pure score.
 const build = new BuildSession();
-// The coverage grid + demand field (built once) for the live coverage score. Pure
-// reads; nothing here mutates sim state. Scratch positions grow with the roster.
+// The coverage grid (built once) for the live coverage score. Same default level as the
+// session's internal grid, so cell ids align and scoring against the session's CURRENT
+// (M2e dynamic) demand — read via build.demandField — is well-keyed. Pure reads; nothing
+// here mutates sim state. Scratch positions grow with the roster.
 const buildCoverageGrid = GeodesicGrid.build();
-const buildCoverageDemand = DemandField.build(buildCoverageGrid);
 let buildScratchPos: Vec3[] = [];
 // The candidate-site cursor: B cycles which candidate the next deploy targets, so a
 // keyed/list deploy needs no globe-raycast (raycast placement is later polish).
@@ -144,7 +144,10 @@ function buildRenderState(): BuildRenderState {
   const eirps = build.roster.eirps();
   const earth = eph.position("earth", t);
   const earthR = eph.radiusMeters("earth");
-  const score = scoreCoverageAt(buildCoverageGrid, buildCoverageDemand, eirps, buildScratchPos, earth, earthR);
+  // M2e — score against the session's CURRENT (dynamic) demand, so the covered fraction
+  // reflects the ESCALATION ENGINE's growth (it erodes as served regions outgrow the fixed
+  // roster). buildCoverageDemand stays only as the BASELINE reference for the growth readout.
+  const score = scoreCoverageAt(buildCoverageGrid, build.demandField, eirps, buildScratchPos, earth, earthR);
   const list = build.roster.list();
   return {
     assets: list.map((a, i) => ({
@@ -158,6 +161,8 @@ function buildRenderState(): BuildRenderState {
     satCount: build.roster.satCount,
     balanceEur: build.balance,
     bankrupt: build.bankrupt,
+    totalDemand: build.demandField.total,
+    baselineDemand: build.demandField.baselineTotal,
   };
 }
 // Latest render-facing resolve state; refreshed by tickSim() each fixed tick. The

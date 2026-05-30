@@ -95,6 +95,20 @@ export function demandOf(cell: Cell): number {
 }
 
 /**
+ * The minimal read surface a demand-weighted scorer needs: a per-cell weight + the Σ.
+ * Both the STATIC {@link DemandField} (M2a) and the M2e DYNAMIC demand overlay
+ * ({@link import("./dynamic-demand").DynamicDemand}) satisfy this, so the coverage/
+ * contract scorers ({@link import("./score").scoreCoverageAt} etc.) read either as a
+ * drop-in CURRENT field without caring whether it grows.
+ */
+export interface DemandReader {
+  /** Demand weight of a cell by id (non-negative). */
+  of(cellId: number): number;
+  /** Σ weight over all cells (the covered-demand-fraction denominator). */
+  readonly total: number;
+}
+
+/**
  * The demand field over a whole grid: a non-negative weight per cell id, plus
  * the total (for demand-weighted scoring). Pure + deterministic for a grid.
  */

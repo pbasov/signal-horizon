@@ -17,7 +17,7 @@
 
 import type { Ephemeris, Vec3 } from "../ephemeris";
 import type { GeodesicGrid } from "./grid";
-import type { DemandField } from "./demand";
+import type { DemandReader } from "./demand";
 import { type Asset, type CellCoverage, coverageOf, coverageDimsAt } from "./field";
 
 /** The multi-axis coverage score (a demand-weighted rollup; no single scalar). */
@@ -49,7 +49,7 @@ export interface CoverageScore {
 export function scoreCoverage(
   eph: Ephemeris,
   grid: GeodesicGrid,
-  demand: DemandField,
+  demand: DemandReader,
   assets: Asset[],
   t: number,
   bodyId = "earth",
@@ -103,7 +103,7 @@ export function scoreCoverage(
  */
 export function servedFractionAt(
   grid: GeodesicGrid,
-  demand: DemandField,
+  demand: DemandReader,
   cellIds: number[],
   qualityThreshold: number,
   assetEirps: number[],
@@ -135,6 +135,74 @@ export function servedFractionAt(
 }
 
 /**
+ * M2e — a contract's demand-weighted SERVED FRACTION ∈ [0,1] read from a PRECOMPUTED
+ * per-cell served-quality array (the {@link servedQualityAt} output) + the CURRENT demand.
+ * Avoids re-sweeping the contract's cells when the whole-grid served-quality has already
+ * been computed this step (the session computes it once for the demand-growth, then reads
+ * each active contract's fraction off it — one coverage sweep per step, not N+1). Same
+ * demand-weighted rollup + degenerate fallback as {@link servedFractionAt}. Pure.
+ */
+export function servedFractionFromQuality(
+  demand: DemandReader,
+  cellIds: number[],
+  servedQuality: number[],
+): number {
+  let regionDemand = 0;
+  let servedDemand = 0;
+  let regionCells = 0;
+  let servedCells = 0;
+  for (let i = 0; i < cellIds.length; i++) {
+    const id = cellIds[i];
+    const q = servedQuality[id] ?? 0;
+    const w = demand.of(id);
+    regionDemand += w;
+    regionCells++;
+    if (q > 0) {
+      servedDemand += w * q;
+      servedCells += q >= 1 ? 1 : q;
+    }
+  }
+  if (regionCells === 0) return 0;
+  return regionDemand > 0 ? servedDemand / regionDemand : servedCells / regionCells;
+}
+
+/**
+ * M2e — fill a per-cell SERVED-QUALITY array over the WHOLE grid from PRECOMPUTED asset
+ * world positions: `out[cellId] = 1` when the cell is covered at/above `qualityThreshold`
+ * (connectivity ≥ threshold), else `0`. This is the input the ESCALATION ENGINE's dynamic
+ * demand grows on — a cell served well this step gains demand (GDD §3b "demand grows where
+ * you serve"). It reuses the SAME allocation-free gates as the heatmap render's
+ * {@link coverageDimsAt}, so the demand that grows is exactly the demand the player SEES
+ * served on the heatmap. Pure; writes into the caller's reused `out` (one number per cell)
+ * and a single reusable {@link CellCoverage} scratch, so the per-step whole-grid sweep
+ * allocates nothing once settled.
+ *
+ * The served quality is a 0/1 step (the connectivity bar is a hard gate); the value is kept
+ * a float in [0,1] so a finer per-cell quality (e.g. a bandwidth ramp) can replace it later
+ * without reshaping the growth law. `out` is grown to the grid size if shorter.
+ */
+export function servedQualityAt(
+  grid: GeodesicGrid,
+  qualityThreshold: number,
+  assetEirps: number[],
+  assetPositions: Vec3[],
+  bodyCenter: Vec3,
+  bodyRadiusM: number,
+  out: number[],
+  scratch?: CellCoverage,
+): void {
+  const cov: CellCoverage =
+    scratch ?? { cellId: -1, connectivity: 0, bandwidth: 0, latencyS: Infinity, links: [] };
+  const cells = grid.cells;
+  while (out.length < cells.length) out.push(0);
+  out.length = cells.length;
+  for (let i = 0; i < cells.length; i++) {
+    coverageDimsAt(cells[i], assetEirps, assetPositions, bodyCenter, bodyRadiusM, cov);
+    out[i] = cov.connectivity >= qualityThreshold ? 1 : 0;
+  }
+}
+
+/**
  * M2c — score a whole grid from PRECOMPUTED asset world positions (not the
  * ephemeris). This is the score the M2c BUILD ROSTER uses: a launched sat's orbit
  * is not in the ephemeris, so its world position is computed by the roster's pure
@@ -149,7 +217,7 @@ export function servedFractionAt(
  */
 export function scoreCoverageAt(
   grid: GeodesicGrid,
-  demand: DemandField,
+  demand: DemandReader,
   assetEirps: number[],
   assetPositions: Vec3[],
   bodyCenter: Vec3,

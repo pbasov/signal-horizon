@@ -16,7 +16,6 @@ import {
 import { BuildSession } from "./m2/session";
 import { applyBuildAction } from "./m2/apply-build-action";
 import { GeodesicGrid } from "./coverage/grid";
-import { DemandField } from "./coverage/demand";
 import { scoreCoverageAt } from "./coverage/score";
 import type { Vec3 } from "./ephemeris";
 
@@ -124,6 +123,12 @@ function buildStateHash(s: BuildSession): bigint {
       acc = mixFloat(acc, a.eirp);
     }
   }
+  // M2e — the ESCALATION ENGINE's dynamic demand (every per-cell current value + the
+  // growth-cadence cursors), folded so the growing demand is IN the replay hash.
+  acc = mixFloat(acc, snap.lastGrowthAtS);
+  acc = mixFloat(acc, snap.nextGrowthAtS);
+  acc = mixInt(acc, BigInt(snap.demand.length));
+  for (const d of snap.demand) acc = mixFloat(acc, d);
   // M2d — the contract economy.
   acc = mixFloat(acc, snap.lastStepS);
   acc = mixFloat(acc, snap.generator.nextOfferAtS);
@@ -188,33 +193,58 @@ function isBuildKind(kind: string): boolean {
   );
 }
 
-/** Covered-demand fraction of a session's LIVE roster at sim-time t (the monument size). */
+/** Covered-demand fraction of a session's LIVE roster at sim-time t (the monument size).
+ * Reads the session's CURRENT (M2e dynamic) demand so it reflects any growth. */
 function coveredFraction(session: BuildSession, t: number): number {
   const eph = loadEphemeris();
   const grid = GeodesicGrid.build();
-  const demand = DemandField.build(grid);
   const positions: Vec3[] = session.worldPositions(eph, t);
   const eirps = session.roster.eirps();
   const earth = eph.position("earth", t);
   const earthR = eph.radiusMeters("earth");
-  return scoreCoverageAt(grid, demand, eirps, positions, earth, earthR).coveredDemandFraction;
+  return scoreCoverageAt(grid, session.demandField, eirps, positions, earth, earthR).coveredDemandFraction;
+}
+
+/** TIME-AVERAGED covered-demand fraction over [t0,t1] (n samples) against the session's
+ * CURRENT demand — averaging across the moving constellation's orbital phase kills the
+ * per-instant coverage oscillation so the M2e escalation TREND is read cleanly. */
+function avgCoveredFraction(session: BuildSession, t0: number, t1: number, n: number): number {
+  const eph = loadEphemeris();
+  const grid = GeodesicGrid.build();
+  const earthR = eph.radiusMeters("earth");
+  const eirps = session.roster.eirps();
+  let sum = 0;
+  for (let k = 0; k < n; k++) {
+    const t = t0 + ((t1 - t0) * k) / n;
+    const positions: Vec3[] = session.worldPositions(eph, t);
+    const earth = eph.position("earth", t);
+    sum += scoreCoverageAt(grid, session.demandField, eirps, positions, earth, earthR).coveredDemandFraction;
+  }
+  return sum / n;
 }
 
 // ---------------------------------------------------------------------------
 // PINNED M2 build-loop replay golden (deploy + launch + failure + M2d contracts +
-// coverage revenue). SEPARATE from the M1 golden 544847093270497462n (a different
-// world). Bootstrapped by running the replay once; pinned here as the regression
-// guard. Any change to the roster shape, the launch presets/sites, the launch PRNG
-// draw, the starter roster, the contract model, the offer generator, or the revenue
-// math moves this value.
+// coverage revenue + M2e ESCALATION-ENGINE demand growth). SEPARATE from the M1 golden
+// 544847093270497462n (a different world). Bootstrapped by running the replay once; pinned
+// here as the regression guard. Any change to the roster shape, the launch presets/sites,
+// the launch PRNG draw, the starter roster, the contract model, the offer generator, the
+// revenue math, OR the M2e demand-growth law/cadence (now folded into the state hash via
+// the per-cell dynamic demand) moves this value.
 // ---------------------------------------------------------------------------
-const BUILD_REPLAY_GOLDEN = 5706799219860839795n;
+const BUILD_REPLAY_GOLDEN = 15734905161678697793n;
+
+/** A generous per-test timeout for the heavy multi-replay tests: M2e advances the
+ * ESCALATION-ENGINE demand growth on a per-tick whole-grid coverage sweep, so a single
+ * 7000-sim-second replay at DT=1/60 (≈420k ticks) is a few seconds; tests that run two
+ * replays (round-trip / live==replay / determinism) need headroom past the 5s default. */
+const HEAVY_MS = 30000;
 
 describe("m2 build-loop replay golden — deploy + launch + M2d contracts + revenue", () => {
   it("pins the build-session replay state hash for the golden build log (regression guard)", () => {
     const r = replay(buildLog());
     expect(r.hash).toBe(BUILD_REPLAY_GOLDEN);
-  });
+  }, HEAVY_MS);
 
   it("a logged build sequence is deterministic: replaying the same log twice is bit-identical", () => {
     const a = replay(buildLog());
@@ -222,7 +252,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     expect(a.hash).toBe(b.hash);
     expect(a.balance).toBe(b.balance);
     expect(a.session.snapshot()).toEqual(b.session.snapshot());
-  });
+  }, HEAVY_MS);
 
   it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay", () => {
     const eph = loadEphemeris();
@@ -244,7 +274,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     const replayed = replay(buildLog());
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
     expect(live.balance).toBe(replayed.balance);
-  });
+  }, HEAVY_MS);
 
   it("the build log exercises a launch FAILURE deterministically (the seeded-PRNG risk)", () => {
     const eph = loadEphemeris();
@@ -274,7 +304,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     const endFrac = coveredFraction(r.session, t);
     expect(endFrac).toBeGreaterThan(startFrac);
     expect(endFrac).toBeGreaterThan(0);
-  });
+  }, HEAVY_MS);
 
   it("M2d — the LOOP CLOSES: an accepted contract goes ACTIVE, accrues €, and the wallet EARNS it back", () => {
     const r = replay(buildLog());
@@ -292,7 +322,55 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     expect(r.balance).toBeGreaterThan(1500);
     // And the contract revenue exceeds the M2c capex it offsets (earned > a launch's €).
     expect(accepted!.earnedEur).toBeGreaterThan(1800);
-  });
+  }, HEAVY_MS);
+
+  it("M2e — THE ESCALATION ENGINE: served demand GROWS, the covered fraction ERODES under fixed capacity, and adding capacity RESTORES it", () => {
+    // A worked before/after of the §3b loop ("demand grows where you serve → it outgrows the
+    // capacity you built → your covered fraction erodes → you must expand"). Build a FIXED
+    // network over real demand, run a long served stretch, and prove the three legs:
+    //   (1) total demand GROWS substantially (the escalation engine ran — demand grew where
+    //       the network serves), and is BOUNDED (finite, well under the global cap);
+    //   (2) the TIME-AVERAGED covered-demand fraction is LOWER late than early — the fixed
+    //       roster covers a smaller FRACTION as demand balloons past it (the BITE);
+    //   (3) ADDING CAPACITY (a swarm of sats) lifts the covered fraction back ABOVE the early
+    //       level — the loop renews one size larger (the bigger demand now grows from a higher
+    //       base, so the next gap re-opens bigger — the OpenTTD cycle).
+    const eph = loadEphemeris();
+    const s = new BuildSession();
+    s.deployGround(1); // SOUTH ASIA
+    s.deployGround(3); // NORTH ATLANTIC EU
+    s.deployGround(5); // SUB-SAHARAN AFRICA
+    s.deployGround(2); // NORTH AMERICA
+    s.deployGround(6); // SOUTH AMERICA
+    s.launchSat("leo_53", 0);
+    s.launchSat("meo_63", 0);
+    s.launchSat("geo_eq", 0);
+
+    const baselineTotal = s.demandField.baselineTotal;
+    // EARLY: time-average the covered fraction over ~2 LEO orbits before demand has grown.
+    const earlyFraction = avgCoveredFraction(s, 0, 11000, 64);
+
+    // Run a long served stretch with the FIXED roster (the escalation engine grows demand).
+    const RUN_T = 150000; // ≈ 41 sim-hours — many orbits, demand saturates well up.
+    for (let tick = 0; tick * GOLDEN_DT <= RUN_T; tick++) s.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
+
+    // (1) Demand GREW where served — and stayed bounded/finite.
+    const grownTotal = s.demandField.total;
+    expect(grownTotal).toBeGreaterThan(baselineTotal * 1.5); // a perceptible, real increase
+    expect(Number.isFinite(grownTotal)).toBe(true);
+    expect(grownTotal).toBeLessThan(baselineTotal * 3); // bounded under the global cap (3×)
+
+    // (2) The covered FRACTION eroded under the fixed capacity (averaged across orbital phase).
+    const erodedFraction = avgCoveredFraction(s, RUN_T, RUN_T + 11000, 64);
+    expect(erodedFraction).toBeLessThan(earlyFraction); // the fixed roster lost ground
+
+    // (3) ADDING CAPACITY restores it (and then some) — the player expands, the loop renews.
+    for (let i = 0; i < 6; i++) s.launchSat("leo_53", RUN_T);
+    for (let i = 0; i < 6; i++) s.launchSat("meo_63", RUN_T);
+    const restoredFraction = avgCoveredFraction(s, RUN_T, RUN_T + 11000, 64);
+    expect(restoredFraction).toBeGreaterThan(earlyFraction); // expansion re-solves the bigger demand
+    expect(restoredFraction).toBeGreaterThan(erodedFraction);
+  }, HEAVY_MS);
 
   it("M2d — DECLINE: an offered contract declined via the shared applier retires (live==replay)", () => {
     // Step a fresh session to the first offer, then DECLINE it through applyBuildAction
@@ -320,7 +398,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     // The declined contract is retired (failed = not taken) and the result reproduces.
     expect(a.contracts.some((c) => c.state === "failed")).toBe(true);
     expect(a.snapshot()).toEqual(b.snapshot()); // deterministic
-  });
+  }, HEAVY_MS);
 
   it("M2d — DT-INVARIANT revenue: stepping to the same sim-time at 1× vs a coarse dt yields the same €", () => {
     const eph = loadEphemeris();
@@ -370,7 +448,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     expect(cc.earnedEur).toBeCloseTo(cf.earnedEur, 2);
     expect(coarse.balance).toBeCloseTo(fine.balance, 2);
     expect(cf.earnedEur).toBeGreaterThan(0);
-  });
+  }, HEAVY_MS);
 
   it("a build/contract action only mutates on a known kind; an unknown action is a no-op", () => {
     const eph = loadEphemeris();
@@ -391,5 +469,5 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     const a = replay(sg);
     const b = replay(reloaded!);
     expect(b.hash).toBe(a.hash);
-  });
+  }, HEAVY_MS);
 });

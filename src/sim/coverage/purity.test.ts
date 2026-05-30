@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 // @types/node — and works identically under Vitest and the Vite build.
 import gridSrc from "./grid.ts?raw";
 import demandSrc from "./demand.ts?raw";
+import dynamicDemandSrc from "./dynamic-demand.ts?raw";
 import fieldSrc from "./field.ts?raw";
 import scoreSrc from "./score.ts?raw";
 
@@ -18,6 +19,7 @@ import scoreSrc from "./score.ts?raw";
 const SOURCES: Array<[string, string]> = [
   ["grid.ts", gridSrc],
   ["demand.ts", demandSrc],
+  ["dynamic-demand.ts", dynamicDemandSrc],
   ["field.ts", fieldSrc],
   ["score.ts", scoreSrc],
 ];
