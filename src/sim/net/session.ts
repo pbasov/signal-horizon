@@ -41,7 +41,7 @@ import {
   type ContractState,
 } from "../m2/contracts";
 import type { NetSat } from "./sat";
-import { type GroundNet, NET_ACT1_GROUND, NET_ACT2_GROUND } from "./endpoint";
+import { type GroundNet, NET_ACT1_GROUND, NET_ACT2_GROUND, NET_ACT4_RELAY_ID_STEM } from "./endpoint";
 import {
   type Contract,
   type SlaAxis,
@@ -61,6 +61,9 @@ import {
   resolveTick,
 } from "./router";
 import { windowAvailability } from "./availability";
+import { freshness } from "../delay";
+import { interBodyOneWayLatencyS } from "./link-budget";
+import { ACT4_MARS_CONTRACT_ID } from "./endpoint";
 import { M1_SCENARIO, type Beat, type Shortfall } from "./scenario";
 import { rollFaults } from "./fault";
 import {
@@ -134,6 +137,26 @@ export const NET_CONGESTION_BUCKET_UNITS = NET_LINK_CAPACITY_UNITS / 4;
  * a real, sustained near-breach the player must re-engineer out of, comfortably below the FAIL
  * threshold so a re-tame is reachable. Placeholder. */
 export const NET_NEAR_BREACH_GRACE_FRACTION = 0.1;
+
+/**
+ * ACT 4 (the Mars frontier teaser) — a tiny LOCAL 3-field sample mirroring the m1/cache.ts
+ * `CachedSample` SHAPE + its SD-19 honest-staleness CONVENTION (capturedAtT-at-arrival,
+ * half-life = the one-way light delay), WITHOUT importing the m1 economy (SD-40 fence: `net/`
+ * imports neither `m1/` nor `m2/session.ts`; it imports `delay.ts` directly). The "data arrives
+ * old" readout is `age = t − capturedAtT` ("as of Nm ago") + `freshness(age, halfLifeS)` (the
+ * reused `delay.ts` curve). This is the WHOLE caching lesson for now — one slot, NOT the
+ * multi-slot eviction/prefetch/coherence economy (§8 fenced). */
+export interface MarsSample {
+  /** The single dataset id ("mars"). */
+  datasetId: "mars";
+  /** Sim-time the sample was CAPTURED (frozen when the Mars path first carries; reset closer to
+   * "now" when the cache breadcrumb is placed — so the freshness readout improves by sight). */
+  capturedAtT: number;
+  /** The freshness half-life (seconds) = the one-way light delay at capture (SD-19: the sample is
+   * one-way old on arrival). A smaller half-life ⇒ it greys faster; the breadcrumb places the
+   * sample "closer" (a smaller effective age), raising the displayed freshness. */
+  halfLifeS: number;
+}
 
 /** JSON-safe capture of the whole net session (save/restore + state-hash parity). */
 export interface NetSnapshot {
@@ -215,6 +238,13 @@ export interface NetSnapshot {
    * binding-constraint) since faults began — the second half of the act3b gate. Latched true the
    * step {@link diagnose} returns a non-empty shortfall list while faults are on. Folds (0/1). */
   surfacedShortfall: number;
+
+  // --- ACT-4 (D1) the Mars frontier teaser — the ONE folded slot --------------------
+  /** The Act-4 Mars data sample (null until the path first carries / a breadcrumb is placed). The
+   * ONLY Act-4 fold growth (2 floats + a null-flag): `capturedAtT` + `halfLifeS`. The "data arrives
+   * old" / "as of Nm ago" / the stale-pay dimming are render-layer reads off THIS — NO Contract
+   * field, NO wallet wiring, NO freshness economy (§8 fenced). */
+  marsSample: MarsSample | null;
 }
 
 export class NetSession {
@@ -322,6 +352,12 @@ export class NetSession {
    * the session latches from it fold). Refreshed each step once faults are on. */
   private lastTrace: TraceReport | null = null;
 
+  // --- ACT-4 (D1) the Mars frontier teaser — the ONE folded slot --------------------
+  /** The Act-4 Mars data sample (null until the Mars path first carries OR the cache breadcrumb is
+   * placed). The ONLY Act-4 fold growth. The "data arrives old" / "as of Nm ago" / the stale-pay
+   * dimming are RENDER-LAYER reads off this (NO Contract field, NO wallet wiring, §8 fenced). */
+  private marsSample: MarsSample | null = null;
+
   constructor(
     openingBalance = NET_OPENING_BALANCE,
     seed: bigint = NET_RNG_SEED,
@@ -407,6 +443,13 @@ export class NetSession {
   /** The next launched-sat id (monotonic, stable across replay). */
   nextSatId(): string {
     return `NET-SAT-${this.launchedCount}`;
+  }
+
+  /** The next Act-4 MARS RELAY id (monotonic, stable across replay). The id begins with
+   * {@link NET_ACT4_RELAY_ID_STEM} so the router's solveMarsLeg PRESENCE test recognises it as
+   * the deep-space relay that bridges the Mars leg by construction. */
+  nextRelaySatId(): string {
+    return `${NET_ACT4_RELAY_ID_STEM}-${this.launchedCount}`;
   }
 
   /** Add a contract to the board (the scenario beat's emit() calls this). De-duplicated by
@@ -515,6 +558,44 @@ export class NetSession {
    * re-derived from the folded chosen-sat assignment + each contract's offeredLoad. */
   loadOnSat(satId: string): number {
     return this.loadBySatFromState().get(satId) ?? 0;
+  }
+
+  // --- ACT-4 (D1) the Mars frontier teaser — the freshness readouts (render-layer) ---
+
+  /** The Act-4 Mars data sample (null until the path first carries / a breadcrumb is placed). The
+   * render reads this for the "data arrives old" desaturation + the "as of Nm ago" stamp. */
+  get mars(): MarsSample | null {
+    return this.marsSample;
+  }
+
+  /** The AGE of the Mars sample at sim-time t ("as of Nm ago" = age/60 minutes). null until a
+   * sample exists. A READOUT (render-layer) — never a wallet/breach input (§8 fenced). */
+  marsAgeS(t: number): number | null {
+    return this.marsSample === null ? null : Math.max(0, t - this.marsSample.capturedAtT);
+  }
+
+  /** The FRESHNESS of the Mars sample at sim-time t (the reused `delay.ts` curve `2^(−age/half)`):
+   * the Mars data node desaturates toward grey as it ages (DD-1: freshness = saturation draining).
+   * null until a sample exists. A READOUT only — NO Earth contract ever exposes this (§4.2 / §8). */
+  marsFreshness(t: number): number | null {
+    if (this.marsSample === null) return null;
+    return freshness(this.marsAgeS(t) ?? 0, this.marsSample.halfLifeS);
+  }
+
+  /**
+   * PLACE the ONE Act-4 cache breadcrumb (the net_place_cache action applies this — "data closer
+   * helps"). DETERMINISTIC, NO ROLL: it RE-CAPTURES the Mars sample "near Mars" at sim-time t (a
+   * fresh `capturedAtT = t` ⇒ age 0 ⇒ the freshness readout jumps back up by sight). It does NOT
+   * change served/breach or revenue (a FELT breadcrumb, not a relief lever) — the whole caching
+   * lesson for now, NOT the multi-slot eviction/prefetch/coherence economy (§8 fenced). The
+   * half-life stays the honest one-way light delay at t (SD-19 convention). Pure + idempotent-safe.
+   */
+  placeMarsCache(eph: Ephemeris, t: number): void {
+    this.marsSample = {
+      datasetId: "mars",
+      capturedAtT: t,
+      halfLifeS: interBodyOneWayLatencyS(eph, "earth", "mars", t),
+    };
   }
 
   /** Advance the scenario cursor + stamp the gate tick (the A3 engine calls this when a
@@ -799,6 +880,10 @@ export class NetSession {
     if (dtSeconds <= 0) return;
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
+      // ACT 4 FENCE (§8): the escalation/oversubscription economy is an EARTH concept (act3a). The
+      // Mars teaser is connectivity-only by SIGHT — NO freshness economy, NO bandwidth axis. Skip
+      // any non-Earth contract so escalation never grows the Mars load / flips its bandwidth axis.
+      if (c.region.bodyId !== "earth") continue;
       // Grow demand only where served WELL the prior step (lastServedFraction set by the m2
       // transition above) — a breaching/under-served contract does not escalate.
       if (c.lastServedFraction < ESCALATION_SERVE_THRESHOLD) continue;
@@ -908,6 +993,14 @@ export class NetSession {
       // near-breach under risen load). SECOND half: a witnessed contract back to fully SERVED
       // (re-tamed) ⇒ the tame→outgrow→re-tame cycle is demonstrated (act3aReTameWitnessed=true).
       if (this.escalationOn) this.updateReTameWitness(c, frac);
+      // ACT 4 (D1) — the Mars data FREEZES at arrival (the honest-staleness convention, SD-19):
+      // when the Mars contract's path FIRST carries (served), capture the sample one-way OLD on
+      // arrival (capturedAtT = t − one-way; half-life = the one-way light delay). It then DRAINS by
+      // sight (freshness = 2^(−age/half)). A render-layer read only — no breach, no wallet (§8).
+      if (c.id === ACT4_MARS_CONTRACT_ID && frac > 0 && this.marsSample === null) {
+        const oneWayS = interBodyOneWayLatencyS(eph, "earth", "mars", t);
+        this.marsSample = { datasetId: "mars", capturedAtT: t - oneWayS, halfLifeS: oneWayS };
+      }
     }
     if (netDelta !== 0) this.walletBalance += netDelta;
 
@@ -1013,6 +1106,10 @@ export class NetSession {
       faultWeathered: this.faultWeathered ? 1 : 0,
       servedThroughFault: [...this.servedThroughFault].sort(),
       surfacedShortfall: this.surfacedShortfall ? 1 : 0,
+      // ACT-4 (D1) the Mars frontier teaser — the ONE folded slot (2 floats + a null-flag), captured
+      // by value so a snapshot never shares the live sample. Null until the Mars path first carries
+      // / the cache breadcrumb is placed.
+      marsSample: this.marsSample === null ? null : { ...this.marsSample },
     };
   }
 
@@ -1067,6 +1164,9 @@ export class NetSession {
     for (const id of s.servedThroughFault ?? []) this.servedThroughFault.add(id);
     this.surfacedShortfall = (s.surfacedShortfall ?? 0) === 1;
     this.lastTrace = null;
+    // ACT-4 (D1) the Mars frontier teaser — the ONE folded slot. Nullish-coalesced so a pre-D1
+    // snapshot restores to null (byte-identical to the Acts 1–3 fold); captured by value.
+    this.marsSample = s.marsSample == null ? null : { ...s.marsSample };
     // The cached router paths are derived; the next step() rebuilds them on a full search
     // (the topology key for a restored roster differs from the empty initial state).
     this.routerStates.clear();

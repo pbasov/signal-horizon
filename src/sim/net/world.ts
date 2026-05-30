@@ -115,7 +115,27 @@ export const LEO_SWEEP: NetPreset = {
   costBaseEur: 900,
 };
 
-export const NET_PRESETS: NetPreset[] = [GEO_PARK, LEO_SWEEP];
+/** MARS RELAY — the Act-4 deep-space relay the player launches to "reach Mars" (the frontier
+ * teaser, "distance changes everything"). The player launches it with the SAME net_launch verb
+ * they always have (onboarding: "you launch as you always have") — only the preset differs. Its
+ * orbit + antenna are COSMETIC: connectivity on the Mars leg is PRESENCE-based (the router's
+ * solveMarsLeg branch), NOT a toy-frame inverse-square close — so the relay needs NO giant EIRP
+ * to "reach" Mars (there is no toy budget on that hop) and no special orbit. A parked GEO-class
+ * orbit gives it a stable, time-invariant presence (no horizon thrash on the Earth side); the
+ * minutes-long latency is the REAL Earth↔Mars light delay injected by the router, not this orbit.
+ * The eirp is the standard real antenna field (never a closing lever). */
+export const MARS_RELAY: NetPreset = {
+  id: "MARS_RELAY",
+  label: "MARS RELAY",
+  semiMajorM: A1_GEO_SEMI_MAJOR_M,
+  incRad: 0,
+  subLonRad: Math.PI, // parked on the anti-meridian (cosmetic; presence is what bridges).
+  eirp: 1.0,
+  coneHalfAngleRad: 30 * (Math.PI / 180),
+  costBaseEur: 1500,
+};
+
+export const NET_PRESETS: NetPreset[] = [GEO_PARK, LEO_SWEEP, MARS_RELAY];
 
 // ── epoch-correct sub-longitude → orbit ─────────────────────────────────────────
 
@@ -200,7 +220,9 @@ export function presetToPreset(p: NetPreset): Preset {
  * default that already mostly works) and LEO SWEEP (the non-covering fallback case). */
 export const GEO_PARK_PRESET: Preset = presetToPreset(GEO_PARK);
 export const LEO_SWEEP_PRESET: Preset = presetToPreset(LEO_SWEEP);
-export const NET_PLANNER_PRESETS: Preset[] = [GEO_PARK_PRESET, LEO_SWEEP_PRESET];
+/** The Act-4 Mars-relay planner preset (the "launch toward Mars" verb is the SAME net_launch). */
+export const MARS_RELAY_PRESET: Preset = presetToPreset(MARS_RELAY);
+export const NET_PLANNER_PRESETS: Preset[] = [GEO_PARK_PRESET, LEO_SWEEP_PRESET, MARS_RELAY_PRESET];
 
 /** The launch cost (€) of a {@link LaunchDraft}: the base cost (from the seeding preset)
  * + the altitude term, ×`count`. An overload of {@link launchCost} over a full draft so

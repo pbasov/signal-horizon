@@ -6,14 +6,18 @@ import {
   netLaunch,
   netAccept,
   netSetPrefer,
+  netPlaceCache,
   KIND_NET_LAUNCH,
   KIND_NET_ACCEPT,
   KIND_NET_SET_PREFER,
+  KIND_NET_PLACE_CACHE,
   type SimAction,
 } from "./action";
+import { loadEphemeris } from "./system-data";
+import { C_LIGHT, AU_M } from "./ephemeris";
 import { NetSession, NET_RNG_SEED } from "./net/session";
 import { applyNetAction } from "./net/apply-action";
-import { GEO_PARK, LEO_SWEEP, resolveOrbit, A1_LEO_PERIOD_S, A1_GEO_PERIOD_S } from "./net/world";
+import { GEO_PARK, LEO_SWEEP, MARS_RELAY, resolveOrbit, A1_LEO_PERIOD_S, A1_GEO_PERIOD_S } from "./net/world";
 import { SLA_AXIS_ORDINAL, type SlaAxis } from "./net/contract";
 import {
   ACT1_CONTRACT_ID,
@@ -28,6 +32,7 @@ import {
   NET_ACT1_GROUND,
   NET_ACT2_GROUND,
   NET_ACT2_REGION_LAT_RAD,
+  ACT4_MARS_CONTRACT_ID,
 } from "./net/endpoint";
 import { isPointServed, type RoutableContract } from "./net/router";
 import { windowAvailability } from "./net/availability";
@@ -60,6 +65,18 @@ const TAU = Math.PI * 2;
  */
 
 const GOLDEN_DT = 1 / 60;
+
+/**
+ * The golden replay's ephemeris. Acts 1–3 are the toy frame (the router NEVER reads `eph` for the
+ * Earth-relative sat/surface geometry — `satPositionRelative` drops `eph.position`, the surface
+ * frame is the toy 300 km body), so for the Earth-only arc this is byte-identical to the empty
+ * `Ephemeris.build({})` the pre-D1 golden used (verified). ACT 4 needs the REAL Earth↔Mars distance
+ * for the light-delay, so the golden now builds from the canonical dataset — the toy near-Earth
+ * scale and the REAL interplanetary distance COEXIST (the brief's hard rule): near-Earth orbits stay
+ * toy-scaled; the Mars leg's light-delay uses the real body-to-body distance via `solveMarsLeg`. */
+function buildEph() {
+  return loadEphemeris();
+}
 
 /** Sim-time the golden replay runs to. Comfortably past the Act-1 LAUNCH+ACCEPT+gate AND the
  * full Act-2 arc: the second demand (REGION-1) is emitted on the act1 gate, the N=4 LEO
@@ -221,10 +238,58 @@ const act3bLog = act3aLog;
 const MAX_T_ACT3B_SECONDS = 520;
 const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
 
+// ── ACT 4 (D1): the Mars frontier teaser — "distance changes everything" (the re-pin driver) ────
+//
+// The act3b gate fires ~t=460 ⇒ the cursor reaches act4 (the final beat) ⇒ act4.emit offers the ONE
+// Mars contract (MARS-1, bodyId "mars", connectivity-only). The player then does what they ALWAYS
+// do — LAUNCHES toward Mars (the SAME net_launch, the MARS_RELAY preset) + ACCEPTS the Mars
+// contract. The FIRST SIGNAL CRAWLS: the router's solveMarsLeg injects the REAL Earth↔Mars light
+// delay (~15.4 min one-way at the J2000 epoch) into latencyS — the Earth real-time-tune playbook
+// physically BREAKS. Data arrives OLD (the sample freezes one-way old on arrival — "as of Nm ago").
+// The player places the ONE cache breadcrumb (net_place_cache) — "data closer helps", felt by sight.
+// The cursor STOPS on act4 (the gate is false forever — a read, not a gate; "to be continued").
+
+/** ACT 4: LAUNCH the deep-space MARS RELAY (the SAME net_launch, the Mars preset) just after act4
+ * opens (~t=460). Connectivity on the Mars leg is PRESENCE-based, so this one relay bridges it. */
+const TICK_MARS_RELAY = 28800; // t = 480 s — just after the act3b gate (~t=460) opens act4.
+/** ACT 4: ACCEPT the Mars contract once the relay is up — the path carries, the signal CRAWLS, and
+ * the Mars sample freezes one-way old on arrival (the "as of Nm ago" / freshness-by-sight stamp). */
+const TICK_MARS_ACCEPT = 28860; // t = 481 s.
+/** ACT 4: PLACE the ONE cache breadcrumb — "data closer helps" (the freshness readout jumps up by
+ * sight). A single placeable, NOT the cache economy (§8 fenced). */
+const TICK_PLACE_CACHE = 30000; // t = 500 s.
+
+/**
+ * The recorded ACT-1 → … → ACT-4 action sequence (the M1 arrival arc THROUGH the Mars teaser — the
+ * D1 golden driver). Identical to {@link act3bLog} through act3b, then the ACT-4 player inputs:
+ *   ACT 4 — the act4 beat (emitted inside step when the act3b gate fires) offers the Mars contract.
+ *           The player LAUNCHES the MARS RELAY (the SAME net_launch verb), ACCEPTS the Mars contract
+ *           (the signal crawls at the real Earth↔Mars light delay; the sample freezes old on
+ *           arrival), and PLACES the one cache breadcrumb. The cursor STOPS on act4 (gate false).
+ */
+function act4Log() {
+  const sg = act3bLog();
+  addAction(
+    sg,
+    netLaunch(
+      { presetId: MARS_RELAY.id, semiMajorM: MARS_RELAY.semiMajorM, incRad: MARS_RELAY.incRad, subLonRad: MARS_RELAY.subLonRad, count: 1 },
+      TICK_MARS_RELAY,
+    ),
+  );
+  addAction(sg, netAccept(ACT4_MARS_CONTRACT_ID, TICK_MARS_ACCEPT));
+  addAction(sg, netPlaceCache(TICK_PLACE_CACHE));
+  return sg;
+}
+
+/** The act4 replay runs past the relay launch + the Mars accept + the cache placement so the Mars
+ * sample freezes (on carry) + is re-captured (on the breadcrumb): t = 560 s, 33 600 ticks. */
+const MAX_T_ACT4_SECONDS = 560;
+const MAX_TICK_ACT4 = Math.round(MAX_T_ACT4_SECONDS / GOLDEN_DT);
+
 /** Replay an action log through a NetSession to a given max tick (the act3a arc needs a longer
  * horizon than the act1/act2 arc). Mirrors {@link replay} (step then post-drain action). */
 function replayTo(sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResult {
-  const eph = Ephemeris.build({});
+  const eph = buildEph(); // D1: real ephemeris (Earth-only arc byte-identical; Mars leg needs the real distance).
   const session = new NetSession();
   const byTick = new Map<number, SimAction[]>();
   for (const a of sg.actions) {
@@ -245,7 +310,12 @@ function replayTo(sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResul
 
 /** The net action kinds this replay routes (the rest are ignored, like the m2 driver). */
 function isNetKind(kind: string): boolean {
-  return kind === KIND_NET_LAUNCH || kind === KIND_NET_ACCEPT || kind === KIND_NET_SET_PREFER;
+  return (
+    kind === KIND_NET_LAUNCH ||
+    kind === KIND_NET_ACCEPT ||
+    kind === KIND_NET_SET_PREFER ||
+    kind === KIND_NET_PLACE_CACHE
+  );
 }
 
 /**
@@ -302,6 +372,16 @@ function netStateHash(s: NetSession): bigint {
   for (const id of snap.servedThroughFault) acc = mixString(acc, id);
   acc = mixInt(acc, BigInt(snap.faultWeathered));
   acc = mixInt(acc, BigInt(snap.surfacedShortfall));
+  // ACT-4 (D1) the Mars frontier teaser — the ONE fold ADDITION: the Mars sample (a null-flag + 2
+  // f64s: capturedAtT + halfLifeS = the real one-way light delay). Null until the Mars path first
+  // carries / the breadcrumb is placed ⇒ dormant 0 for the pre-act4 horizons (byte-identical). The
+  // "as of Nm ago" / freshness / stale-pay dimming are render-layer reads off this (no Contract
+  // field, no wallet — §8 fenced).
+  acc = mixInt(acc, BigInt(snap.marsSample === null ? 0 : 1));
+  if (snap.marsSample !== null) {
+    acc = mixFloat(acc, snap.marsSample.capturedAtT);
+    acc = mixFloat(acc, snap.marsSample.halfLifeS);
+  }
   // ACT-3a (C1b) escalation + congestion fold ADDITIONS (the SD-40-C1b re-pin): the escalation
   // gate flag, the §2.4 congestion epoch, the chosen-sat assignment (sorted id|satId pairs — makes
   // loadBySat a pure function of folded state across a restore), the re-tame witness + its
@@ -374,7 +454,7 @@ interface ReplayResult {
  * applyNetAction (the SAME path main.ts will use live).
  */
 function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
-  const eph = Ephemeris.build({});
+  const eph = buildEph(); // D1: real ephemeris (Earth-only arc byte-identical; Mars leg needs the real distance).
   const session = new NetSession();
   const byTick = new Map<number, SimAction[]>();
   for (const a of sg.actions) {
@@ -410,65 +490,66 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //   SD-40-B3-FIX (high-lat REGION-1)          260489051471786347n
 //   SD-40-C1b (act3a escalation in the fold)  314363620940498869n
 //   SD-40-C2  (act3b faults in the fold)      11632456535472871375n
-// What moved it in SD-40-C2 (the FAULT re-pin, the SD-40 chained-re-pin pattern): the act3b beat
-// (emitted INSIDE step when the act3a gate fires, FENCED behind it) now ENABLES the seeded fault
-// generator + seeds the MILD-FIRST scripted pair (a Degradation, then a Telegraphed failure) drawn
-// off the SAME seeded SimRng (the M2 launch-failure-roll pattern — NO new action / NO new seed).
-// The golden log is IDENTICAL to the act3a arc (the faults are scenario-seeded, not actions); only
-// the HORIZON extends (470 s → 520 s) so both scripted faults play out (the Degradation self-
-// recovers ~t=460 ⇒ the 3b gate fires; the Telegraphed countdown begins ~t=460 + drops ~t=505). The
-// fold gained the C2 ADDITIONS — faultsOn (int), the active FaultState[] (satId|kind|cause|the three
-// predictability-seed sim-times + the degraded-capacity factor), the pending mild-first script queue,
-// the mild-first gate stamp (lastScriptedFaultSatId), the served-through set, and the weather +
-// surfaced-shortfall witnesses (ints) — REPLACING the old fault-cursor 0 placeholder — PLUS the
-// value moves already in the fold (the degraded sat congesting REGION-2, the longer horizon's
-// escalated loads + accrued served-time, the cursor advancing to act4 + the new gate tick). The
-// two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED
-// (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
+//   SD-40-D1  (act4 Mars teaser in the fold)  2578549558858135194n
+// What moved it in SD-40-D1 (the MARS-TEASER re-pin, the SD-40 chained-re-pin pattern): the act4
+// beat (emitted INSIDE step when the act3b gate fires) now OFFERS the ONE Mars contract (MARS-1,
+// bodyId "mars", connectivity-only), and the golden log gained the ACT-4 player inputs — LAUNCH the
+// MARS RELAY (the SAME net_launch, the MARS_RELAY preset), ACCEPT the Mars contract (the router's
+// solveMarsLeg presence-bridges it + injects the REAL Earth↔Mars light delay ~15.4 min one-way into
+// latencyS — the signal CRAWLS), and PLACE the one cache breadcrumb (net_place_cache). The golden
+// now builds the REAL ephemeris (the toy near-Earth arc is byte-identical to the empty eph the pre-D1
+// golden used — the router never reads eph for Earth geometry; only the Mars leg needs the real
+// distance — so the Earth/fault fold is UNCHANGED). The HORIZON extends (520 s → 560 s) so the Mars
+// path carries + the sample freezes + the cache re-captures. The fold gained the ONE D1 ADDITION —
+// `marsSample` (a null-flag + 2 f64s: capturedAtT + halfLifeS = the real one-way light delay) —
+// PLUS the value moves (the offered + accepted Mars contract's state-machine fields, the MARS RELAY
+// in the roster). The cursor STOPS on act4 (its gate is false forever — a read, not a gate; no win
+// screen). The two existing goldens are DIFFERENT worlds (neither imports net/) and stay byte-for-
+// byte UNTOUCHED (M1 cache 544847093270497462n, M2 build 8431658617016421069n).
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 11632456535472871375n;
+const NET_REPLAY_GOLDEN = 2578549558858135194n;
 
-describe("net/ A3+B3+C1b+C2 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first)", () => {
-  it("pins the net-session replay state hash for the act1→act2→act3a→act3b action log (regression guard)", () => {
-    const r = replayTo(act3bLog(), MAX_TICK_ACT3B);
+describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
+  it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
     expect(r.hash).toBe(NET_REPLAY_GOLDEN);
   }, 60000);
 
-  it("a logged act1→act2→act3a→act3b sequence is deterministic: replaying the same log twice is bit-identical", () => {
-    const a = replayTo(act3bLog(), MAX_TICK_ACT3B);
-    const b = replayTo(act3bLog(), MAX_TICK_ACT3B);
+  it("a logged act1→act2→act3a→act3b→act4 sequence is deterministic: replaying the same log twice is bit-identical", () => {
+    const a = replayTo(act4Log(), MAX_TICK_ACT4);
+    const b = replayTo(act4Log(), MAX_TICK_ACT4);
     expect(a.hash).toBe(b.hash);
     expect(a.balance).toBe(b.balance);
     expect(a.session.snapshot()).toEqual(b.session.snapshot());
   }, 60000);
 
-  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the act3a + act3b fold fields)", () => {
-    const eph = Ephemeris.build({});
+  it("LIVE == REPLAY: stepping + applying the same actions directly reproduces the replay (deep snapshot incl. SatOrbit f64s + the act3a/act3b fold fields + the act4 marsSample)", () => {
+    const eph = buildEph();
     const live = new NetSession();
     const byTick = new Map<number, SimAction[]>();
-    for (const a of act3bLog().actions) {
+    for (const a of act4Log().actions) {
       if (isNetKind(a.kind)) {
         const list = byTick.get(a.atTick) ?? [];
         list.push(a);
         byTick.set(a.atTick, list);
       }
     }
-    for (let tick = 0; tick <= MAX_TICK_ACT3B; tick++) {
+    for (let tick = 0; tick <= MAX_TICK_ACT4; tick++) {
       const t = tick * GOLDEN_DT;
       live.step(eph, t, GOLDEN_DT);
       const list = byTick.get(tick);
       if (list !== undefined) for (const a of list) applyNetAction(eph, live, a, GOLDEN_DT);
     }
-    const replayed = replayTo(act3bLog(), MAX_TICK_ACT3B);
-    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + the act3a fold fields +
-    // the act3b fault fields — faultsOn / activeFaults / the script queue / the witnesses) + hash.
+    const replayed = replayTo(act4Log(), MAX_TICK_ACT4);
+    // Deep-equal the whole snapshot (the roster's full SatOrbit f64s + the act3a fold fields + the
+    // act3b fault fields + the act4 marsSample — capturedAtT/halfLifeS) + hash.
     expect(live.snapshot()).toEqual(replayed.session.snapshot());
     expect(live.balance).toBe(replayed.balance);
     expect(netStateHash(live)).toBe(replayed.hash);
-  }, 60000); // one live run + one replay over the act3b arc — generous headroom.
+  }, 60000); // one live run + one replay over the act4 arc — generous headroom.
 
-  it("the net SaveGame survives the JSON round-trip and reproduces the hash (incl. the act2 batch phase spread + the act3a prefer override)", () => {
-    const sg = act3bLog();
+  it("the net SaveGame survives the JSON round-trip and reproduces the hash (incl. the act2 batch phase spread + the act3a prefer override + the act4 Mars relay/accept/cache)", () => {
+    const sg = act4Log();
     const reloaded = saveFromJSON(saveToJSON(sg));
     expect(reloaded).not.toBeNull();
     expect(reloaded!.actions.some((a) => a.kind === KIND_NET_LAUNCH)).toBe(true);
@@ -480,13 +561,19 @@ describe("net/ A3+B3+C1b+C2 — M1 arrival-sequence replay golden (act1 GEO + ac
     );
     expect(batch).toBeDefined();
     expect(batch!.payload.phaseSpreadRad).toBeCloseTo(ACT2_PHASE_SPREAD_RAD, 12);
+    // The act4 wire kinds survive the round-trip too (the Mars relay launch, the Mars accept, the
+    // cache-placement breadcrumb).
+    expect(reloaded!.actions.some((a) => a.kind === KIND_NET_PLACE_CACHE)).toBe(true);
+    expect(
+      reloaded!.actions.some((a) => a.kind === KIND_NET_LAUNCH && a.payload.presetId === MARS_RELAY.id),
+    ).toBe(true);
     // dt survives bit-exactly via dt_bits, so the replay reproduces the pinned hash.
     expect(reloaded!.dt).toBe(GOLDEN_DT);
-    const a = replayTo(sg, MAX_TICK_ACT3B);
-    const b = replayTo(reloaded!, MAX_TICK_ACT3B);
+    const a = replayTo(sg, MAX_TICK_ACT4);
+    const b = replayTo(reloaded!, MAX_TICK_ACT4);
     expect(b.hash).toBe(a.hash);
     expect(b.hash).toBe(NET_REPLAY_GOLDEN);
-  }, 60000); // two full act3b-arc replays — generous headroom.
+  }, 60000); // two full act4-arc replays — generous headroom.
 
   it("THE ACT-1 LOOP CLOSES: REGION-0 is SERVED, EARNS €, and the act1 GATE fired deterministically", () => {
     const r = replay(act2Log());
@@ -775,8 +862,8 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     // step actions — the two must stay bit-identical (the congestion state AND the fault state — the
     // active faults + the mild-first script queue + the served-through set — are pure functions of
     // FOLDED state + the folded rng, so the restore reproduces a continuous run incl. the seeded roll).
-    const eph = Ephemeris.build({});
-    const sg = act3bLog();
+    const eph = buildEph(); // D1: real ephemeris (the Mars leg + the marsSample fold carry across the restore).
+    const sg = act4Log();
     const byTick = new Map<number, SimAction[]>();
     for (const a of sg.actions) {
       if (isNetKind(a.kind)) {
@@ -804,7 +891,7 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     expect(restored.snapshot()).toEqual(snap);
     // Step BOTH forward the same window; they must stay bit-identical (the loadBySat re-derivation
     // off folded state + the seeded fault roll off the folded rng reproduce the continuous run).
-    for (let tick = SPLIT + 1; tick <= MAX_TICK_ACT3B; tick++) {
+    for (let tick = SPLIT + 1; tick <= MAX_TICK_ACT4; tick++) {
       cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       restored.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       const list = byTick.get(tick);
@@ -815,7 +902,8 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     }
     expect(restored.snapshot()).toEqual(cont.snapshot());
     expect(netStateHash(restored)).toBe(netStateHash(cont));
-    // And the continuous run reproduces the pinned golden (the restore path agrees with the pin).
+    // And the continuous run reproduces the pinned golden (the restore path agrees with the pin) —
+    // now through act4, so the Mars-sample fold (capturedAtT/halfLifeS) carries across the restore.
     expect(netStateHash(cont)).toBe(NET_REPLAY_GOLDEN);
   }, 60000);
 });
@@ -919,5 +1007,159 @@ describe("SD-40 C2 — act3b faults: mild-first, fenced behind act3a, weathered,
     expect(a.session.snapshot().lastScriptedFaultSatId).toBe(b.session.snapshot().lastScriptedFaultSatId);
     expect(a.session.snapshot().faultWeathered).toBe(b.session.snapshot().faultWeathered);
     expect(a.hash).toBe(b.hash);
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// SD-40 D1 — THE ACT-4 MARS-TEASER INVARIANTS ("distance changes everything" — vertigo, by sight).
+// The cursor reaches act4 (the act3b gate fires) ⇒ the ONE Mars contract is offered. The player
+// launches the deep-space relay (the SAME net_launch) + accepts it: the FIRST SIGNAL CRAWLS at the
+// REAL Earth↔Mars light delay (~15.4 min one-way), data arrives OLD (freshness by sight), and the
+// player places ONE cache breadcrumb (data-closer-helps). The cursor STOPS on act4 — a read, NOT a
+// gate; no win screen. Latency is a READOUT, never an enforced axis; no Earth gauge shows freshness.
+// ---------------------------------------------------------------------------
+const SECONDS_PER_MIN = 60;
+describe("SD-40 D1 — act4 Mars teaser: light-delay (deterministic minutes), freshness by sight, one cache, the cursor stops", () => {
+  it("LATENCY EXPLODES deterministically at MARS distance (one-way MINUTES) while the EARTH toy latency stays microseconds", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    // The cursor reached act4 (the Mars contract was offered) + the player accepted it (active).
+    const mars = r.session.contracts.find((c) => c.id === ACT4_MARS_CONTRACT_ID)!;
+    expect(mars).toBeDefined();
+    expect(mars.region.bodyId).toBe("mars");
+    expect(mars.state).toBe("active");
+    // The Mars leg's solve latency is MINUTES (the real Earth↔Mars one-way light delay), and equals
+    // oneWaySeconds(distanceBetween) at that t exactly — deterministic, pinned with tolerance so a
+    // future ephemeris swap is caught. At the J2000 epoch (sim t≈0..560 s) Earth↔Mars ≈ 1.85 AU.
+    const marsSolve = r.session.lastSolveFor(ACT4_MARS_CONTRACT_ID)!;
+    expect(marsSolve.served).toBe(true);
+    const eph = buildEph();
+    const tEnd = MAX_TICK_ACT4 * GOLDEN_DT;
+    const expectOneWay = eph.distanceBetween("earth", "mars", tEnd) / C_LIGHT;
+    expect(marsSolve.latencyS).toBeCloseTo(expectOneWay, 6);
+    const oneWayMin = marsSolve.latencyS / SECONDS_PER_MIN;
+    expect(oneWayMin).toBeGreaterThan(3); // > 3 min — far past the Earth-toy microsecond floor.
+    expect(oneWayMin).toBeLessThan(23); // < 23 min — within the synodic extreme band.
+    // The ROUND-TRIP readout (the headline vertigo figure) is exactly 2× the one-way + lands 6..45 min.
+    const roundTripMin = (2 * marsSolve.latencyS) / SECONDS_PER_MIN;
+    expect(roundTripMin).toBeCloseTo(2 * oneWayMin, 9);
+    expect(roundTripMin).toBeGreaterThan(6);
+    expect(roundTripMin).toBeLessThan(45);
+    // The EARTH toy latency stays MILLISECONDS — ~9 orders of magnitude below the Mars minutes; the
+    // Mars branch never touches Earth contracts. REGION-1 (the polar constellation) is robustly
+    // served; assert its toy latency is sub-second, AND every Earth contract with a finite latency
+    // is sub-second (none ever sees the interplanetary delay; toy paths are ~3-4 ms vs Mars ~923 s).
+    const earth = r.session.lastSolveFor(ACT2_CONTRACT_ID)!;
+    expect(earth.served).toBe(true);
+    expect(earth.latencyS).toBeLessThan(1); // sub-second toy path — NOT the Mars minutes.
+    for (const c of r.session.contracts) {
+      if (c.region.bodyId !== "earth") continue;
+      const sv = r.session.lastSolveFor(c.id);
+      if (sv !== null && Number.isFinite(sv.latencyS)) expect(sv.latencyS).toBeLessThan(1);
+    }
+  }, 60000);
+
+  it("the MARS LEG is PRESENCE-based: no relay ⇒ connectivity loss; the relay ⇒ bridges by construction (no toy-frame budget)", () => {
+    // The Mars contract offered + accepted but BEFORE the relay launches (stop one tick before it):
+    // the leg has no path (presence-based connectivity), exactly like Act-1 "no path".
+    const before = replayTo(act4Log(), TICK_MARS_RELAY - 1);
+    const marsBefore = before.session.contracts.find((c) => c.id === ACT4_MARS_CONTRACT_ID);
+    // (The Mars contract may still be offered or just-accepted; the SOLVE is connectivity-unserved.)
+    const solveBefore = before.session.lastSolveFor(ACT4_MARS_CONTRACT_ID);
+    if (marsBefore?.state === "active" && solveBefore !== null) {
+      expect(solveBefore.served).toBe(false);
+      expect(solveBefore.bindingConstraint).toBe("connectivity");
+    }
+    // After the relay launches the leg bridges by construction (the presence test). The path is
+    // [MARS-1, the relay id, GROUND-0] — the relay never goes through the toy inverse-square budget.
+    const after = replayTo(act4Log(), MAX_TICK_ACT4);
+    const solveAfter = after.session.lastSolveFor(ACT4_MARS_CONTRACT_ID)!;
+    expect(solveAfter.served).toBe(true);
+    expect(solveAfter.path).not.toBeNull();
+    expect(solveAfter.path![0]).toBe(ACT4_MARS_CONTRACT_ID);
+    expect(solveAfter.path![1].startsWith("MARS-RELAY")).toBe(true);
+  }, 60000);
+
+  it("NO EARTH GAUGE EVER SHOWS FRESHNESS — only the Mars hop carries the 'as of Nm ago' / freshness readout (the §8 fence at the render boundary)", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    const tEnd = MAX_TICK_ACT4 * GOLDEN_DT;
+    // The Mars sample exists (the path carried) and carries the freshness readouts.
+    expect(r.session.mars).not.toBeNull();
+    expect(r.session.marsAgeS(tEnd)).not.toBeNull();
+    expect(r.session.marsFreshness(tEnd)).not.toBeNull();
+    // There is NO freshness FIELD on ANY Contract struct (Earth or Mars) — freshness is a session
+    // render-layer read, never a contract/wallet mechanic (§4.2 / §8: freshness does not exist on
+    // Earth, and is not a Contract field at all). Guard the type boundary: no contract key matches.
+    for (const c of r.session.contracts) {
+      const keys = Object.keys(c);
+      expect(keys.some((k) => /fresh|stale|aged|capturedAt|halfLife/i.test(k))).toBe(false);
+    }
+    // The Earth contracts expose only connectivity/availability/latency/bandwidth axes — never a
+    // freshness axis (SLA_AXIS_ORDINAL has no freshness member).
+    expect(Object.keys(SLA_AXIS_ORDINAL)).not.toContain("freshness");
+  }, 60000);
+
+  it("the CRAWL == the READOUT (no drift): the packet-crawl one-way + the router latencyS are the SAME value; round-trip is exactly 2×", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    const tEnd = MAX_TICK_ACT4 * GOLDEN_DT;
+    const eph = buildEph();
+    // The crawl + the router both derive from oneWaySeconds(distanceBetween) at the same t.
+    const crawlOneWay = eph.distanceBetween("earth", "mars", tEnd) / C_LIGHT;
+    const routerOneWay = r.session.lastSolveFor(ACT4_MARS_CONTRACT_ID)!.latencyS;
+    expect(routerOneWay).toBeCloseTo(crawlOneWay, 9); // identical formula + identical ephemeris distance.
+    // Distance sanity: ~1.85 AU at the J2000 epoch (the toy near-Earth scale + the REAL interplanetary
+    // distance coexist — the Mars light-delay uses the real body-to-body distance, not the toy orbit).
+    expect(eph.distanceBetween("earth", "mars", tEnd) / AU_M).toBeGreaterThan(0.3);
+    expect(eph.distanceBetween("earth", "mars", tEnd) / AU_M).toBeLessThan(2.7);
+  }, 60000);
+
+  it("LATENCY STAYS UN-ENFORCED: the Mars contract's activeAxes is {connectivity} only; the minutes-long latency never breaches + never alters earnedEur", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    const mars = r.session.contracts.find((c) => c.id === ACT4_MARS_CONTRACT_ID)!;
+    // Connectivity-only — latency is present-but-un-enforced (vertigo, not a system).
+    expect([...mars.activeAxes]).toEqual(["connectivity"]);
+    // Presence-served ⇒ never breached by the minutes-long latency (the state never flips to failed).
+    expect(mars.state).not.toBe("failed");
+    expect(mars.breachSecondsAccum).toBe(0);
+    // It accrues revenue at the normal pay rate while served (no freshness→€ wiring — the stale-pay
+    // dimming is render-layer only). earnedEur is positive + is plain payPerSecond × servedTime.
+    expect(mars.lastServedFraction).toBe(1.0);
+    expect(mars.earnedEur).toBeGreaterThan(0);
+  }, 60000);
+
+  it("ONE CACHE BREADCRUMB, deterministic: net_place_cache sets marsSample + RAISES the displayed freshness (data closer helps), with NO change to served/breach/revenue", () => {
+    // Stop one tick BEFORE the cache placement: the sample exists (the path carried), aged ~one-way.
+    const before = replayTo(act4Log(), TICK_PLACE_CACHE - 1);
+    const tBefore = (TICK_PLACE_CACHE - 1) * GOLDEN_DT;
+    const sampleBefore = before.session.mars!;
+    const freshBefore = before.session.marsFreshness(tBefore)!;
+    expect(sampleBefore).not.toBeNull();
+    const marsBefore = before.session.contracts.find((c) => c.id === ACT4_MARS_CONTRACT_ID)!;
+    const earnedBefore = marsBefore.earnedEur;
+    const stateBefore = marsBefore.state;
+    // After the cache breadcrumb lands: the sample is RE-CAPTURED near "now" (age ~0) ⇒ the freshness
+    // readout jumps UP by sight (data closer helps). A single placeable — NOT the cache economy.
+    const after = replayTo(act4Log(), TICK_PLACE_CACHE);
+    const tAfter = TICK_PLACE_CACHE * GOLDEN_DT;
+    const freshAfter = after.session.marsFreshness(tAfter)!;
+    expect(freshAfter).toBeGreaterThan(freshBefore); // the breadcrumb RAISED the displayed freshness.
+    expect(after.session.marsAgeS(tAfter)!).toBeLessThan(before.session.marsAgeS(tBefore)!);
+    // The breadcrumb is a FELT readout, NOT a relief lever: it does NOT change served/breach/revenue
+    // (the served fraction + the contract state are identical; the wallet accrual is unaffected by it).
+    const marsAfter = after.session.contracts.find((c) => c.id === ACT4_MARS_CONTRACT_ID)!;
+    expect(marsAfter.state).toBe(stateBefore);
+    expect(marsAfter.lastServedFraction).toBe(marsBefore.lastServedFraction);
+    // earnedEur only grew by the normal one-tick pay (the placement itself added no revenue).
+    expect(marsAfter.earnedEur).toBeGreaterThanOrEqual(earnedBefore);
+  }, 60000);
+
+  it("THE CURSOR STOPS ON ACT4 (a read, not a gate): act4.gate is false forever — the cursor never advances past it (no win screen, 'to be continued')", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4);
+    // The cursor reached act4 (cursor === 4: act1→act2→act3a→act3b→act4) and STAYS there — the final
+    // beat's gate is false forever, so no 5th gate tick is ever recorded (the deliberate stop).
+    expect(r.session.cursor).toBe(4);
+    expect(r.session.snapshot().gateTicks.length).toBe(4); // exactly four gates fired (act1..act3b).
+    // Running well past the Mars actions does NOT advance the cursor (no gate fires past act4).
+    const farther = replayTo(act4Log(), MAX_TICK_ACT4);
+    expect(farther.session.cursor).toBe(4);
   }, 60000);
 });

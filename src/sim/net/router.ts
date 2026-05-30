@@ -43,8 +43,10 @@ import {
   evaluateLink,
   surfacePointRelative,
   surfaceNormalRelative,
+  interBodyOneWayLatencyS,
   NET_LINK_CAPACITY_UNITS,
 } from "./link-budget";
+import { NET_ACT4_RELAY_ID_STEM } from "./endpoint";
 import type { PreferWeights } from "./contract";
 
 /** A stamped record of a link that LOST (the predictability seed, design §2.4/§2.6):
@@ -295,6 +297,13 @@ export function solve(
   faults?: ReadonlySet<string>,
   loadBySat?: ReadonlyMap<string, number>,
 ): SolveResult {
+  // ACT 4 (the Mars frontier teaser) — the ONE special-cased branch. A region on MARS does NOT
+  // route through the toy-frame budget (no toy 300 km geometry at 1 AU, no fake EIRP); it is
+  // solved by PRESENCE-based connectivity + a REAL-ephemeris light-delay injection. Earth
+  // contracts (the rest of the file) are untouched — they keep the full toy-frame bridgeForPoint.
+  if (contract.region.bodyId === "mars") {
+    return solveMarsLeg(eph, contract, sats, groundNets, t, faults);
+  }
   const losses: LinkLossStamp[] = [];
   if (groundNets.length === 0 || sats.length === 0) {
     return {
@@ -374,6 +383,53 @@ export function solve(
     served: true,
     path: [contract.region.id, bridge.satId, bridge.groundId],
     latencyS: bridge.latencyS,
+    bindingConstraint: null,
+    losses,
+  };
+}
+
+/**
+ * ACT 4 — the Mars leg (the frontier teaser, "distance changes everything"). The interplanetary
+ * hop is NOT a toy-frame `evaluateLink` close (the design's Blocker-2 resolution): the toy
+ * 300 km body geometry + inverse-square budget cannot meaningfully close at ~1 AU, and forcing it
+ * would need a physically-meaningless EIRP in the fold. Instead:
+ *
+ *   - CONNECTIVITY is PRESENCE-based — the Mars contract bridges by construction once the player
+ *     has launched the deep-space RELAY (a sat whose id begins {@link NET_ACT4_RELAY_ID_STEM},
+ *     not faulted). No relay ⇒ `bindingConstraint = "connectivity"` (exactly like Act 1's "no
+ *     path"). The relay's antenna spec is cosmetic — it is never run through the toy budget.
+ *   - LATENCY is the REAL one-way light delay `interBodyOneWayLatencyS(eph,"earth","mars",t)`
+ *     (the SAME value the packet-crawl uses; minutes), injected into the unchanged `latencyS`
+ *     field. It is a READOUT, never an enforced axis — the Mars contract's `activeAxes` is
+ *     `{connectivity}` only, so the minutes-long latency never breaches (vertigo, not a system).
+ *
+ * The `SolveResult` shape is unchanged. `path = [marsRegion.id, relay.id, groundNet.id]`. Pure.
+ */
+function solveMarsLeg(
+  eph: Ephemeris,
+  contract: RoutableContract,
+  sats: NetSat[],
+  groundNets: GroundNet[],
+  t: number,
+  faults?: ReadonlySet<string>,
+): SolveResult {
+  const losses: LinkLossStamp[] = [];
+  // The deep-space relay must be present (launched) AND not faulted to bridge the Mars leg.
+  const relay = sats.find(
+    (s) => s.id.startsWith(NET_ACT4_RELAY_ID_STEM) && !(faults?.has(s.id) ?? false),
+  );
+  const groundId = groundNets.length > 0 ? groundNets[0].id : "GROUND-0";
+  if (relay === undefined) {
+    // No relay launched (or it faulted) ⇒ the interplanetary path does not exist (presence-based).
+    losses.push({ aId: contract.region.id, bId: groundId, cause: "set_below_horizon", atS: t });
+    return { served: false, path: null, latencyS: Infinity, bindingConstraint: "connectivity", losses };
+  }
+  // The honest interplanetary one-way light delay (minutes) — a READOUT, never an enforced axis.
+  const latencyS = interBodyOneWayLatencyS(eph, "earth", "mars", t);
+  return {
+    served: true,
+    path: [contract.region.id, relay.id, groundId],
+    latencyS,
     bindingConstraint: null,
     losses,
   };
@@ -494,7 +550,10 @@ export function resolveTick(
   return { result: refreshed, solvedAtS: prev.solvedAtS, topoKey, wasServed: true };
 }
 
-/** The binary region-served predicate used by the cheap re-eval (the centre bridges). */
+/** The binary region-served predicate used by the cheap re-eval (the centre bridges). For an
+ * Act-4 MARS region this is the PRESENCE test (a live relay in the roster) — NOT the toy-frame
+ * bridge, which can never close at interplanetary range. A parked relay's presence is
+ * time-invariant, so the cheap re-eval keeps the cached Mars path (no spurious horizon flip). */
 function isRegionServed(
   eph: Ephemeris,
   contract: RoutableContract,
@@ -503,6 +562,11 @@ function isRegionServed(
   t: number,
   faults?: ReadonlySet<string>,
 ): boolean {
+  if (contract.region.bodyId === "mars") {
+    return sats.some(
+      (s) => s.id.startsWith(NET_ACT4_RELAY_ID_STEM) && !(faults?.has(s.id) ?? false),
+    );
+  }
   const centre: RegionPoint = { latRad: contract.region.latRad, lonRad: contract.region.lonRad };
   return isPointServed(eph, centre, groundNets, sats, t, faults);
 }

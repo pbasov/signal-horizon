@@ -30,8 +30,9 @@
  * @see docs/signal-horizon-m1-design.md §2.4 (router edges), §5 (the WHOLE-DISC pin).
  */
 
-import { type Vec3, C_LIGHT } from "../ephemeris";
+import { type Ephemeris, type Vec3, C_LIGHT } from "../ephemeris";
 import { REF_LINK_DISTANCE_M } from "../coverage/field";
+import { oneWaySeconds } from "../delay";
 import { rotZ, earthThetaAt } from "./frame";
 import { A1_BODY_RADIUS_M } from "./world";
 import { NET_MIN_ELEVATION_RAD } from "./endpoint";
@@ -57,6 +58,22 @@ export const NET_REF_LINK_DISTANCE_M = REF_LINK_DISTANCE_M;
  * (default contract `offeredLoad = 1.0`), chosen so one contract sits comfortably under
  * capacity and two contracts sharing one sat after escalation tip over it. */
 export const NET_LINK_CAPACITY_UNITS = 1.5;
+
+/**
+ * ACT 4 — the ONE inter-body helper (the Mars frontier teaser, "distance changes
+ * everything"). The one-way light delay (seconds) between two bodies at sim-time t, taken
+ * from the REAL ephemeris body-centre-to-centre distance via {@link oneWaySeconds}
+ * (`d / C_LIGHT`). This is the ONLY new function here, and it does NOT touch the toy-frame
+ * budget — the Earth toy latency stays microseconds (`evaluateLink`); only the special-cased
+ * Mars leg reads this. At the J2000 epoch (sim t≈0) Earth↔Mars ≈ 1.85 AU ⇒ ONE-WAY ≈ 15.4 min
+ * (round-trip ≈ 30.8 min) — deterministic minutes (the vertigo, felt by sight). The crawl viz
+ * and the latency readout both derive from THIS formula + the SAME `eph.distanceBetween`, so
+ * they cannot drift; the round-trip readout is exactly `2×` this one-way (`roundTripSeconds`).
+ * Pure (a function of the unforked ephemeris + t).
+ */
+export function interBodyOneWayLatencyS(eph: Ephemeris, a: string, b: string, t: number): number {
+  return oneWaySeconds(eph.distanceBetween(a, b, t));
+}
 
 /** Why a link does NOT close (the geometric cause stamped into the predictability
  * seed). `ok` carries the successful case so the trace can read a single enum. */

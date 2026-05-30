@@ -40,6 +40,11 @@ export const NET_ACT1_REGION_RADIUS_RAD = 10 * DEG_RAD;
  * future derivation can re-tune it without forking field.ts. */
 export const NET_MIN_ELEVATION_RAD = MIN_ELEVATION_RAD;
 
+/** The body a net endpoint rides. Acts 1–3 are all `"earth"` (the toy frame); Act 4 (the
+ * Mars teaser) adds `"mars"` — the ONE region that lives on another body, served over the
+ * REAL interplanetary hop (router solveMarsLeg), never the toy inverse-square budget. */
+export type BodyId = "earth" | "mars";
+
 /** A target region: a geodesic disc on the toy body, body-fixed (rides θ(t)). */
 export interface Region {
   id: string;
@@ -50,8 +55,8 @@ export interface Region {
   lonRad: number;
   /** Angular radius of the disc (radians). */
   radiusRad: number;
-  /** The body the region rides ("earth"). */
-  bodyId: "earth";
+  /** The body the region rides ("earth" for Acts 1–3; "mars" for the Act-4 teaser). */
+  bodyId: BodyId;
 }
 
 /** A ground-network endpoint — a body-fixed surface station the path terminates at. */
@@ -63,8 +68,9 @@ export interface GroundNet {
   lonRad: number;
   /** Antenna altitude above the toy surface (metres) — raises the local horizon. */
   altitudeM: number;
-  /** The body the station rides ("earth"). */
-  bodyId: "earth";
+  /** The body the station rides ("earth"). The Act-4 Mars data comes BACK to Earth's
+   * network, so the ground endpoint is always Earth-side. */
+  bodyId: BodyId;
 }
 
 /** Number of Fibonacci-spiral disc sample points. */
@@ -116,6 +122,33 @@ export const NET_ACT2_GROUND: GroundNet = {
   lonRad: NET_ACT2_REGION_LON_RAD,
   altitudeM: 0,
   bodyId: "earth",
+};
+
+// ── ACT 4 (the Mars frontier teaser — "distance changes everything") ──────────────
+
+/** The Act-4 Mars contract id the act4 beat emits (the ONE region on another body). The
+ * replay action log accepts THIS id (net_accept + the Mars relay launch + net_place_cache). */
+export const ACT4_MARS_CONTRACT_ID = "MARS-1";
+
+/** The deep-space RELAY sat id the player launches to reach Mars — connectivity on the
+ * Mars leg is PRESENCE-BASED (the relay in the roster ⇒ the leg bridges by construction;
+ * the design's Blocker-2 resolution), so the relay never goes through the toy-frame budget.
+ * The Mars-launch preset (`world.ts` MARS_RELAY) commits a sat carrying THIS id stem. */
+export const NET_ACT4_RELAY_ID_STEM = "MARS-RELAY";
+
+/** NET_ACT4_MARS_REGION — the Act-4 data source on MARS (bodyId "mars"). Its lat/lon is
+ * COSMETIC: Act 4 asserts neither whole-disc coverage nor a toy-frame budget on this region
+ * (it is connectivity-by-relay-presence over an interplanetary hop). The light-delay on the
+ * Earth↔Mars leg is the REAL ephemeris distance / c (minutes), injected by the router's
+ * solveMarsLeg branch — NOT the toy 300 km-body geometry. The disc shape mirrors REGION-0
+ * only so the render has a node to draw; the router never samples it through the toy frame. */
+export const NET_ACT4_MARS_REGION: Region = {
+  id: ACT4_MARS_CONTRACT_ID,
+  label: "Mars colony",
+  latRad: 0,
+  lonRad: 0,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "mars",
 };
 
 /** A single body-fixed disc sample point (lat,lon in radians). */

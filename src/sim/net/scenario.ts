@@ -41,6 +41,8 @@ import {
   NET_ACT1_REGION_RADIUS_RAD,
   NET_ACT2_REGION_LAT_RAD,
   NET_ACT2_REGION_LON_RAD,
+  NET_ACT4_MARS_REGION,
+  ACT4_MARS_CONTRACT_ID,
   type Region,
 } from "./endpoint";
 import { offerNetContract, NET_DEFAULT_PREFER, type SlaAxis } from "./contract";
@@ -421,18 +423,36 @@ const ACT3B: Beat = {
 };
 
 /**
- * act4 — "Distance changes everything." (FENCED, by sight) STRUCTURAL placeholder
- * (Phase D / D1). emit will surface the Mars opportunity (light-delay on the router
- * latency term). NO gate — a read, not a gate; the scenario stops on a deliberate "to be
- * continued", so its gate stays false forever (the cursor never advances past act4).
+ * act4 — "Distance changes everything." (the Mars frontier TEASER — vertigo, FENCED, by sight).
+ * The player has a mature Earth network (acts 1-3 done) and feels they have got this; act4 is the
+ * REVERSAL. The cursor reaching act4 IS the "you've reached the frontier" beat.
+ *
+ * emit: surface the ONE Mars opportunity — offer a Mars contract (NET_ACT4_MARS_REGION, bodyId
+ *       "mars", activeAxes={connectivity}). The player then does what they always do — LAUNCH a
+ *       deep-space relay (the SAME net_launch, the MARS_RELAY preset) toward Mars. The FIRST SIGNAL
+ *       CRAWLS: the router's solveMarsLeg injects the REAL Earth↔Mars light delay (minutes) into
+ *       latencyS, so the Earth real-time-tune playbook physically BREAKS (you cannot tune a topology
+ *       when your command arrives 8+ min late). Data arrives OLD ("as of Nm ago" — freshness BY
+ *       SIGHT, reusing freshness-as-saturation). NO escalation, NO fault enable, NO mask flip — pure
+ *       demand arrival; the "less for stale" pay-dimming is RENDER-LAYER (no Contract field, §8).
+ * gate: STAYS FALSE FOREVER — a READ, not a gate. The scenario stops on a deliberate "to be
+ *       continued"; the cursor never advances past act4 (NO win screen, NO completion gate). The
+ *       human two-layer gate (did they lean in or bounce) is read OUTSIDE the sim.
  */
 const ACT4: Beat = {
   id: "act4",
-  emit(): void {
-    /* D1: surface the Mars opportunity (delay.ts on the latency term). */
+  emit(session: NetSession): void {
+    // The ONE Mars demand: connectivity-only (latency/avail/bw present-but-un-enforced, as in Act 1
+    // — the minutes-long latency is a READOUT, never a breach axis; vertigo, not a system). The
+    // session de-dupes by id, so a re-emit is a no-op.
+    session.addContract(
+      offerNetContract(ACT4_MARS_CONTRACT_ID, NET_ACT4_MARS_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity"]),
+      }),
+    );
   },
   gate(): boolean {
-    return false; // NO gate — a read, not a gate.
+    return false; // NO gate — a read, not a gate. The cursor STOPS on the frontier ("to be continued").
   },
 };
 

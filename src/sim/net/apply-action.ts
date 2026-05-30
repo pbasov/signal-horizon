@@ -25,19 +25,20 @@ import {
   KIND_NET_LAUNCH,
   KIND_NET_ACCEPT,
   KIND_NET_SET_PREFER,
+  KIND_NET_PLACE_CACHE,
   type SimAction,
   type JsonValue,
 } from "../action";
 import type { NetSession } from "./session";
 import type { NetSat } from "./sat";
 import { standardLoadout } from "./sat";
-import { resolveOrbit } from "./world";
+import { resolveOrbit, MARS_RELAY } from "./world";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 
 /** The outcome of applying a net action (for the live caller's feedback + log). */
 export interface NetActionResult {
-  /** What happened: a launch, a contract accept, a prefer change, or rejected. */
-  kind: "sats_launched" | "contract_accepted" | "prefer_set" | "rejected";
+  /** What happened: a launch, a contract accept, a prefer change, a cache placement, or rejected. */
+  kind: "sats_launched" | "contract_accepted" | "prefer_set" | "cache_placed" | "rejected";
   /** The new sat ids when a launch added some (batch ⇒ one per `count`). */
   satIds?: string[];
   /** € charged by this action (0 for accept/prefer; the launch cost for a launch). */
@@ -59,7 +60,7 @@ function num(v: JsonValue | undefined): number {
  * (the unknown-kind no-op, asserted in the A2 test). Pure + deterministic.
  */
 export function applyNetAction(
-  _eph: Ephemeris,
+  eph: Ephemeris,
   session: NetSession,
   action: SimAction,
   dt: number,
@@ -73,10 +74,14 @@ export function applyNetAction(
     // The even in-plane mean-anomaly spread between adjacent batch members (Act 2 §3.4). Absent
     // (= 0) ⇒ Act-1 identical-plane behaviour: member i's m0 += 0, so the orbit is byte-identical.
     const phaseSpreadRad = num(action.payload.phaseSpreadRad);
+    // ACT 4 — the "launch toward Mars" verb is the SAME net_launch; the Mars-relay PRESET makes
+    // the launched sat carry the deep-space relay id (so the router's solveMarsLeg presence test
+    // recognises it). Earth launches keep the monotonic NET-SAT-N id (byte-identical, golden-safe).
+    const isRelay = action.payload.presetId === MARS_RELAY.id;
     const t = action.atTick * dt;
     const satIds: string[] = [];
     for (let i = 0; i < count; i++) {
-      const id = session.nextSatId();
+      const id = isRelay ? session.nextRelaySatId() : session.nextSatId();
       // Each member is the SAME plane (a/inc/subLon), phase-shifted by i·phaseSpreadRad in mean
       // anomaly. resolveOrbit sets m0 = subLon + ω·t; the phase offset adds onto that m0, so one
       // launch places `count` evenly-phased sats — a constellation that hands off (§3.4). With
@@ -104,6 +109,14 @@ export function applyNetAction(
     const c = session.setPrefer(id, num(action.payload.lat), num(action.payload.bw), num(action.payload.stab));
     if (c === null) return { kind: "rejected", costEur: 0 };
     return { kind: "prefer_set", costEur: 0, contractId: c.id };
+  }
+  if (action.kind === KIND_NET_PLACE_CACHE) {
+    // ACT 4 (D1) — place the ONE cache breadcrumb ("data closer helps"). Deterministic, no roll:
+    // re-captures the Mars sample at t (age 0 ⇒ the freshness readout jumps up by sight). It does
+    // NOT change served/breach or revenue (a felt breadcrumb, NOT a relief lever; §8 fenced).
+    const t = action.atTick * dt;
+    session.placeMarsCache(eph, t);
+    return { kind: "cache_placed", costEur: 0 };
   }
   return null;
 }

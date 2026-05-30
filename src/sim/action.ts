@@ -121,6 +121,14 @@ export const KIND_NET_ACCEPT = "net_accept";
  * in M1.
  */
 export const KIND_NET_SET_PREFER = "net_set_prefer";
+/**
+ * net/ A4 — the player PLACES the ONE Act-4 cache breadcrumb (the Mars frontier teaser — "data
+ * closer helps"). Payload `{}` (the single dataset is "mars"). The session sets `marsSample`
+ * "near Mars" so the freshness readout improves BY SIGHT — a single placeable, NOT the cache
+ * economy (NO prefetch policy, NO coherence levels, NO eviction; §8 fenced). Deterministic + no
+ * roll; applied at `atTick` via the shared applier so live == replay.
+ */
+export const KIND_NET_PLACE_CACHE = "net_place_cache";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -293,6 +301,16 @@ export function netSetPrefer(
   atTick = 0,
 ): SimAction {
   return simAction(KIND_NET_SET_PREFER, atTick, { contractId, lat, bw, stab });
+}
+
+/**
+ * net/ A4 — PLACE the ONE Act-4 cache breadcrumb at a tick (the Mars frontier teaser, "data
+ * closer helps"). No payload: the single dataset is "mars". The session sets `marsSample` "near
+ * Mars" so the freshness readout improves by sight; applying it at `atTick` reproduces the same
+ * freshness state on replay. A SINGLE placeable — NOT the cache economy (§8 fenced).
+ */
+export function netPlaceCache(atTick = 0): SimAction {
+  return simAction(KIND_NET_PLACE_CACHE, atTick, {});
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */
