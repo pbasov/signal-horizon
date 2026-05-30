@@ -67,6 +67,11 @@ export interface Contract {
   id: string;
   /** The metro this contract serves (for the panel). */
   label: string;
+  /** The TARGET REGION's hotspot CENTRE (radians) — the great-circle anchor the region was
+   * resolved around. Carried so an M3a datacenter's edge-compute footprint can test region
+   * membership with a cheap great-circle angle (no grid re-sweep). Pure data. */
+  centerLatRad: number;
+  centerLonRad: number;
   /** The TARGET REGION: a sorted, de-duplicated set of grid cell ids the contract
    * demands coverage of. Resolved once from the grid at offer time (deterministic),
    * so the served fraction is a stable denominator over the contract's life. */
@@ -193,6 +198,8 @@ export function offerContract(
   return {
     id,
     label: target.label,
+    centerLatRad: target.latRad,
+    centerLonRad: target.lonRad,
     cellIds,
     regionDemand,
     qualityAxis: "connectivity",

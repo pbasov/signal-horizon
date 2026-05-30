@@ -10,7 +10,10 @@
  *        B deploy a ground station · L launch a satellite · ; cycle launch preset
  *        (M2c — the build-the-monument loop: the heatmap reads the LIVE roster) ·
  *        N cycle the selected contract · K accept it · J decline it
- *        (M2d — contracts + coverage revenue: serve a region's coverage to EARN €)
+ *        (M2d — contracts + coverage revenue: serve a region's coverage to EARN €) ·
+ *        M place an orbital datacenter · ' cycle its site
+ *        (M3a — compute as infrastructure: a DC's power+thermal-limited compute force-
+ *        multiplies the served revenue of contracts in its edge-compute footprint, §4.5)
  *
  * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
  * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
@@ -39,12 +42,16 @@ import {
   launchSat as launchSatAction,
   acceptContract as acceptContractAction,
   declineContract as declineContractAction,
+  placeDC as placeDCAction,
 } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
 import { applyBuildAction } from "./sim/m2/apply-build-action";
 import { BuildSession } from "./sim/m2/session";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
+import { DC_CANDIDATES } from "./sim/m3/dc-sites";
+import { resolveDCCompute, computeLiftMultiplier } from "./sim/m3/datacenter";
+import { latLonToUnit } from "./sim/coverage/grid";
 import { GeodesicGrid } from "./sim/coverage/grid";
 import { scoreCoverageAt } from "./sim/coverage/score";
 import type { Vec3 } from "./sim/ephemeris";
@@ -126,6 +133,9 @@ let buildScratchPos: Vec3[] = [];
 let deploySiteCursor = 0;
 // The launch-preset cursor: L launches into the selected preset; ; cycles it.
 let launchPresetCursor = 0;
+// M3a — the DC-site cursor: M places an orbital datacenter at the next candidate, ' cycles it.
+// A keyed/list pick (no globe-raycast yet), mirroring the ground-station deploy cursor.
+let dcSiteCursor = 0;
 // M2d — the selected contract id (the accept/decline target). N cycles it among the
 // live contracts; K accepts the selected offer; J declines it. Tracked by id (not
 // index) so it survives the board changing as offers come + go.
@@ -149,6 +159,28 @@ function buildRenderState(): BuildRenderState {
   // roster). buildCoverageDemand stays only as the BASELINE reference for the growth readout.
   const score = scoreCoverageAt(buildCoverageGrid, build.demandField, eirps, buildScratchPos, earth, earthR);
   const list = build.roster.list();
+  // M3a — project each placed orbital DC into a render descriptor: its body sub-point world
+  // position (rebased like a body in the orrery) + its resolved §4.5 power/thermal/compute and
+  // the bounded force-multiplier its compute applies. PURE reads of the DC roster (f64 here;
+  // f64→f32 stays in the orrery). A handful at most (Risk-5 — sparse strategic nodes).
+  const dcs = build.dcRoster.list().map((d) => {
+    const c = resolveDCCompute(eph, d, t);
+    const center = eph.position(d.bodyId, t);
+    const rM = eph.radiusMeters(d.bodyId);
+    const u = latLonToUnit(d.subLatRad, d.subLonRad);
+    const candidate = DC_CANDIDATES.find((cand) => cand.bodyId === d.bodyId && cand.subLatRad === d.subLatRad && cand.subLonRad === d.subLonRad);
+    return {
+      id: d.id,
+      label: candidate?.label ?? d.bodyId.toUpperCase(),
+      posM: [center[0] + u[0] * rM, center[1] + u[1] * rM, center[2] + u[2] * rM] as Vec3,
+      distanceAU: c.distanceAU,
+      powerW: c.powerW,
+      rejectableHeatW: c.rejectableHeatW,
+      computeUnits: c.computeUnits,
+      thermalLimited: c.thermalLimited,
+      liftMultiplier: computeLiftMultiplier(c.computeUnits),
+    };
+  });
   return {
     assets: list.map((a, i) => ({
       id: a.id,
@@ -156,6 +188,7 @@ function buildRenderState(): BuildRenderState {
       posM: buildScratchPos[i],
       eirp: eirps[i],
     })),
+    datacenters: dcs,
     coveredDemandFraction: score.coveredDemandFraction,
     groundCount: build.roster.groundCount,
     satCount: build.roster.satCount,
@@ -279,6 +312,31 @@ function launchSatellite(): void {
         ? `${preset.label} reached orbit — coverage growing`
         : `${preset.label} FAILED on ascent — € lost, no sat`,
     });
+  }
+}
+
+/**
+ * M3a — PLACE an ORBITAL DATACENTER at the selected candidate site, recorded + applied via the
+ * SHARED applyBuildAction at the current tick (live + replay agree). Charges the DC capex and
+ * adds the strategic compute node; from then on it FORCE-MULTIPLIES the revenue of any contract
+ * in its edge-compute footprint, bounded by its power+thermal-limited compute (GDD §4.5). Logs a
+ * NOTICE so the build is felt + advances the cursor. A DC is a SMALL number of high-impact nodes
+ * (Risk-5) — dear, sparse, and a real strategic choice of WHICH region to lift.
+ */
+function placeDatacenter(): void {
+  const site = DC_CANDIDATES[dcSiteCursor % DC_CANDIDATES.length];
+  const action = placeDCAction(dcSiteCursor, clock.tick);
+  const res = applyBuildAction(eph, build, action, DT);
+  if (res && res.kind === "datacenter_placed") {
+    addAction(save, action);
+    log.append({
+      tSim: clock.seconds,
+      sev: build.bankrupt ? "warn" : "info",
+      entity: "DATACENTER",
+      value: `−€${Math.round(res.costEur)}`,
+      msg: `compute node over ${site.label} — edge compute lifts served revenue in its footprint${build.bankrupt ? " (OVERSPENT)" : ""}`,
+    });
+    dcSiteCursor = (dcSiteCursor + 1) % DC_CANDIDATES.length;
   }
 }
 
@@ -636,6 +694,21 @@ window.addEventListener("keydown", (e) => {
       entity: "LAUNCH-SEL",
       value: LAUNCH_PRESETS[launchPresetCursor].label,
       msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
+    });
+  } else if (k === "m" || k === "M") {
+    // M3a — PLACE an ORBITAL DATACENTER at the selected candidate site (GDD §4.5: compute as
+    // infrastructure, a force-multiplier on the loop). Recorded + applied via the shared applier;
+    // it lifts served revenue in its edge-compute footprint, bounded by its power+thermal compute.
+    placeDatacenter();
+  } else if (k === "'") {
+    // M3a — cycle the selected DC candidate site (Earth regions → Moon → Mars) for the next M.
+    dcSiteCursor = (dcSiteCursor + 1) % DC_CANDIDATES.length;
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "DC-SEL",
+      value: DC_CANDIDATES[dcSiteCursor].label,
+      msg: `selected · press M to place an orbital datacenter`,
     });
   } else if (k === "n" || k === "N") {
     // M2d — CYCLE the selected contract (the accept/decline target) among the live

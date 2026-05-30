@@ -67,6 +67,9 @@ import {
 import { ContractGenerator, type GeneratorSnapshot } from "./contract-generator";
 import { EventGenerator, type EventGeneratorSnapshot, type EmitPlan } from "./event-generator";
 import { M2EventLog, type M2Event } from "./events";
+import { DCRoster, type DCRosterSnapshot } from "../m3/dc-roster";
+import { DC_CANDIDATES, DEFAULT_DC_PANEL_M2, DEFAULT_DC_RADIATOR_M2, DEFAULT_DC_RTG } from "../m3/dc-sites";
+import { DC_CAPEX_EUR } from "../m3/datacenter";
 
 /** Opening € for a build session — enough to deploy a few stations + buy a launch
  * or two, little enough that building is a budget choice (the build-vs-budget
@@ -104,6 +107,7 @@ export interface BuildActionResult {
     | "launch_failed"
     | "contract_accepted"
     | "contract_declined"
+    | "datacenter_placed"
     | "rejected";
   /** The new asset's id when one was added (deploy / successful launch). */
   assetId?: string;
@@ -148,6 +152,9 @@ export interface BuildSnapshot {
   /** M2f — the surfaced world-event stream (demand shocks / rival actions / news), folded so a
    * restored game shows the same history + reproduces the same state-hash. */
   events: { events: M2Event[]; nextSeq: number };
+  /** M3a — the ORBITAL DATACENTER roster (placements + their physical levers), folded so the
+   * DC fleet + the force-multiplier it applies reproduce on replay/restore (GDD §4.5). */
+  datacenters: DCRosterSnapshot;
 }
 
 export class BuildSession {
@@ -205,6 +212,12 @@ export class BuildSession {
   /** Monotonic counter for rival-failure-spawned contract ids (`r0`, `r1`… — distinct from the
    * ContractGenerator's `c{N}` stream so the two never collide). */
   private spawnedContractCount = 0;
+
+  // --- M3a: the orbital-datacenter fleet (compute as infrastructure) ---------
+  /** The placed orbital datacenters (GDD §4.5): a SMALL set of strategic compute nodes the
+   * player powers + cools, each FORCE-MULTIPLYING the revenue of contracts in its edge-compute
+   * footprint (bounded — Risk-5: NOT a base-builder). Folds into the snapshot/state-hash. */
+  readonly dcRoster = new DCRoster();
 
   /** Sim-time the session has been STEPPED to (for snapshot-resume continuity). */
   private lastStepS = 0;
@@ -294,6 +307,33 @@ export class BuildSession {
     return { kind: "sat_launched", assetId: id, costEur: preset.costEur, presetLabel: preset.label, roll: roll.roll };
   }
 
+  // --- M3a: place an orbital datacenter ---------------------------------------
+
+  /**
+   * PLACE an ORBITAL DATACENTER at candidate DC SITE `siteIndex` (wraps the candidate list,
+   * GDD §4.5). Charges {@link DC_CAPEX_EUR} (a meaningful strategic capex — DCs are dear,
+   * sparse nodes) and adds the node to the DC roster with the default panel/radiator/RTG spec.
+   * The DC immediately begins FORCE-MULTIPLYING the revenue of any contract in its edge-compute
+   * footprint, bounded by its power+thermal-limited compute budget. Returns the outcome. Rejected
+   * only if there are no candidates; overspending is ALLOWED (the build-vs-budget tension).
+   * Deterministic + pure (no RNG — placement is a keyed pick, the compute is geometry).
+   */
+  placeDatacenter(siteIndex: number): BuildActionResult {
+    if (DC_CANDIDATES.length === 0) return { kind: "rejected", costEur: 0 };
+    const n = DC_CANDIDATES.length;
+    const site = DC_CANDIDATES[((siteIndex % n) + n) % n];
+    this.economy.apply(-DC_CAPEX_EUR);
+    const id = this.dcRoster.place(
+      site.bodyId,
+      site.subLatRad,
+      site.subLonRad,
+      DEFAULT_DC_PANEL_M2,
+      DEFAULT_DC_RADIATOR_M2,
+      DEFAULT_DC_RTG,
+    );
+    return { kind: "datacenter_placed", assetId: id, costEur: DC_CAPEX_EUR };
+  }
+
   // --- M2d: contracts ---------------------------------------------------------
 
   /** A read-only view of every contract, in offer order (the panel reads this). */
@@ -311,6 +351,12 @@ export class BuildSession {
   /** Find a contract by id (null if unknown). */
   private contractById(id: string): Contract | null {
     return this.contractList.find((c) => c.id === id) ?? null;
+  }
+
+  /** M3a — a contract's region anchor for the DC edge-compute footprint test (the hotspot
+   * centroid on the body the contract serves — Earth for the M2d contracts). Pure. */
+  private contractRegion(c: Contract): { bodyId: string; latRad: number; lonRad: number } {
+    return { bodyId: "earth", latRad: c.centerLatRad, lonRad: c.centerLonRad };
   }
 
   /**
@@ -447,7 +493,15 @@ export class BuildSession {
           radius,
           this.scratchCov,
         );
-        const earned = contractRevenueRatePerSecond(c, frac) * dtSeconds;
+        // M3a — THE DATACENTER FORCE-MULTIPLIER (GDD §4.5 "transmit conclusions not bytes"):
+        // a DC in this contract's region footprint lifts the € the SAME coverage earns, by a
+        // bounded multiplier scaled by its power+thermal-limited compute. The lift applies ONLY
+        // when the contract is being served (frac > 0) — edge compute refines TRAFFIC, so a
+        // breached/unserved region earns no lift (the penalty path is untouched). DT-invariant:
+        // it scales the per-second rate, still summed into ONE wallet apply() per step.
+        const baseRate = contractRevenueRatePerSecond(c, frac);
+        const lift = baseRate > 0 ? this.dcRoster.liftFor(eph, this.contractRegion(c), t) : 1.0;
+        const earned = baseRate * lift * dtSeconds;
         netDelta += earned;
         recordEarned(c, earned);
         stepActiveContract(c, frac, dtSeconds);
@@ -619,7 +673,11 @@ export class BuildSession {
         radius,
         this.scratchCov,
       );
-      rate += contractRevenueRatePerSecond(c, frac);
+      // M3a — include the DC force-multiplier so the FINANCE readout matches the € actually
+      // accrued in step() (the lift applies only when served; the breach penalty is untouched).
+      const baseRate = contractRevenueRatePerSecond(c, frac);
+      const lift = baseRate > 0 ? this.dcRoster.liftFor(eph, this.contractRegion(c), t) : 1.0;
+      rate += baseRate * lift;
     }
     return rate;
   }
@@ -650,6 +708,7 @@ export class BuildSession {
       activeShocks: this.activeShocks.map((s) => ({ ...s, cellIds: s.cellIds.slice() })),
       spawnedContractCount: this.spawnedContractCount,
       events: this.eventLog.snapshot(),
+      datacenters: this.dcRoster.snapshot(),
     };
   }
 
@@ -672,6 +731,9 @@ export class BuildSession {
     this.activeShocks = (s.activeShocks ?? []).map((sh) => ({ ...sh, cellIds: sh.cellIds.slice() }));
     this.spawnedContractCount = s.spawnedContractCount ?? 0;
     if (s.events) this.eventLog.restore(s.events);
+    // M3a — restore the orbital-datacenter fleet (tolerant of older saves with no DCs).
+    if (s.datacenters) this.dcRoster.restore(s.datacenters);
+    else this.dcRoster.restore({ datacenters: [], nextId: 0 });
   }
 
   /**

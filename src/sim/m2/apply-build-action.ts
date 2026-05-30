@@ -25,6 +25,7 @@ import {
   KIND_DECLINE_CONTRACT,
   KIND_DEPLOY_GROUND,
   KIND_LAUNCH_SAT,
+  KIND_PLACE_DC,
   type SimAction,
 } from "../action";
 import type { BuildSession, BuildActionResult } from "./session";
@@ -59,6 +60,10 @@ export function applyBuildAction(
   if (action.kind === KIND_DECLINE_CONTRACT) {
     const id = typeof action.payload.contractId === "string" ? action.payload.contractId : "";
     return session.declineContract(id);
+  }
+  if (action.kind === KIND_PLACE_DC) {
+    const idx = typeof action.payload.siteIndex === "number" ? Math.trunc(action.payload.siteIndex) : 0;
+    return session.placeDatacenter(idx);
   }
   return null;
 }

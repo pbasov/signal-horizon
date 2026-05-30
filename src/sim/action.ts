@@ -77,6 +77,14 @@ export const KIND_ACCEPT_CONTRACT = "accept_contract";
  * the offer board state reproduces on replay.
  */
 export const KIND_DECLINE_CONTRACT = "decline_contract";
+/**
+ * M3a — the player PLACES an ORBITAL DATACENTER (GDD §4.5 compute as infrastructure). Payload
+ * carries the candidate DC SITE index (a deterministic keyed pick from a fixed candidate list —
+ * no globe-raycast yet); the session resolves the index to a body + sub-point, charges the DC
+ * capex €, and adds the node to the DC roster. Applied at `atTick` via the shared applier so
+ * live + replay agree. A DC is a SMALL number of high-impact strategic nodes (Risk-5).
+ */
+export const KIND_PLACE_DC = "place_dc";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -180,6 +188,15 @@ export function acceptContract(contractId: string, atTick = 0): SimAction {
  */
 export function declineContract(contractId: string, atTick = 0): SimAction {
   return simAction(KIND_DECLINE_CONTRACT, atTick, { contractId });
+}
+
+/**
+ * M3a — place an orbital datacenter at a candidate DC SITE index, at a tick. The session
+ * resolves the index to a body + sub-point, so recording the index (not the geometry) keeps
+ * the action small and the resolution deterministic on both the live + replay paths.
+ */
+export function placeDC(siteIndex: number, atTick = 0): SimAction {
+  return simAction(KIND_PLACE_DC, atTick, { siteIndex: Math.trunc(siteIndex) });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

@@ -87,12 +87,37 @@ export interface BuildAssetRender {
   eirp: number;
 }
 
+/** M3a — one placed ORBITAL DATACENTER's render descriptor (GDD §4.5): a distinct §8 node on
+ * the orrery + the resolved power/thermal/compute readout that the corner overlay shows. The
+ * world position is the DC's body sub-point (rebased like a body); the rest is pure derived
+ * physics from main.ts. */
+export interface DCRender {
+  id: string;
+  label: string;
+  /** World position (metres, ecliptic) of the DC's body sub-point at the frame's sim-time. */
+  posM: Vec3;
+  /** Heliocentric distance (AU) of the DC's body — the 1/d² flux driver. */
+  distanceAU: number;
+  /** Usable power (W) = solar(1/d²) + RTG. */
+  powerW: number;
+  /** Rejectable heat (W) — the radiative-only thermal cap. */
+  rejectableHeatW: number;
+  /** Usable compute budget (units) = min(power-limited, thermal-limited). */
+  computeUnits: number;
+  /** True iff the THERMAL ceiling is the binding one (thermally throttled). */
+  thermalLimited: boolean;
+  /** The bounded revenue MULTIPLIER (≥ 1.0) this DC's compute applies in its footprint. */
+  liftMultiplier: number;
+}
+
 /** M2c — the LIVE build roster + coverage score the orrery renders (the monument).
  * Supplied per-frame by main.ts from the pure BuildSession; the orrery reads it to
  * (1) draw ground-station + sat markers, (2) sweep the heatmap off the LIVE roster,
  * and (3) show the coverage-score readout that rises as you build. */
 export interface BuildRenderState {
   assets: BuildAssetRender[];
+  /** M3a — the placed orbital datacenters (a SMALL set — §4.5) + their power/thermal/compute. */
+  datacenters: DCRender[];
   /** Covered-demand fraction ∈ [0,1] — the headline "the web grew" readout. */
   coveredDemandFraction: number;
   /** Ground-station + launched-sat counts (the "size of the monument"). */
@@ -142,6 +167,9 @@ const COVERAGE_BODY_ID = "earth";
 /** Max placed-asset markers the orrery draws at once (the marker pool size). The
  * coverage sweep itself is unbounded; only the on-screen marker glyphs are capped. */
 const MAX_BUILD_MARKERS = 48;
+/** Max DC nodes the orrery draws at once. A DC is a SMALL number of high-impact strategic
+ * nodes (GDD §4.5 / Risk-5 — NOT a base-builder), so the pool is deliberately tiny. */
+const MAX_DC_MARKERS = 8;
 /** Earth billboard px (mirrors the BODIES "earth" entry) — used to size the shell
  * so it hugs the Earth disc on screen. Kept in one place. */
 const EARTH_BILLBOARD_PX = 40;
@@ -301,6 +329,12 @@ export class Orrery {
   /** Latest build render state (roster + coverage score), set per-frame by main.ts. */
   private buildState: BuildRenderState | null = null;
 
+  // --- M3a orbital-datacenter markers (a distinct §8 compute node) -----------
+  /** Pooled DC node discs (distinct hot-violet signal nodes — the §8 compute glyph) +
+   * their compute halos (a corona scaled by the DC's compute budget), reused per frame. */
+  private dcMarkers: THREE.Mesh[] = [];
+  private dcHalos: THREE.Mesh[] = [];
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -367,6 +401,23 @@ export class Orrery {
       m.visible = false;
       m.renderOrder = 11; // over the body billboards so a marker reads on the globe.
       this.buildMarkers.push(m);
+      this.scene.add(m);
+    }
+
+    // M3a — a small pool of ORBITAL-DATACENTER nodes (a handful matter — §4.5). Each is a
+    // distinct hot-VIOLET signal disc (the §8 compute-node hue, set apart from the green
+    // assets + amber packets + cyan feed legs) backed by a compute HALO whose radius scales
+    // with the DC's compute budget (the bigger/brighter the node, the more it processes).
+    for (let i = 0; i < MAX_DC_MARKERS; i++) {
+      const halo = this.buildHaloDisc([0.78, 0.55, 1.0]); // violet compute corona.
+      halo.visible = false;
+      halo.renderOrder = 11;
+      this.dcHalos.push(halo);
+      this.scene.add(halo);
+      const m = this.buildSignalDisc([0.82, 0.6, 1.0]); // hot violet: a compute node.
+      m.visible = false;
+      m.renderOrder = 12; // above its halo + the asset markers so the node reads clearly.
+      this.dcMarkers.push(m);
       this.scene.add(m);
     }
 
@@ -705,8 +756,11 @@ export class Orrery {
     if (this.coverageOverlay.visible) {
       this.updateCoverageHeatmap(t, focusAbs, worldPerPx);
       this.updateBuildMarkers(focusAbs, worldPerPx);
+      this.updateDCMarkers(focusAbs, worldPerPx);
     } else {
       for (const m of this.buildMarkers) m.visible = false;
+      for (const m of this.dcMarkers) m.visible = false;
+      for (const h of this.dcHalos) h.visible = false;
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -871,6 +925,43 @@ export class Orrery {
   }
 
   /**
+   * M3a — draw the ORBITAL-DATACENTER nodes (GDD §4.5): each placed DC's body sub-point is
+   * rebased like a body and shown as a distinct hot-VIOLET signal disc (the §8 compute glyph,
+   * set apart from the green assets) with a violet COMPUTE HALO whose radius scales with the
+   * DC's compute budget — so a power+thermal-rich node reads as a big bright corona and a
+   * power-starved / thermally-throttled one as a thin rim (the physics, visible). The dither
+   * cell COARSENS when the DC is thermally limited (a redundant, colour-off cue that the
+   * thermal ceiling is biting). Pooled + reused; a handful at most (Risk-5 — sparse by design).
+   */
+  private updateDCMarkers(focusAbs: Vec3, worldPerPx: number): void {
+    const dcs = this.buildState?.datacenters ?? [];
+    let slot = 0;
+    for (const d of dcs) {
+      if (slot >= this.dcMarkers.length) break;
+      const m = this.dcMarkers[slot];
+      const halo = this.dcHalos[slot];
+      this.renderInto(this._rp, d.posM, focusAbs);
+      m.position.copy(this._rp);
+      // The node is a touch bigger than a sat marker (a DC is a strategic node, not a smallsat).
+      this.sizeBillboard(m, 11, worldPerPx);
+      // Redundant colour-off cue: coarsen the node's dither when thermally throttled.
+      (m.material as THREE.ShaderMaterial).uniforms.uCell.value = d.thermalLimited ? 4.0 : 2.0;
+      m.visible = true;
+      // The compute HALO: radius grows with the compute budget (clamped), so the node's glow
+      // reads its processing power — a force-multiplier you can SEE working.
+      halo.position.copy(this._rp);
+      const haloPx = 16 + Math.min(40, d.computeUnits * 3);
+      this.sizeBillboard(halo, haloPx, worldPerPx);
+      halo.visible = true;
+      slot++;
+    }
+    for (let i = slot; i < this.dcMarkers.length; i++) {
+      this.dcMarkers[i].visible = false;
+      this.dcHalos[i].visible = false;
+    }
+  }
+
+  /**
    * FRESHNESS-AS-SATURATION (§8, the signature cue) on the Mars cache node. The
    * disc colour bleeds from a hot, saturated "fresh data" tint toward the machine
    * grey as the cached copy stales — reusing the packet's grey→hot lerp path. Two
@@ -1022,10 +1113,24 @@ export class Orrery {
         const growthPct = Math.round((b.totalDemand / b.baselineDemand - 1) * 100);
         escalation = ` · DEMAND·GROWTH <span class="k">+${growthPct}%</span>`;
       }
+      // M3a — the ORBITAL-DATACENTER readout (GDD §4.5): the first DC's power / thermal /
+      // compute / the bounded force-multiplier it applies. A new line so the §4.5 physics
+      // (1/d² power, the radiative thermal cap, the min() compute budget) is glanceable on
+      // the same screen as the coverage it lifts. Shows the binding ceiling (PWR vs THERM).
+      let dcLine = "";
+      if (b && b.datacenters.length > 0) {
+        const d = b.datacenters[0];
+        const more = b.datacenters.length > 1 ? ` (+${b.datacenters.length - 1})` : "";
+        const bind = d.thermalLimited ? "THERM" : "PWR";
+        dcLine =
+          `\nDC ${d.label}${more} · ${Math.round(d.powerW)}W pwr · ` +
+          `${Math.round(d.rejectableHeatW)}W rej · CMP <span class="k">${d.computeUnits.toFixed(1)}u</span>` +
+          ` [${bind}] · LIFT <span class="k">×${d.liftMultiplier.toFixed(2)}</span>`;
+      }
       set(
         "bl",
         `drag orbit · wheel zoom\nCOVERAGE <span class="k">${this.dimensionLabel()}</span> · ` +
-          `COVERED <span class="k">${pct}%</span>${escalation}${monument}`,
+          `COVERED <span class="k">${pct}%</span>${escalation}${monument}${dcLine}`,
       );
     } else {
       set("bl", `drag orbit · wheel zoom`);
@@ -1033,7 +1138,7 @@ export class Orrery {
     set(
       "br",
       `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus\n` +
-        `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch`,
+        `<span class="k">H</span> heatmap · <span class="k">D</span> dim · <span class="k">B</span> deploy · <span class="k">L</span> launch · <span class="k">M</span> datacenter`,
     );
   }
 

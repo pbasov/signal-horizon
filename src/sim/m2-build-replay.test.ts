@@ -7,16 +7,19 @@ import {
   launchSat,
   acceptContract,
   declineContract,
+  placeDC,
   KIND_DEPLOY_GROUND,
   KIND_LAUNCH_SAT,
   KIND_ACCEPT_CONTRACT,
   KIND_DECLINE_CONTRACT,
+  KIND_PLACE_DC,
   type SimAction,
 } from "./action";
 import { BuildSession } from "./m2/session";
 import { applyBuildAction } from "./m2/apply-build-action";
 import { GeodesicGrid } from "./coverage/grid";
 import { scoreCoverageAt } from "./coverage/score";
+import { DC_CAPEX_EUR } from "./m3/datacenter";
 import type { Vec3 } from "./ephemeris";
 
 /**
@@ -64,6 +67,12 @@ const TICK_LAUNCH_4 = 700;
  * the build deploys a station over it (site 6) so the accepted contract is genuinely
  * SERVED and EARNS across the window. */
 const TICK_ACCEPT = Math.round(1850 / GOLDEN_DT);
+/** M3a — PLACE an orbital datacenter just before accepting c0 (DC candidate 0 = EARTH · SOUTH
+ * AMERICA, the same region c0 serves), so the accepted contract is in the DC's edge-compute
+ * footprint and the §4.5 force-multiplier lifts the € it earns across the window. Charges the
+ * DC capex (~€6,000), and the bounded lift on the served revenue partly offsets it — the DC is
+ * a strategic capex spine, in the replay fold from here. */
+const TICK_PLACE_DC = Math.round(1840 / GOLDEN_DT);
 
 /**
  * The recorded build sequence: deploy stations over real demand (incl. SOUTH AMERICA +
@@ -83,6 +92,7 @@ function buildLog() {
   addAction(sg, launchSat("meo_63", TICK_LAUNCH_2));
   addAction(sg, launchSat("geo_eq", TICK_LAUNCH_3));
   addAction(sg, launchSat("leo_53", TICK_LAUNCH_4));
+  addAction(sg, placeDC(0, TICK_PLACE_DC)); // EARTH · SOUTH AMERICA — over c0's region
   addAction(sg, acceptContract("c0", TICK_ACCEPT));
   return sg;
 }
@@ -172,6 +182,20 @@ function buildStateHash(s: BuildSession): bigint {
     acc = mixInt(acc, BigInt(ev.tick));
     acc = mixFloat(acc, ev.tSim);
   }
+  // M3a — the ORBITAL-DATACENTER fleet (every DC's placement + its physical levers), folded so
+  // the DC roster AND the force-multiplier it applies to served contracts are IN the replay hash.
+  // Any change to the DC model, the place path, the capex, or the lift wiring moves this value.
+  acc = mixInt(acc, BigInt(snap.datacenters.nextId));
+  acc = mixInt(acc, BigInt(snap.datacenters.datacenters.length));
+  for (const d of snap.datacenters.datacenters) {
+    acc = mixString(acc, d.id);
+    acc = mixString(acc, d.bodyId);
+    acc = mixFloat(acc, d.subLatRad);
+    acc = mixFloat(acc, d.subLonRad);
+    acc = mixFloat(acc, d.panelM2);
+    acc = mixFloat(acc, d.radiatorM2);
+    acc = mixInt(acc, d.rtg ? 1n : 0n);
+  }
   return acc;
 }
 
@@ -212,7 +236,8 @@ function isBuildKind(kind: string): boolean {
     kind === KIND_DEPLOY_GROUND ||
     kind === KIND_LAUNCH_SAT ||
     kind === KIND_ACCEPT_CONTRACT ||
-    kind === KIND_DECLINE_CONTRACT
+    kind === KIND_DECLINE_CONTRACT ||
+    kind === KIND_PLACE_DC
   );
 }
 
@@ -252,11 +277,16 @@ function avgCoveredFraction(session: BuildSession, t0: number, t1: number, n: nu
 // from the M1 golden 544847093270497462n (a different world). Bootstrapped by running the
 // replay once; pinned here as the regression guard. Any change to the roster shape, the launch
 // presets/sites, the launch PRNG draw, the starter roster, the contract model, the offer
-// generator, the revenue math, the M2e demand-growth law/cadence, OR the M2f emergent-event
-// generator cadence/draws / shock model / rival coupling (all now folded into the state hash)
-// moves this value.
+// generator, the revenue math, the M2e demand-growth law/cadence, the M2f emergent-event
+// generator cadence/draws / shock model / rival coupling, OR the M3a ORBITAL-DATACENTER model /
+// place path / capex / force-multiplier lift (all now folded into the state hash) moves this value.
+//
+// RE-PINNED at M3a: 6225853297339560787n → 8431658617016421069n. The golden log now PLACES an
+// orbital datacenter over c0's region (EARTH · SOUTH AMERICA) before accepting it, so the DC fold
+// + the §4.5 edge-compute force-multiplier on the served contract revenue are in the replay hash.
+// The M1 golden 544847093270497462n is a DIFFERENT world and stays UNTOUCHED.
 // ---------------------------------------------------------------------------
-const BUILD_REPLAY_GOLDEN = 6225853297339560787n;
+const BUILD_REPLAY_GOLDEN = 8431658617016421069n;
 
 /** A generous per-test timeout for the heavy multi-replay tests: M2e advances the
  * ESCALATION-ENGINE demand growth on a per-tick whole-grid coverage sweep, so a single
@@ -330,7 +360,7 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     expect(endFrac).toBeGreaterThan(0);
   }, HEAVY_MS);
 
-  it("M2d — the LOOP CLOSES: an accepted contract goes ACTIVE, accrues €, and the wallet EARNS it back", () => {
+  it("M2d/M3a — the LOOP CLOSES: an accepted contract goes ACTIVE, accrues €, and the DC force-multiplies it", () => {
     const r = replay(buildLog());
     const accepted = r.session.contracts.find((c) => c.id === "c0");
     expect(accepted).toBeDefined();
@@ -339,13 +369,29 @@ describe("m2 build-loop replay golden — deploy + launch + M2d contracts + reve
     // The accepted contract served real coverage and EARNED € (the loop pays back).
     expect(accepted!.servedSecondsAccum).toBeGreaterThan(0);
     expect(accepted!.earnedEur).toBeGreaterThan(2000);
-    // THE LOOP CLOSES: the build spent ~€5,600 of capex (six deploys + four launches,
-    // one of which FAILED — € lost), bottoming the wallet near −€600; the accepted
-    // contract's sustained coverage revenue lifted it back to clearly SOLVENT (> €1,500
-    // and climbing) over the window — build → serve → REVENUE offsetting the capex.
-    expect(r.balance).toBeGreaterThan(1500);
-    // And the contract revenue exceeds the M2c capex it offsets (earned > a launch's €).
+    // THE M3a FORCE-MULTIPLIER. The golden log places a DC (candidate 0, EARTH · SOUTH AMERICA)
+    // over c0's region just before accepting it, so c0 is in the DC's edge-compute footprint and
+    // earns MORE than the same coverage would unlifted. Replay an identical log WITHOUT the DC and
+    // confirm c0 earns strictly less — the lift is real, and bounded by the §4.5 cap.
+    const noDcLog = (() => {
+      const sg = buildLog();
+      sg.actions = sg.actions.filter((a) => a.kind !== KIND_PLACE_DC);
+      return sg;
+    })();
+    const noDcReplay = replay(noDcLog);
+    const noDc = noDcReplay.session.contracts.find((c) => c.id === "c0")!;
+    expect(accepted!.earnedEur).toBeGreaterThan(noDc.earnedEur); // the DC lifted the €
+    expect(accepted!.earnedEur).toBeLessThan(noDc.earnedEur * 1.45); // …but bounded (≤ +40% cap)
+    // THE CAPEX SPINE. The build spent the M2c capex (six deploys + four launches, one FAILED) PLUS
+    // a €6,000 DATACENTER — a heavy strategic node that pays back over a longer horizon than this
+    // short window, so the wallet is still in the red here even as the lifted contract revenue
+    // climbs. The contract revenue still exceeds a launch's € (the loop earns; the DC is the
+    // longer-horizon capex bet — §4.5 "satisfying multi-launch construction projects").
     expect(accepted!.earnedEur).toBeGreaterThan(1800);
+    // The DC session is poorer here by ~the DC capex minus the lift it bought back this window
+    // (the DC pays off over a longer horizon): below the no-DC balance, but only by about the capex.
+    expect(r.balance).toBeLessThan(noDcReplay.balance); // the DC is a net spend within this window
+    expect(r.balance).toBeGreaterThan(noDcReplay.balance - DC_CAPEX_EUR - 1); // the gap ≈ the capex
   }, HEAVY_MS);
 
   it("M2e — THE ESCALATION ENGINE: served demand GROWS, the covered fraction ERODES under fixed capacity, and adding capacity RESTORES it", () => {
