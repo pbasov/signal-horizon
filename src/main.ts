@@ -5,7 +5,8 @@
  * Keys:  1–6 WM preset (6 = PARSE) · 0 reset layout · C/O/S/T camera presets ·
  *        R reset camera · F cycle focus · Space pause · , / . time scale ·
  *        P prefetch (pre-position fresh data into the Mars cache) · A policy ·
- *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record)
+ *        [ ] floor · G toggle THE PARSE (the §4.12 reviewable-at-rest record) ·
+ *        H toggle the COVERAGE HEATMAP · D cycle its dimension (M2b, render-only)
  *
  * ACTION LOG (E3 / M1-06): every player input that mutates the deterministic sim
  * — pause, faster, slower (recorded as set_time_scale) and prefetch — is appended
@@ -355,6 +356,16 @@ window.addEventListener("keydown", (e) => {
   else if (k === "r" || k === "R") orrery.resetCamera();
   else if (k === "f") orrery.cycleFocus(1);
   else if (k === "F") orrery.cycleFocus(-1);
+  else if (k === "h" || k === "H") {
+    // M2b — TOGGLE THE COVERAGE HEATMAP (GDD §5 view #2, the monument's first
+    // visible cell). Render-only: it reads sat positions off the ephemeris and
+    // never touches the sim/replay path, so the M1 golden is unaffected.
+    orrery.toggleHeatmap();
+  } else if (k === "d" || k === "D") {
+    // M2b — CYCLE the heatmap's information dimension (connectivity → bandwidth →
+    // latency). A free key beside the camera controls; render-only.
+    orrery.cycleDimension();
+  }
   else if (k === " ") {
     e.preventDefault();
     clock.togglePause();

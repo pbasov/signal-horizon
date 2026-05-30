@@ -52,6 +52,9 @@ const { dot, normalize } = _vec;
  * common operational floor. Sats overhead a cell are at 90°. Placeholder. */
 export const MIN_ELEVATION_RAD = 5 * (Math.PI / 180);
 
+/** sin of the minimum-elevation mask, precomputed (the gate uses sin(el) ≥ this). */
+const SIN_MIN_ELEVATION = Math.sin(MIN_ELEVATION_RAD);
+
 /**
  * Link-budget threshold on the inverse-square received signal, expressed as a
  * REFERENCE DISTANCE: an asset must be within {@link REF_LINK_DISTANCE_M} for a
@@ -229,4 +232,53 @@ export function coverageOf(
     if (lk.latencyS < latencyS) latencyS = lk.latencyS;
   }
   return { cellId: cell.id, connectivity: links.length, bandwidth, latencyS, links };
+}
+
+/**
+ * ALLOCATION-FREE dimensions-only coverage, written INTO `out`. Pure. Takes the
+ * body's world position + radius and the assets' precomputed world positions (all
+ * at the same sim-time t), so the per-frame whole-grid sweep allocates nothing
+ * (X-02). Same gates/budget as {@link coverageOf}; `out.links` is cleared.
+ */
+export function coverageDimsAt(
+  cell: Cell,
+  assetEirps: number[],
+  assetPositions: Vec3[],
+  bodyCenter: Vec3,
+  bodyRadiusM: number,
+  out: CellCoverage,
+): void {
+  // Cell surface point (world).
+  const cx = bodyCenter[0] + cell.center[0] * bodyRadiusM;
+  const cy = bodyCenter[1] + cell.center[1] * bodyRadiusM;
+  const cz = bodyCenter[2] + cell.center[2] * bodyRadiusM;
+  const nx = cell.center[0];
+  const ny = cell.center[1];
+  const nz = cell.center[2];
+  let connectivity = 0;
+  let bandwidth = 0;
+  let latencyS = Infinity;
+  for (let i = 0; i < assetPositions.length; i++) {
+    const ap = assetPositions[i];
+    const dx = ap[0] - cx;
+    const dy = ap[1] - cy;
+    const dz = ap[2] - cz;
+    const distanceM = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (distanceM <= 0) continue;
+    // Elevation gate: sin(elevation) = normal · dirToAsset (both unit).
+    const sinEl = (nx * dx + ny * dy + nz * dz) / distanceM;
+    if (sinEl < SIN_MIN_ELEVATION) continue; // below the local horizon mask.
+    // Link budget: received ∝ eirp · (ref/d)², closes at ≥ 1.
+    const ratio = REF_LINK_DISTANCE_M / distanceM;
+    const received = assetEirps[i] * ratio * ratio;
+    if (received < 1) continue;
+    connectivity++;
+    bandwidth += received;
+    const lat = distanceM / C_LIGHT;
+    if (lat < latencyS) latencyS = lat;
+  }
+  out.connectivity = connectivity;
+  out.bandwidth = bandwidth;
+  out.latencyS = latencyS;
+  if (out.links.length) out.links.length = 0;
 }

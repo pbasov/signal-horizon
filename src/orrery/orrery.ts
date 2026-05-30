@@ -18,6 +18,10 @@ import * as THREE from "three";
 import type { Ephemeris, Vec3 } from "../sim/ephemeris";
 import type { Readout, FeedGlyphState } from "./readout";
 import { fmtDuration, fmtPct } from "../format";
+import { GeodesicGrid } from "../sim/coverage/grid";
+import { type Asset, type CellCoverage, coverageDimsAt, satAsset } from "../sim/coverage/field";
+import { CoverageOverlay } from "./coverage-overlay";
+import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
 
 const DEG = Math.PI / 180;
 
@@ -95,6 +99,16 @@ const BODIES: BodySpec[] = [
 const RING_IDS = ["earth", "mars", "moon", "sat_leo", "sat_geo"];
 const RING_SAMPLES = 180;
 const FOCUS_ORDER = ["sun", "earth", "mars", "moon"];
+
+/** The Earth-orbit SYSTEM SATS used as live coverage assets for the M2b heatmap
+ * (the dataset's full sat roster — LEO/GEO/MEO). Read straight off the ephemeris;
+ * NO session wiring (the replay golden stays untouched). */
+const COVERAGE_SAT_IDS = ["sat_leo", "sat_geo", "sat_meo_inc", "sat_meo_polar"];
+/** The body the coverage grid sits on. */
+const COVERAGE_BODY_ID = "earth";
+/** Earth billboard px (mirrors the BODIES "earth" entry) — used to size the shell
+ * so it hugs the Earth disc on screen. Kept in one place. */
+const EARTH_BILLBOARD_PX = 40;
 
 const VERT = /* glsl */ `
   out vec2 vUv;
@@ -226,6 +240,23 @@ export class Orrery {
   private dragging = false;
   private lastPtr = { x: 0, y: 0 };
 
+  // --- M2b coverage heatmap (GDD §5 view #2 — the monument) ------------------
+  /** The static geodesic grid (built once) the shell mesh + coverage sweep use. */
+  private coverageGrid = GeodesicGrid.build();
+  /** Live coverage assets = the dataset's Earth-orbit sats (positions via eph). */
+  private coverageAssets: Asset[];
+  /** The shell mesh + per-frame re-colour (the heatmap render). */
+  private coverageOverlay: CoverageOverlay;
+  /** Preallocated per-cell coverage results — reused every frame (no alloc storm). */
+  private coverageScratch: CellCoverage[];
+  /** Active heatmap dimension (connectivity/bandwidth/latency); the 'd' key cycles it. */
+  private coverageDimension: CoverageDimension = "connectivity";
+  /** Per-frame scratch: each asset's EIRP (constant) + world position (reused). */
+  private coverageEirps: number[] = [];
+  private coverageSatPos: Vec3[] = [];
+  /** Scratch for Earth's rebased shell position (no per-frame Vector3 alloc). */
+  private _shellPos = new THREE.Vector3();
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -268,6 +299,22 @@ export class Orrery {
     this.scene.add(this.marsHalo);
     this.linkLine = this.buildLink();
     this.scene.add(this.linkLine);
+
+    // M2b — the coverage heatmap shell. Build the static grid mesh ONCE, wire the
+    // dataset's sats as live coverage assets, and preallocate the per-cell coverage
+    // results so the per-frame sweep + re-colour allocate nothing (X-02).
+    this.coverageAssets = COVERAGE_SAT_IDS.map((id) => satAsset(id, id));
+    this.coverageEirps = this.coverageAssets.map((a) => a.eirp);
+    this.coverageSatPos = this.coverageAssets.map(() => [0, 0, 0] as Vec3);
+    this.coverageScratch = this.coverageGrid.cells.map((c) => ({
+      cellId: c.id,
+      connectivity: 0,
+      bandwidth: 0,
+      latencyS: Infinity,
+      links: [],
+    }));
+    this.coverageOverlay = new CoverageOverlay(this.coverageGrid);
+    this.scene.add(this.coverageOverlay.mesh);
 
     this.attachInput();
   }
@@ -503,7 +550,30 @@ export class Orrery {
   }
 
   subtitle(): string {
-    return `${this.presetName()} · ${this.focusId}`;
+    const cov = this.coverageOverlay.visible ? ` · COV ${dimensionLabel(this.coverageDimension)}` : "";
+    return `${this.presetName()} · ${this.focusId}${cov}`;
+  }
+
+  /** M2b — toggle the coverage heatmap shell on/off (the 'h' key). Returns the new state. */
+  toggleHeatmap(): boolean {
+    return this.coverageOverlay.setVisible(!this.coverageOverlay.visible);
+  }
+
+  /** True iff the coverage heatmap shell is currently shown. */
+  heatmapVisible(): boolean {
+    return this.coverageOverlay.visible;
+  }
+
+  /** M2b — cycle the displayed coverage dimension (connectivity → bandwidth → latency). */
+  cycleDimension(): CoverageDimension {
+    const i = DIMENSION_CYCLE.indexOf(this.coverageDimension);
+    this.coverageDimension = DIMENSION_CYCLE[(i + 1) % DIMENSION_CYCLE.length];
+    return this.coverageDimension;
+  }
+
+  /** The active coverage dimension's glanceable label (for the footer / status). */
+  dimensionLabel(): string {
+    return dimensionLabel(this.coverageDimension);
   }
 
   resize(w: number, h: number): void {
@@ -573,6 +643,9 @@ export class Orrery {
     // packet + link
     this.updatePacketAndLink(t, focusAbs, worldPerPx);
 
+    // M2b — the coverage heatmap shell (only when toggled on).
+    if (this.coverageOverlay.visible) this.updateCoverageHeatmap(t, focusAbs, worldPerPx);
+
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);
     this.updateCorners();
@@ -638,6 +711,51 @@ export class Orrery {
       }
     }
     for (let i = slot; i < this.feedPackets.length; i++) this.feedPackets[i].visible = false;
+  }
+
+  /**
+   * M2b — drive the COVERAGE HEATMAP (GDD §5 view #2). Each frame, with the shell
+   * toggled on:
+   *   1. read the system sats' world positions at sim-time t (the ephemeris the
+   *      orrery already holds — NO session wiring, so the replay golden is untouched);
+   *   2. sweep the static grid with the allocation-free {@link coverageDimsAt} into
+   *      the preallocated scratch (~320 cells × 4 sats — cheap, and zero alloc, X-02);
+   *   3. re-colour the shell on the active dimension + place it at Earth's rebased
+   *      position sized to the Earth disc.
+   * As Earth's billboard sits at the rebased focus-relative point and the sats orbit,
+   * the lit cells sweep — the network visibly working (§5 "coverage felt").
+   *
+   * f64→f32 boundary: the grid geometry is static f32 (unit vectors); the ONLY f64
+   * crossing is Earth's rebased scene position (computed by the same renderInto the
+   * body billboards use) + the shell radius (scene units). Metres never reach the mesh.
+   */
+  private updateCoverageHeatmap(t: number, focusAbs: Vec3, worldPerPx: number): void {
+    // Earth world position (f64 m) + radius for the coverage sweep.
+    const earthAbs = this.ctx.eph.position(COVERAGE_BODY_ID, t);
+    const earthR = this.ctx.eph.radiusMeters(COVERAGE_BODY_ID);
+    // Sat world positions at t (reused scratch — no per-frame Vec3 alloc).
+    for (let i = 0; i < this.coverageAssets.length; i++) {
+      const p = this.ctx.eph.position(this.coverageAssets[i].ephemerisId ?? this.coverageAssets[i].id, t);
+      const out = this.coverageSatPos[i];
+      out[0] = p[0];
+      out[1] = p[1];
+      out[2] = p[2];
+    }
+    // Whole-grid coverage sweep into the preallocated scratch (allocation-free).
+    const cells = this.coverageGrid.cells;
+    for (let id = 0; id < cells.length; id++) {
+      coverageDimsAt(cells[id], this.coverageEirps, this.coverageSatPos, earthAbs, earthR, this.coverageScratch[id]);
+    }
+    // Re-colour the shell on the active dimension (writes into the preallocated buffer).
+    this.coverageOverlay.updateColors(this.coverageScratch, this.coverageDimension);
+
+    // Place the shell at Earth's rebased scene position, sized to the Earth disc.
+    // The Earth billboard radius in scene units ≈ (px · worldPerPx · dist) / 2
+    // (the quad spans the full diameter; matches sizeBillboard's sizing).
+    this.renderInto(this._shellPos, earthAbs, focusAbs);
+    const dist = this.camera.position.distanceTo(this._shellPos);
+    const shellRadius = (EARTH_BILLBOARD_PX * worldPerPx * dist) / 2;
+    this.coverageOverlay.place(this._shellPos, shellRadius);
   }
 
   /**
@@ -771,8 +889,19 @@ export class Orrery {
     };
     set("tl", `<b>${this.presetName()}</b>\nfocus <span class="k">${this.focusId.toUpperCase()}</span>`);
     set("tr", `fov ${this.cur.fov.toFixed(0)}°\ndist ${this.cur.dist.toFixed(2)}`);
-    set("bl", `drag orbit · wheel zoom`);
-    set("br", `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus`);
+    // bl — when the heatmap is up, name the active coverage dimension (the §8
+    // per-dimension hue the shell is painting), so the colour reads unambiguously.
+    set(
+      "bl",
+      this.coverageOverlay.visible
+        ? `drag orbit · wheel zoom\nCOVERAGE <span class="k">${this.dimensionLabel()}</span>`
+        : `drag orbit · wheel zoom`,
+    );
+    set(
+      "br",
+      `<span class="k">C O S T</span> presets · <span class="k">R</span> reset · <span class="k">F</span> focus\n` +
+        `<span class="k">H</span> heatmap · <span class="k">D</span> dimension`,
+    );
   }
 
   /**

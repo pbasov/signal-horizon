@@ -5,6 +5,7 @@ import { GeodesicGrid } from "./grid";
 import { DemandField } from "./demand";
 import {
   coverageOf,
+  coverageDimsAt,
   linkGeometry,
   groundStation,
   satAsset,
@@ -13,7 +14,9 @@ import {
   MIN_ELEVATION_RAD,
   REF_LINK_DISTANCE_M,
   type Asset,
+  type CellCoverage,
 } from "./field";
+import type { Vec3 } from "../ephemeris";
 import { scoreCoverage } from "./score";
 
 /**
@@ -241,5 +244,66 @@ describe("coverage scoring — demand-weighted multi-axis rollup (§4.2)", () =>
     const a = scoreCoverage(eph, grid, demand, assets, 7_777, "earth");
     const b = scoreCoverage(eph, grid, demand, assets, 7_777, "earth");
     expect(a).toEqual(b);
+  });
+});
+
+describe("coverageDimsAt — the allocation-free render fast path (M2b)", () => {
+  const grid = GeodesicGrid.build(2);
+  const eph = loadEphemeris();
+  const assets = [
+    satAsset("sat_leo", "sat_leo"),
+    satAsset("sat_geo", "sat_geo"),
+    satAsset("sat_meo_inc", "sat_meo_inc"),
+    satAsset("sat_meo_polar", "sat_meo_polar"),
+  ];
+
+  /** Build the precomputed inputs coverageDimsAt expects from an eph + assets at t. */
+  function inputs(t: number): { eirps: number[]; positions: Vec3[]; bodyC: Vec3; bodyR: number } {
+    return {
+      eirps: assets.map((a) => a.eirp),
+      positions: assets.map((a) => eph.position(a.ephemerisId ?? a.id, t)),
+      bodyC: eph.position("earth", t),
+      bodyR: eph.radiusMeters("earth"),
+    };
+  }
+
+  it("matches coverageOf's connectivity / bandwidth / latency for every cell", () => {
+    const t = 12_345;
+    const { eirps, positions, bodyC, bodyR } = inputs(t);
+    const out: CellCoverage = { cellId: -1, connectivity: 0, bandwidth: 0, latencyS: Infinity, links: [] };
+    for (const cell of grid.cells) {
+      const ref = coverageOf(eph, cell, assets, t, "earth");
+      coverageDimsAt(cell, eirps, positions, bodyC, bodyR, out);
+      expect(out.connectivity).toBe(ref.connectivity);
+      expect(out.bandwidth).toBeCloseTo(ref.bandwidth, 6);
+      // latency is Infinity ⇔ uncovered on both paths.
+      if (ref.connectivity === 0) expect(out.latencyS).toBe(Infinity);
+      else expect(out.latencyS).toBeCloseTo(ref.latencyS, 9);
+    }
+  });
+
+  it("writes INTO the provided out object and clears its links (no allocation)", () => {
+    const { eirps, positions, bodyC, bodyR } = inputs(0);
+    const out: CellCoverage = {
+      cellId: 99,
+      connectivity: 7,
+      bandwidth: 7,
+      latencyS: 7,
+      links: [{ assetId: "stale", elevationRad: 0, distanceM: 0, latencyS: 0, capacity: 0, covers: true }],
+    };
+    const sameRef = out.links;
+    coverageDimsAt(grid.cells[0], eirps, positions, bodyC, bodyR, out);
+    // The links array is the SAME reference, just truncated (no new array allocated).
+    expect(out.links).toBe(sameRef);
+    expect(out.links.length).toBe(0);
+  });
+
+  it("a fully-uncovered cell yields connectivity 0, bandwidth 0, latency Infinity", () => {
+    // Put the only asset far below every cell's horizon by using an empty asset set.
+    const out: CellCoverage = { cellId: -1, connectivity: 0, bandwidth: 0, latencyS: 0, links: [] };
+    coverageDimsAt(grid.cells[0], [], [], eph.position("earth", 0), eph.radiusMeters("earth"), out);
+    expect(out.connectivity).toBe(0);
+    expect(out.bandwidth).toBe(0);
+    expect(out.latencyS).toBe(Infinity);
   });
 });
