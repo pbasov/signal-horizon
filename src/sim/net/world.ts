@@ -97,14 +97,19 @@ export const GEO_PARK: NetPreset = {
   costBaseEur: 1200,
 };
 
-/** LEO SWEEP — inclined, lower, sweeps + sets each ~150 s pass (a single LEO sets,
- * so it does not hold the region — the Act-1 gentle-shortfall fallback case). */
+/** LEO SWEEP — the Act-2 high-INCLINATION (polar, 90°) LEO, lower than GEO, sweeps + sets
+ * each ~150 s pass. A single LEO sets, so it does not HOLD the region (a sawtooth — the
+ * Act-2 wall / the gentle-shortfall fallback case). The polar inclination is what lets an
+ * inclined CONSTELLATION reach the high-latitude REGION-1 (lat 70°) the parked equatorial
+ * GEO physically cannot — the only Act-2 physics lever is LATITUDE (latency is not a lever
+ * until Act 3). At inc 90° an evenly-phased N=4 constellation holds REGION-1's centre across
+ * the hand-off cycle (the EMPIRICALLY measured zero-gap minimum; pinned in scenario/phasing). */
 export const LEO_SWEEP: NetPreset = {
   id: "LEO_SWEEP",
   label: "LEO SWEEP",
   semiMajorM: A1_LEO_SEMI_MAJOR_M,
-  incRad: 30 * (Math.PI / 180),
-  subLonRad: 0,
+  incRad: 90 * (Math.PI / 180),
+  subLonRad: 5 * (Math.PI / 180),
   eirp: 1.0,
   coneHalfAngleRad: 30 * (Math.PI / 180),
   costBaseEur: 900,

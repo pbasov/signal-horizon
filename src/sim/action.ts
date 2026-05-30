@@ -93,12 +93,18 @@ export const KIND_PLACE_DC = "place_dc";
 
 /**
  * net/ A2 — the player LAUNCHES a satellite via the consequence-preview planner (design
- * §2.3/§4). Payload `{ presetId?: string, semiMajorM, incRad, subLonRad, count }`:
+ * §2.3/§4). Payload `{ presetId?: string, semiMajorM, incRad, subLonRad, count, phaseSpreadRad? }`:
  * `semiMajorM` is the semi-major axis in METRES, `incRad`/`subLonRad` are the inclination
  * + desired body-fixed sub-longitude in RADIANS, `count` is the batch size (1 in Act 1).
  * The unit-exact boundary lets the applier recompute the epoch-correct `m0 = subLon + ω·atTick·dt`
  * at apply time (the world.ts resolveOrbit invariant), so the parked longitude is exact at
  * any commit tick. Applied at `atTick` so the launched orbit reproduces on replay.
+ *
+ * BATCH PHASING (Act 2, §3.4 launch-as-a-batch): `phaseSpreadRad` is the even in-plane
+ * mean-anomaly spread between adjacent batch members — member `i` resolves with
+ * `m0 += i · phaseSpreadRad`, so ONE launch places `count` phased sats into a plane (a
+ * constellation that hands off). DEFAULT 0 ⇒ identical-plane Act-1 behaviour (the m0 term
+ * is `+0` ⇒ byte-identical to the pre-Act-2 single launch — golden-safe).
  */
 export const KIND_NET_LAUNCH = "net_launch";
 /**
@@ -235,9 +241,21 @@ export function placeDC(siteIndex: number, atTick = 0): SimAction {
  * is the batch size (1 in Act 1), and an optional `presetId` records which preset seeded the
  * draft (for the readout). The applier recomputes the epoch-correct `m0` at `atTick·dt`, so
  * live + replay reach the same parked longitude.
+ *
+ * BATCH PHASING (Act 2): optional `phaseSpreadRad` is the even in-plane mean-anomaly spread
+ * between adjacent batch members (member `i` gets `m0 += i · phaseSpreadRad`). DEFAULT 0 keeps
+ * the Act-1 single-plane behaviour byte-identical (the m0 term is `+0`). Only WRITTEN to the
+ * payload when non-zero, so an Act-1 launch's wire dict is unchanged (golden-safe).
  */
 export function netLaunch(
-  params: { presetId?: string; semiMajorM: number; incRad: number; subLonRad: number; count?: number },
+  params: {
+    presetId?: string;
+    semiMajorM: number;
+    incRad: number;
+    subLonRad: number;
+    count?: number;
+    phaseSpreadRad?: number;
+  },
   atTick = 0,
 ): SimAction {
   const payload: Record<string, JsonValue> = {
@@ -247,6 +265,10 @@ export function netLaunch(
     count: Math.max(1, Math.trunc(params.count ?? 1)),
   };
   if (params.presetId !== undefined) payload.presetId = params.presetId;
+  // Only emit a non-zero spread — an Act-1 launch (spread 0) keeps its exact pre-Act-2 wire shape.
+  if (params.phaseSpreadRad !== undefined && params.phaseSpreadRad !== 0) {
+    payload.phaseSpreadRad = params.phaseSpreadRad;
+  }
   return simAction(KIND_NET_LAUNCH, atTick, payload);
 }
 

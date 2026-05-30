@@ -696,3 +696,40 @@ body {
 .net-hint { margin-top: 4px; color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
 .net-hint.warn { color: var(--amber); }
 .net-hint.good { color: var(--green); }
+
+/* ---- net/ Act-2 AVAILABILITY sawtooth meter (the "motion is the antagonist" cue) -------- */
+/* A small block pinned over the orrery, lower-left, that SAWTOOTHS for a lone LEO / N<=3 and
+   FLATTENS at the SLA bar for the N=4 constellation. 1-bit chrome, redundant tone+shape (the
+   trace bar HEIGHTS carry the value too, not just colour — CVD-safe). */
+.net-avail {
+  position: absolute;
+  left: 10px;
+  bottom: 92px;
+  width: 184px;
+  padding: 5px 7px 6px;
+  background: rgba(11, 11, 18, 0.78);
+  border: 1px solid var(--line-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  z-index: 3;
+}
+.net-avail .na-row { display: flex; justify-content: space-between; gap: 8px; }
+.net-avail .na-lab { color: var(--fg-dim); text-transform: uppercase; }
+.net-avail .na-val { color: var(--fg); text-align: right; }
+.net-avail .na-val.good { color: var(--green); }
+.net-avail .na-val.warn { color: var(--amber); }
+/* The sawtooth trace: a row of bottom-anchored sample bars whose heights are the recent
+   rolling-availability history (oldest -> newest). A jagged saw for a lone LEO, a flat line
+   riding the bar for the held constellation. */
+.net-avail .na-trace {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 26px;
+  margin-top: 4px;
+  border-bottom: 1px solid var(--line-dim);
+}
+.net-avail .na-bar { flex: 1 1 auto; min-width: 1px; background: var(--grey); }
+.net-avail .na-bar.good { background: var(--green); }
+.net-avail .na-bar.warn { background: var(--amber); }

@@ -109,6 +109,11 @@ export interface Contract {
   breachSecondsAccum: number;
   /** Last computed served fraction ∈ [0,1] (the readout; refreshed each step). */
   lastServedFraction: number;
+  /** Last computed ROLLING availability ∈ [0,1] over the trailing hand-off window — the
+   * sawtooth-meter value (Act 2). A READOUT (like {@link lastServedFraction}), NOT a
+   * state-machine field: the session sets it each step when the availability axis is active
+   * (0 otherwise). The Act-2 gate reads it; the fold mixes it. NO struct reshape — additive. */
+  lastAvailability: number;
   /** Total € this contract has earned (a readout; the wallet is the truth). */
   earnedEur: number;
 }
@@ -177,6 +182,7 @@ export function offerNetContract(
     servedSecondsAccum: 0,
     breachSecondsAccum: 0,
     lastServedFraction: 0,
+    lastAvailability: 0,
     earnedEur: 0,
   };
 }

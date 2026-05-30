@@ -61,10 +61,14 @@ import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
   previewLaunch,
+  A1_BODY_RADIUS_M,
+  NET_PRESETS,
   type PreviewWorld,
 } from "./sim/net/world";
 import { surfacePointRelative } from "./sim/net/link-budget";
-import { ACT1_CONTRACT_ID } from "./sim/net/scenario";
+import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
+import { suggestPhasing } from "./sim/net/phasing";
+import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL } from "./sim/net/scenario";
 import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -626,7 +630,71 @@ function netPlannerRenderState(): NetPlannerRenderState {
     },
     launched: netSession.sats.length > 0,
     shortfall: shortfall?.message ?? null,
+    // Act-2 — the phasing assist: surfaced only once an availability demand (REGION-1) is live
+    // (the act-2 beat has emitted it). The assist EMPIRICALLY derives the zero-gap minimum +
+    // the viable-but-imperfect suggested set against the SAME router the live world runs.
+    phasing: netPhasingReadout(t),
   };
+}
+
+/**
+ * Act-2 — the phasing-assist readout for the planner (design §3.3): null until the availability
+ * demand (REGION-1) is live, then the EMPIRICALLY measured zero-gap minimum + the suggested
+ * viable-but-imperfect set from the LEO_SWEEP family over REGION-1. A pure read (suggestPhasing
+ * probes the real windowAvailability); never mutates sim state. The assist is computed once per
+ * frame only when the act-2 demand exists, so it costs nothing in Act 1.
+ */
+function netPhasingReadout(t: number): import("./panels/net-planner").NetPhasingReadout | null {
+  const c = netSession.contractById(ACT2_CONTRACT_ID);
+  if (c === null || c.state === "completed" || c.state === "failed") return null;
+  if (!c.activeAxes.has("availability")) return null;
+  // The LEO orbit family the assist phases (the canon Act-2 fix: a phased LEO constellation).
+  const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
+  if (leo === undefined) return null;
+  const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, [...netSession.grounds]);
+  return {
+    count: sugg.count,
+    zeroGapN: sugg.zeroGapN,
+    estCoveredFraction: sugg.estCoveredFraction,
+    slaAvail: ACT2_SLA_AVAIL,
+  };
+}
+
+/**
+ * Act-2 — LAUNCH the suggested phased constellation as ONE batch (design §3.3/§3.4): derive the
+ * assist for the live REGION-1, then append a single net_launch into the LEO_SWEEP plane with
+ * `count` members evenly m0-spread by `phaseSpreadRad = 2π/count` (the B2 batch wire). One launch
+ * = several phased sats into a plane — the viable-but-imperfect set the player then closes by
+ * adding one more. Recorded + applied via the SHARED applyAndRecordNetAction (live == replay).
+ */
+function netConstellation(): void {
+  const t = clock.seconds;
+  const c = netSession.contractById(ACT2_CONTRACT_ID);
+  if (c === null || !c.activeAxes.has("availability")) return;
+  const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
+  if (leo === undefined) return;
+  const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, [...netSession.grounds]);
+  const action = netLaunchAction(
+    {
+      presetId: leo.id,
+      semiMajorM: leo.semiMajorM,
+      incRad: leo.incRad,
+      subLonRad: leo.subLonRad,
+      count: sugg.count,
+      phaseSpreadRad: sugg.phaseSpreadRad,
+    },
+    clock.tick,
+  );
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "sats_launched") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "NET-CONSTELLATION",
+      value: `${sugg.count} sats`,
+      msg: `phased LEO set into one plane — coverage HANDS OFF (need ~${sugg.zeroGapN}; add one to hold the bar)`,
+    });
+  }
 }
 
 /**
@@ -640,8 +708,11 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
   const add = (rel: Vec3): Vec3 => [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
-  const c = netSession.contractById(ACT1_CONTRACT_ID);
-  if (c === null) return { region: null, footprint: null };
+  // Act-2 — render the ACTIVE availability contract (REGION-1) when it is live, else the
+  // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
+  // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
+  const c = currentNetContract();
+  if (c === null) return { region: null, footprints: [], availability: null };
 
   const solve = netSession.lastSolveFor(c.id);
   const served = c.state === "active" && (solve?.served ?? false);
@@ -652,13 +723,77 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     radiusRad: c.region.radiusRad,
     served,
   };
-  // The footprint sits over the region nadir once a covering sat is up (a parked GEO holds
-  // station). Show it only when there is a sat AND the region is served (the cover beat).
-  const footprint =
-    served && netSession.sats.length > 0
-      ? { centerPosM: center, radiusRad: c.region.radiusRad * 1.15 }
+  // THE HAND-OFF RENDER (design §6): one footprint disc per sat currently COVERING the region,
+  // each parked over the sat's own nadir so the discs SWEEP with the constellation. With a lone
+  // LEO this is one disc that slides off the region every pass (the sawtooth); with a phased
+  // constellation several sweep so one slides on as another slides off and the region holds
+  // green. A pure read of the live roster geometry — the SAME bridge check the router runs.
+  const footprints = c.state === "active" ? coveringFootprints(c, t, add) : [];
+  // The availability sawtooth meter (design §4.4 axis-2): only when the availability axis is
+  // live (Act 2). The rolling value is the contract's lastAvailability readout; the history is
+  // a RENDER-ONLY ring buffer kept in main.ts (a derived display, NOT in the snapshot/fold).
+  const availability =
+    c.state === "active" && c.activeAxes.has("availability")
+      ? { value: c.lastAvailability, bar: c.slaAvail, history: pushAvailHistory(c.id, c.lastAvailability) }
       : null;
-  return { region, footprint };
+  return { region, footprints, availability };
+}
+
+/** Act-2 — the current teaching contract for the render: the live availability demand (REGION-1)
+ * once the scenario has emitted it, else REGION-0. So the orrery's hand-off render + sawtooth
+ * meter follow the act the player is on. Pure read of the net session. */
+function currentNetContract(): ReturnType<NetSession["contractById"]> {
+  const r1 = netSession.contractById(ACT2_CONTRACT_ID);
+  if (r1 !== null && r1.state !== "completed" && r1.state !== "failed") return r1;
+  return netSession.contractById(ACT1_CONTRACT_ID);
+}
+
+/** Act-2 — the per-sat footprints covering a contract's region centre this instant: for each
+ * sat that BRIDGES the region centre (its own up+down links both close), a disc parked over the
+ * sat's NADIR (its sub-point projected to the surface), so the discs sweep as the sats orbit.
+ * A render-only read of the SAME geometry the router uses (link-budget bridge check); never
+ * mutates sim state. */
+function coveringFootprints(
+  c: NonNullable<ReturnType<NetSession["contractById"]>>,
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): { centerPosM: Vec3; radiusRad: number }[] {
+  const out: { centerPosM: Vec3; radiusRad: number }[] = [];
+  const grounds = [...netSession.grounds];
+  if (grounds.length === 0) return out;
+  const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
+  for (const s of netSession.sats) {
+    // Does THIS sat alone bridge the region centre right now (up+down close, via ANY ground)?
+    // The single-sat list reuse keeps this truthful to the router's per-sat link check.
+    const bridge = bridgeForPoint(eph, point, grounds, [s], t);
+    if (bridge.satId === null) continue;
+    // The sat's nadir: its earth-relative position direction projected onto the surface.
+    const satRel = satPositionRelative(eph, s, t);
+    const r = Math.hypot(satRel[0], satRel[1], satRel[2]);
+    if (r <= 0) continue;
+    const k = A1_BODY_RADIUS_M / r;
+    out.push({
+      centerPosM: add([satRel[0] * k, satRel[1] * k, satRel[2] * k]),
+      radiusRad: c.region.radiusRad * 1.15,
+    });
+  }
+  return out;
+}
+
+/** Act-2 — the RENDER-ONLY availability history ring buffers (one per contract id), a derived
+ * display like the packet trail — NOT in the snapshot/fold (so no sim golden is touched). Each
+ * push appends the live rolling value + trims to the meter length, returning the trace. */
+const netAvailHistory = new Map<string, number[]>();
+const NET_AVAIL_TRACE_LEN = 48;
+function pushAvailHistory(contractId: string, value: number): number[] {
+  let h = netAvailHistory.get(contractId);
+  if (h === undefined) {
+    h = [];
+    netAvailHistory.set(contractId, h);
+  }
+  h.push(value);
+  if (h.length > NET_AVAIL_TRACE_LEN) h.splice(0, h.length - NET_AVAIL_TRACE_LEN);
+  return h.slice();
 }
 
 /**
@@ -887,6 +1022,9 @@ const netPlannerPanel = new NetPlanner({
   },
   onLaunch: () => netLaunch(),
   onAccept: () => netAccept(),
+  // Act-2 — the phasing assist's batch launch (the §3.4 launch-as-a-batch): one press places
+  // the suggested phased constellation into a plane. Same shared applier the keys + replay use.
+  onConstellation: () => netConstellation(),
 });
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
@@ -1041,7 +1179,18 @@ window.addEventListener("keydown", (e) => {
   // the boot default; E re-frames it. C/O/S/T keep their named presets (now shifted by
   // EARTH at index 0). See CAMERA_PRESETS in orrery.ts.
   else if (k === "e" || k === "E") orrery.setPreset(0); // EARTH (near-body, the default)
-  else if (k === "c" || k === "C") orrery.setPreset(1); // CISLUNAR
+  else if (k === "c" || k === "C") {
+    // net/ Act-2 — in NET mode C places the suggested phased CONSTELLATION as one batch (the
+    // §3.3 assist + §3.4 batch launch) once the availability demand is live; otherwise (and in
+    // cache mode) C is the CISLUNAR camera preset. The constellation is the act-2 verb, so the
+    // game key wins in net mode the moment REGION-1 needs continuous coverage.
+    const r1 = netMode ? netSession.contractById(ACT2_CONTRACT_ID) : null;
+    if (r1 !== null && r1.state !== "completed" && r1.state !== "failed" && r1.activeAxes.has("availability")) {
+      netConstellation();
+    } else {
+      orrery.setPreset(1); // CISLUNAR
+    }
+  }
   else if (k === "o" || k === "O") orrery.setPreset(2); // ORBITS
   else if (k === "s" || k === "S") orrery.setPreset(3); // SYSTEM (the Earth→Mars money shot)
   else if (k === "t" || k === "T") orrery.setPreset(4); // TOP-DOWN

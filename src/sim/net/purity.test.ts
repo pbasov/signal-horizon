@@ -6,6 +6,8 @@ import satSrc from "./sat.ts?raw";
 import endpointSrc from "./endpoint.ts?raw";
 import linkBudgetSrc from "./link-budget.ts?raw";
 import routerSrc from "./router.ts?raw";
+import availabilitySrc from "./availability.ts?raw";
+import phasingSrc from "./phasing.ts?raw";
 import contractSrc from "./contract.ts?raw";
 import sessionSrc from "./session.ts?raw";
 import applyActionSrc from "./apply-action.ts?raw";
@@ -27,6 +29,8 @@ const SOURCES: Array<[string, string]> = [
   ["endpoint.ts", endpointSrc],
   ["link-budget.ts", linkBudgetSrc],
   ["router.ts", routerSrc],
+  ["availability.ts", availabilitySrc],
+  ["phasing.ts", phasingSrc],
   ["contract.ts", contractSrc],
   ["session.ts", sessionSrc],
   ["apply-action.ts", applyActionSrc],

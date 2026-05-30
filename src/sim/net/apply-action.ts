@@ -70,16 +70,22 @@ export function applyNetAction(
     const subLonRad = num(action.payload.subLonRad);
     // count is the batch size (1 in Act 1); clamp to ≥1 so a missing/0 count still launches one.
     const count = Math.max(1, Math.trunc(num(action.payload.count) || 1));
+    // The even in-plane mean-anomaly spread between adjacent batch members (Act 2 §3.4). Absent
+    // (= 0) ⇒ Act-1 identical-plane behaviour: member i's m0 += 0, so the orbit is byte-identical.
+    const phaseSpreadRad = num(action.payload.phaseSpreadRad);
     const t = action.atTick * dt;
-    const orbit = resolveOrbit({ semiMajorM, incRad, subLonRad }, t);
     const satIds: string[] = [];
     for (let i = 0; i < count; i++) {
       const id = session.nextSatId();
+      // Each member is the SAME plane (a/inc/subLon), phase-shifted by i·phaseSpreadRad in mean
+      // anomaly. resolveOrbit sets m0 = subLon + ω·t; the phase offset adds onto that m0, so one
+      // launch places `count` evenly-phased sats — a constellation that hands off (§3.4). With
+      // phaseSpreadRad = 0 the offset is 0 ⇒ bit-identical to the pre-Act-2 single launch.
+      const orbit = resolveOrbit({ semiMajorM, incRad, subLonRad }, t);
+      orbit.m0Rad += i * phaseSpreadRad;
       const sat: NetSat = {
         id,
-        // Each batch member shares the plane in Act 1 (count is 1); a constellation phase
-        // spread lands in Act 2 without touching this boundary.
-        orbit: { ...orbit },
+        orbit,
         bus: "smallsat",
         loadout: standardLoadout(NET_REF_LINK_DISTANCE_M),
       };

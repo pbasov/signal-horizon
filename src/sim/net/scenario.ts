@@ -36,7 +36,13 @@
  */
 
 import type { NetSession } from "./session";
-import { NET_ACT1_REGION } from "./endpoint";
+import {
+  NET_ACT1_REGION,
+  NET_ACT1_REGION_RADIUS_RAD,
+  NET_ACT2_REGION_LAT_RAD,
+  NET_ACT2_REGION_LON_RAD,
+  type Region,
+} from "./endpoint";
 import { offerNetContract, type SlaAxis } from "./contract";
 
 /**
@@ -84,6 +90,51 @@ export const ACT1_CONTRACT_ID = "REGION-0";
  * act1 fallback surfaces the gentle "try GEO PARK" assist. State-gated orientation, not
  * a trigger — the gate is the only thing that advances the cursor. Placeholder. */
 export const ACT1_IDLE_WINDOW_S = 2 * 3600.0; // 2 sim-hours.
+
+// --- ACT 2 tuning (Coverage is MAINTAINED, not placed) ----------------------------
+
+/** The Act-2 contract id the act2 beat emits — a SECOND demand a single LEO cannot hold
+ * (its availability axis is active+visible). The replay action log accepts THIS id. */
+export const ACT2_CONTRACT_ID = "REGION-1";
+
+/** The visible availability bar (onboarding line 67): the min fraction of time REGION-1 must
+ * be HELD. A lone inclined LEO (worst-phase rolling avail ≈ 0.28 over REGION-1) sawtooths far
+ * below it; a phased N=4 polar constellation holds rolling-avail = 1.0 and clears it. */
+export const ACT2_SLA_AVAIL = 0.99;
+
+/** The HAND-OFF CYCLE the gate requires the region to be HELD across, breach-free, before the
+ * concept is FELT (≥1 full rise→set→rise hand-off, design §3.3). Two LEO periods (= 300 s) — a
+ * full hand-off cycle is proven to fit, and 300 s ≪ termSeconds (6 h), so the hand-off gate
+ * fires BEFORE completion-by-term (the gate is the driver, not the clock). Imported as a fresh
+ * constant; the period itself lives in world.ts. */
+export const NET_HANDOFF_CYCLE_S = 2 * 150.0; // = 2 · A1_LEO_PERIOD_S (150 s); = 300 s.
+
+/** The EMPIRICALLY MEASURED zero-gap minimum for the polar LEO_SWEEP family at ACT2_SLA_AVAIL
+ * over the high-lat REGION-1 (terminating at the co-located high-lat GROUND-1): the smallest
+ * evenly-phased constellation whose worst-phase rolling availability holds the bar. Pinned here
+ * (= 4 at lat 70°, inc 90°) so the over-build waste log is a pure `(session, t)` predicate (no
+ * eph in the gate signature). The phasing assist DERIVES the same N empirically (phasing.ts);
+ * this constant must equal that derivation for REGION-1 (pinned in net-replay + phasing tests).
+ * If the physics ever shifts N, BOTH this constant and the golden re-pin together. */
+export const ACT2_ZERO_GAP_N = 4;
+
+/** REGION-1 — HIGH LATITUDE (lat 70°), BEYOND the parked equatorial GEO's ~64° footprint edge,
+ * so the GEO physically CANNOT reach it at any longitude (Act-2 variant (a): the only Act-2
+ * physics lever is LATITUDE — latency is not a lever until Act 3). Same disc shape as REGION-0
+ * but a distinct id/label and a high-lat centre, so it reads as a SECOND metro the GEO can't
+ * touch. The bent path region→sat→ground closes only via the co-located high-lat GROUND-1 (the
+ * equatorial GROUND-0 is ~70° away — wider than a LEO can bridge); a polar (inc 90°) inclined
+ * constellation reaches it, and the measured zero-gap minimum is N=4. Seeds oversubscription
+ * (two contracts share the roster) but availability is the ONLY new taught axis — one concept
+ * per act. */
+export const NET_ACT2_REGION: Region = {
+  id: ACT2_CONTRACT_ID,
+  label: "polar metro",
+  latRad: NET_ACT2_REGION_LAT_RAD,
+  lonRad: NET_ACT2_REGION_LON_RAD,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "earth",
+};
 
 // --- the authored arrival sequence ------------------------------------------------
 
@@ -134,19 +185,67 @@ const ACT1: Beat = {
 };
 
 /**
- * act2 — "Coverage is maintained, not placed — you need a constellation." STRUCTURAL
- * placeholder (Phase B / B1 fills emit+gate). emit will offer a second contract with the
- * `availability` axis active+visible; gate = a region held continuous via ≥2 sats across
- * ≥1 hand-off cycle. The empty emit + never-true gate keep act2 inert in Phase A while the
- * cursor structure is real. NO physics here either way.
+ * act2 — "Coverage is MAINTAINED, not placed — you need a CONSTELLATION." The biggest
+ * conceptual leap of the hour: a single LEO MOVES (sets each pass), so it cannot HOLD a
+ * region needing continuous coverage; the fix is a constellation phased so one sat rises as
+ * another sets. Act 1's "place one thing, done" is productively broken by a SECOND demand
+ * whose AVAILABILITY axis a lone LEO sawtooths against.
+ *
+ * emit: offer REGION-1 with activeAxes = {connectivity, availability} (the availability bar
+ *       becomes VISIBLE + ENFORCED for the first time); avail = ACT2_SLA_AVAIL.
+ * gate: REGION-1 held CONTINUOUS SERVED via a hand-off constellation across ≥1 full hand-off
+ *       cycle WITHOUT breaching — a SUSTAINED clean window (the hardened predicate), not an
+ *       instantaneous breach==0. Over-build still completes; the surplus is silently logged.
+ * fallback: co-phasing specificity in CONSTELLATION terms (the onboarding fallback).
  */
 const ACT2: Beat = {
   id: "act2",
-  emit(): void {
-    /* B1: offer the availability contract; activate the availability axis. */
+  emit(session: NetSession): void {
+    // The SECOND demand: availability ACTIVE + VISIBLE (the axis the player meets for the first
+    // time). The axis is flipped ON purely via activeAxes — NO struct reshape; slaAvail already
+    // exists on the contract. Idempotent (the session de-dupes by id).
+    session.addContract(
+      offerNetContract(ACT2_CONTRACT_ID, NET_ACT2_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity", "availability"]),
+        slaAvail: ACT2_SLA_AVAIL,
+      }),
+    );
   },
-  gate(): boolean {
-    return false; // B1 fills the continuous-coverage predicate.
+  gate(session: NetSession): boolean {
+    // The concept is FELT when REGION-1 is HELD continuous SERVED via a hand-off constellation
+    // across ≥1 full hand-off cycle without breaching. HARDENED (the gate-hardening field): a
+    // SUSTAINED clean window — `nowS − cleanServedSinceS ≥ NET_HANDOFF_CYCLE_S` — not an
+    // instantaneous breach==0 a single served tick mid-sawtooth could spuriously satisfy. The
+    // rolling availability must ALSO be holding the bar right now (the meter is flat). NO
+    // `sats.length ≥ N` literal — coverage-held is the predicate, so over-build still completes
+    // (a constellation that never holds can't satisfy it; zeroGapN is geometry, not a count gate).
+    const c = session.contractById(ACT2_CONTRACT_ID);
+    if (c === null || c.state !== "active") return false;
+    const held =
+      c.lastAvailability >= c.slaAvail &&
+      session.nowS - session.cleanSinceS >= NET_HANDOFF_CYCLE_S;
+    if (!held) return false;
+    // Over-build waste = sats beyond the measured zero-gap minimum, recorded at the firing tick
+    // (seeds the Act-3 optimizer pull). Idempotent: the gate fires once (the cursor advances).
+    session.recordWasteSats(session.sats.length - ACT2_ZERO_GAP_N);
+    return true;
+  },
+  fallback(session: NetSession): Shortfall | null {
+    // Stuck on act2: REGION-1 active but availability below the bar (the sawtooth). State the
+    // fix in CONSTELLATION terms (the onboarding fallback) — name the shortfall + the
+    // co-phasing remedy without doing it for the player.
+    const c = session.contractById(ACT2_CONTRACT_ID);
+    if (c === null || c.state !== "active" || c.lastAvailability >= c.slaAvail) return null;
+    const have = session.sats.length;
+    return {
+      subjectId: c.id,
+      message:
+        `${c.label}: a single satellite cannot HOLD this region — it MOVES and sets each ` +
+        `pass, so availability sawtooths below the ${(c.slaAvail * 100).toFixed(0)}% bar. ` +
+        `Coverage requires a CONSTELLATION — sats phased so one rises as another sets. ` +
+        `You have ${have}; place ~${ACT2_ZERO_GAP_N} evenly-phased LEOs (spread their phase / add one).`,
+      suggestPresetId: "LEO_SWEEP",
+    };
   },
 };
 

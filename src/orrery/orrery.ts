@@ -169,13 +169,34 @@ export interface NetRenderState {
     /** True the instant router.solve reports the region SERVED (lit); false ⇒ dim. */
     served: boolean;
   } | null;
-  /** The launched sat's footprint: a disc over the region the sat currently covers (the
-   * make-or-break "footprint snaps over the region" beat). Null until a covering sat is up. */
-  footprint: {
+  /**
+   * Act-2 — the HAND-OFF render (design §6, the make-or-break "footprint snaps over the
+   * region" beat generalized to a constellation). ONE disc per covering sat: with a single
+   * LEO this is one disc that sweeps off the region every pass (the sawtooth — coverage drops
+   * each time it sets); with a phased constellation several discs sweep so that as one slides
+   * off the region another slides on — the region stays SERVED across the hand-off (the lit
+   * disc never goes dim). Empty until a covering sat is up. Was a single `footprint` in Act 1;
+   * generalized to a list here (Act 1 simply supplies a one-element list). */
+  footprints: {
     /** Earth-relative world position (m) of the footprint-centre surface point (the nadir). */
     centerPosM: Vec3;
     /** Angular radius of the footprint disc (radians). */
     radiusRad: number;
+  }[];
+  /**
+   * Act-2 — the AVAILABILITY SAWTOOTH meter (design §4.4 axis-2 / §6). The rolling held-
+   * fraction over the trailing hand-off window vs the SLA bar, plus a short render-only ring
+   * buffer of recent values so the orrery can draw the SAWTOOTH (a lone LEO / N≤3 dips every
+   * orbit; the N=4 constellation FLATTENS at the bar — "motion is the antagonist", tamed). A
+   * derived display (computed in main.ts from `contract.lastAvailability`), NOT in the
+   * snapshot/fold — like the existing packet trail. Null when no availability axis is active. */
+  availability: {
+    /** The live rolling availability ∈ [0,1] (the meter's current value — `lastAvailability`). */
+    value: number;
+    /** The SLA bar ∈ [0,1] the value must hold above (`slaAvail`) — the threshold line. */
+    bar: number;
+    /** Render-only recent-value history (oldest→newest), the sawtooth trace. */
+    history: number[];
   } | null;
 }
 
@@ -246,6 +267,10 @@ const NET_ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
 /** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
  * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
 const PICK_TOLERANCE_PX = 26;
+/** Act-2 — max footprint discs the orrery draws at once (the hand-off pool). A constellation
+ * is a small set (the measured zero-gap N=4, plus headroom for over-build); only the on-screen
+ * discs are capped, the served verdict itself is unbounded. */
+const MAX_NET_FOOTPRINTS = 12;
 /** Launched-sat orbit rings: samples per ring (matches the dataset ring density). */
 const SAT_RING_SAMPLES = 96;
 /** Max launched-sat orbit rings drawn at once (a pool; the roster sat count is small). */
@@ -456,12 +481,22 @@ export class Orrery {
    * and LIT (signal-green, bright) the instant the router reports it served — the single
    * legible Act-1 state change. Built once + hidden; shown only in net render mode. */
   private netRegionMesh?: THREE.Mesh;
-  /** The launched sat's footprint disc, parked over the region (the cover→paid beat). */
-  private netFootprintMesh?: THREE.Mesh;
-  /** Latest net render slice (region + footprint), set per-frame by main.ts in net mode. */
+  /** Act-2 — a POOL of footprint discs (one per covering sat), parked over the region (the
+   * cover→paid beat, generalized to a hand-off: several discs sweep so one slides on as
+   * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
+  private netFootprintMeshes: THREE.Mesh[] = [];
+  /** Latest net render slice (region + footprints + availability), set per-frame by main.ts. */
   private netState: NetRenderState | null = null;
   private readonly _netDim = new THREE.Color(0.95, 0.6, 0.2); // amber: UNSERVED region.
   private readonly _netLit = new THREE.Color(0.55, 1.0, 0.7); // signal-green: SERVED.
+  /** Act-2 — the availability SAWTOOTH meter DOM (a small canvas-free bar+trace pinned over
+   * the orrery, drawn from the {@link NetRenderState.availability} slice). Built once + hidden;
+   * paintNetAvailability mutates it in place (no per-frame DOM rebuild). */
+  private netAvailBox?: HTMLElement;
+  private netAvailVal?: HTMLElement;
+  private netAvailTrace?: HTMLElement;
+  /** The sawtooth-trace sample bars, grown to the history length on first paint + reused. */
+  private netAvailBars: HTMLElement[] = [];
 
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
@@ -565,10 +600,19 @@ export class Orrery {
     this.netRegionMesh.visible = false;
     this.netRegionMesh.renderOrder = 8; // on the globe, under the markers.
     this.scene.add(this.netRegionMesh);
-    this.netFootprintMesh = this.buildHaloDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
-    this.netFootprintMesh.visible = false;
-    this.netFootprintMesh.renderOrder = 7;
-    this.scene.add(this.netFootprintMesh);
+    // Act-2 — a POOL of cool-cyan footprint discs (one per covering sat). The hand-off render:
+    // with a constellation several sweep so the region stays lit as one slides off + the next on.
+    for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
+      const m = this.buildHaloDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
+      m.visible = false;
+      m.renderOrder = 7;
+      this.netFootprintMeshes.push(m);
+      this.scene.add(m);
+    }
+    // Act-2 — the availability SAWTOOTH meter (design §4.4 / §6): a small bar+trace pinned over
+    // the orrery that sawtooths for a lone LEO / N≤3 and FLATTENS at the SLA bar for the N=4
+    // constellation. Built once + hidden; shown only in net mode with an availability axis live.
+    this.buildNetAvailMeter();
 
     this.attachInput();
   }
@@ -779,39 +823,144 @@ export class Orrery {
    */
   private updateNetOverlay(focusAbs: Vec3, worldPerPx: number): void {
     const region = this.netRegionMesh;
-    const footprint = this.netFootprintMesh;
-    if (!region || !footprint) return;
+    if (!region) return;
     const ns = this.netState;
     if (ns === null) {
       region.visible = false;
-      footprint.visible = false;
+      for (const m of this.netFootprintMeshes) m.visible = false;
+      this.paintNetAvailability(null);
       return;
     }
 
-    // The region disc: lit/dim by the served verdict (the make-or-break state change).
+    // The region disc: lit/dim by the served verdict — the make-or-break state change. In
+    // Act 2 this is the SAWTOOTH made visible on the globe: a lone LEO lights green only while
+    // its single footprint is overhead and dips amber the instant it sets; a constellation
+    // holds green because ANOTHER footprint slides on as one slides off (the served verdict
+    // main.ts derives stays true across the hand-off).
     if (ns.region) {
       this.renderInto(this._rp, ns.region.centerPosM, focusAbs);
       region.position.copy(this._rp);
+      // LIT iff SERVED and a footprint is covering (the hand-off holds green as one disc slides
+      // off + the next slides on); DIM the instant the lone footprint sets and served drops.
+      const lit = Orrery.regionLit(ns.region.served, ns.footprints.length);
       const mat = region.material as THREE.ShaderMaterial;
-      mat.uniforms.uColor.value.copy(ns.region.served ? this._netLit : this._netDim);
+      mat.uniforms.uColor.value.copy(lit ? this._netLit : this._netDim);
       // A served region reads a touch wider + brighter (the lit pulse); the angular radius
       // maps to a px size off the Earth billboard (a hemisphere ≈ the full disc).
-      const px = this.netDiscPx(ns.region.radiusRad) * (ns.region.served ? 1.25 : 1.0);
+      const px = this.netDiscPx(ns.region.radiusRad) * (lit ? 1.25 : 1.0);
       this.sizeBillboard(region, px, worldPerPx);
       region.visible = true;
     } else {
       region.visible = false;
     }
 
-    // The footprint disc over the region (the cover beat): a cool-cyan wash the sat casts.
-    if (ns.footprint) {
-      this.renderInto(this._rp, ns.footprint.centerPosM, focusAbs);
-      footprint.position.copy(this._rp);
-      this.sizeBillboard(footprint, this.netDiscPx(ns.footprint.radiusRad), worldPerPx);
-      footprint.visible = true;
-    } else {
-      footprint.visible = false;
+    // The footprint discs over the region (the hand-off beat): one cool-cyan wash per covering
+    // sat. Several discs sweep with the constellation so the region stays lit as one slides off
+    // + the next slides on — the sawtooth flattens into continuous SERVED (the Act-2 dopamine).
+    let slot = 0;
+    for (const fp of ns.footprints) {
+      if (slot >= this.netFootprintMeshes.length) break;
+      const mesh = this.netFootprintMeshes[slot];
+      this.renderInto(this._rp, fp.centerPosM, focusAbs);
+      mesh.position.copy(this._rp);
+      this.sizeBillboard(mesh, this.netDiscPx(fp.radiusRad), worldPerPx);
+      mesh.visible = true;
+      slot++;
     }
+    for (let i = slot; i < this.netFootprintMeshes.length; i++) this.netFootprintMeshes[i].visible = false;
+
+    // The availability sawtooth meter (the legible "motion is the antagonist" cue).
+    this.paintNetAvailability(ns.availability);
+  }
+
+  /**
+   * Act-2 — build the availability SAWTOOTH meter DOM once (design §4.4 axis-2 / §6): a small
+   * pinned block with the live rolling-availability %, the SLA bar threshold, and a row of
+   * trace bars (the render-only history ring buffer) that draw the sawtooth. Hidden until net
+   * mode supplies an availability slice; paintNetAvailability mutates it in place (no rebuild).
+   */
+  private buildNetAvailMeter(): void {
+    const box = document.createElement("div");
+    box.className = "net-avail";
+    box.style.display = "none";
+    box.innerHTML =
+      `<div class="na-row"><span class="na-lab">AVAILABILITY</span>` +
+      `<span class="na-val">—</span></div>` +
+      `<div class="na-trace"></div>`;
+    this.labelLayer.appendChild(box);
+    this.netAvailBox = box;
+    this.netAvailVal = box.querySelector(".na-val") as HTMLElement;
+    this.netAvailTrace = box.querySelector(".na-trace") as HTMLElement;
+  }
+
+  /**
+   * Act-2 — paint the availability sawtooth meter from the {@link NetRenderState.availability}
+   * slice (or hide it when null). Pure presentation: the % readout + a tone keyed off whether
+   * the value HOLDS the bar ({@link Orrery.availMeterTone}), and a row of trace bars whose
+   * heights are the recent history (the sawtooth) and whose tone flips green↔amber per-sample
+   * at the bar line — so a lone LEO reads as a jagged amber/green saw and the N=4 constellation
+   * reads as a flat green line riding the bar. No per-frame DOM rebuild (bars are pooled).
+   */
+  private paintNetAvailability(av: NetRenderState["availability"]): void {
+    const box = this.netAvailBox;
+    if (!box) return;
+    if (av === null) {
+      box.style.display = "none";
+      return;
+    }
+    box.style.display = "block";
+    const tone = Orrery.availMeterTone(av.value, av.bar);
+    if (this.netAvailVal) {
+      const txt = `${Math.round(av.value * 100)}% · bar ${Math.round(av.bar * 100)}%`;
+      if (this.netAvailVal.textContent !== txt) this.netAvailVal.textContent = txt;
+      const cls = `na-val ${tone}`;
+      if (this.netAvailVal.className !== cls) this.netAvailVal.className = cls;
+    }
+    const trace = this.netAvailTrace;
+    if (!trace) return;
+    // Grow the trace-bar pool to the history length once (X-02 — never per frame after).
+    while (this.netAvailBars.length < av.history.length) {
+      const bar = document.createElement("span");
+      bar.className = "na-bar";
+      trace.appendChild(bar);
+      this.netAvailBars.push(bar);
+    }
+    for (let i = 0; i < this.netAvailBars.length; i++) {
+      const bar = this.netAvailBars[i];
+      if (i >= av.history.length) {
+        if (bar.style.display !== "none") bar.style.display = "none";
+        continue;
+      }
+      if (bar.style.display === "none") bar.style.display = "";
+      const v = av.history[i];
+      const h = `${Math.max(2, Math.round(v * 100))}%`;
+      if (bar.style.height !== h) bar.style.height = h;
+      // Each sample bar is green when it holds the bar, amber when it dips below — so a lone
+      // LEO's troughs paint amber (the visible breach) and a held constellation paints all green.
+      const cls = v >= av.bar ? "na-bar good" : "na-bar warn";
+      if (bar.className !== cls) bar.className = cls;
+    }
+  }
+
+  /**
+   * Act-2 — the PURE meter-tone mapping (split out so it is unit-testable without a DOM): the
+   * sawtooth meter reads GOOD (green) when the rolling availability holds the SLA bar (the
+   * constellation has tamed the motion), WARN (amber) when it is below (a lone LEO / N≤3 still
+   * sawtoothing). A deterministic function of (value, bar) — no `this`, no DOM. */
+  static availMeterTone(value: number, bar: number): "good" | "warn" {
+    return value >= bar ? "good" : "warn";
+  }
+
+  /**
+   * Act-2 — the PURE hand-off region verdict (split out so it is unit-testable without a DOM):
+   * the region disc reads LIT (green) iff it is SERVED and at least one footprint is covering it,
+   * else DIM (amber). Across a hand-off, as footprint A slides off the region another (B) slides
+   * on — `served` stays true and the covering count stays ≥ 1, so the region NEVER goes dim (the
+   * sawtooth flattens). A lone LEO's single footprint sliding off drops the count to 0 AND flips
+   * `served` false, so the region dips dim (the visible sawtooth trough). A deterministic
+   * function of (served, coveringCount) — no `this`, no DOM. */
+  static regionLit(served: boolean, coveringCount: number): boolean {
+    return served && coveringCount > 0;
   }
 
   /** Map a region/footprint angular radius (radians) to a billboard px size on the toy

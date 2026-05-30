@@ -41,7 +41,7 @@ import {
   type ContractState,
 } from "../m2/contracts";
 import type { NetSat } from "./sat";
-import { type GroundNet, NET_ACT1_GROUND } from "./endpoint";
+import { type GroundNet, NET_ACT1_GROUND, NET_ACT2_GROUND } from "./endpoint";
 import {
   type Contract,
   type SlaAxis,
@@ -55,6 +55,7 @@ import {
   type RouterState,
   resolveTick,
 } from "./router";
+import { windowAvailability } from "./availability";
 import { M1_SCENARIO, type Beat, type Shortfall } from "./scenario";
 
 /** The re-exported grace, so a caller (and the A2 test) can assert net/ uses the SHARED
@@ -120,6 +121,16 @@ export interface NetSnapshot {
   gateTicks: number[];
   /** The sim-time the session has been STEPPED to (so revenue resumes seamlessly). */
   lastStepS: number;
+  /** Sim-time of the LAST availability-axis breach reset (a step that fed served-fraction 0
+   * for an availability-active contract). The Act-2 gate (§3.3) requires a SUSTAINED clean
+   * hand-off window — `nowS − cleanServedSinceS ≥ NET_HANDOFF_CYCLE_S` — so a single served tick
+   * mid-sawtooth cannot spuriously fire it. Initialised to 0 (the session epoch). */
+  cleanServedSinceS: number;
+  /** Over-build waste (sats beyond the measured zero-gap minimum) recorded at the moment the
+   * act2 gate fired — surfaced for the Act-3 optimizer pull (onboarding line 86). 0 until act2
+   * completes; the gate's predicate is coverage-held (not a sat cap), so over-build still
+   * completes and the surplus is SILENTLY logged here. Folded into the golden. */
+  wasteLoggedSats: number;
 }
 
 export class NetSession {
@@ -162,10 +173,26 @@ export class NetSession {
   /** Sim-time the session has been STEPPED to (for snapshot-resume continuity). */
   private lastStepS = 0;
 
+  /** Sim-time of the last availability-axis breach reset — the START of the current clean
+   * hand-off streak (§3.3, the gate-hardening field). Stamped to `t` every step that feeds a
+   * 0 served-fraction for an availability-active contract; the Act-2 gate fires only once
+   * `nowS − cleanServedSinceS ≥ NET_HANDOFF_CYCLE_S` (a SUSTAINED clean window). Folds into the
+   * snapshot/golden. Initialised to 0 (the session epoch). */
+  private cleanServedSinceS = 0;
+
+  /** Over-build waste (sats beyond the measured zero-gap minimum) recorded when the act2 gate
+   * fired — seeds the Act-3 optimizer pull (onboarding line 86). 0 until act2 completes. */
+  private wasteLoggedSats = 0;
+
   constructor(
     openingBalance = NET_OPENING_BALANCE,
     seed: bigint = NET_RNG_SEED,
-    groundNets: GroundNet[] = [NET_ACT1_GROUND],
+    // The ground network: the equatorial GROUND-0 (Act 1, serves REGION-0) PLUS the high-lat
+    // GROUND-1 (Act 2, the only ground REGION-1's inclined constellation can downlink to — the
+    // equatorial GEO cannot reach it either, so it does NOT let the GEO serve REGION-1). The
+    // router bridges via the strongest (sat, ground) pair across all grounds, so REGION-0 keeps
+    // its byte-identical GROUND-0 bridge (golden-safe) and REGION-1 terminates at GROUND-1.
+    groundNets: GroundNet[] = [NET_ACT1_GROUND, NET_ACT2_GROUND],
     scenario: Beat[] = M1_SCENARIO,
   ) {
     this.walletBalance = openingBalance;
@@ -197,6 +224,29 @@ export class NetSession {
   /** The current scenario cursor (which beat is live). */
   get cursor(): number {
     return this.scenarioCursor;
+  }
+
+  /** The sim-time the session has been STEPPED to (the END of the last step). The Act-2 gate
+   * reads this against {@link cleanServedSinceS} to require a sustained clean hand-off streak. */
+  get nowS(): number {
+    return this.lastStepS;
+  }
+
+  /** The START of the current availability clean streak — the last sim-time a step fed a 0
+   * served-fraction for an availability-active contract (the gate-hardening stamp, §3.3). */
+  get cleanSinceS(): number {
+    return this.cleanServedSinceS;
+  }
+
+  /** Over-build waste recorded at act2 completion (sats beyond the measured zero-gap minimum). */
+  get wasteSats(): number {
+    return this.wasteLoggedSats;
+  }
+
+  /** Record over-build waste at the moment the act2 gate fires (the scenario beat calls this).
+   * Idempotent in spirit — the gate fires once, so this is written once per act2 completion. */
+  recordWasteSats(n: number): void {
+    this.wasteLoggedSats = Math.max(0, Math.trunc(n));
   }
 
   // --- mutation surface (driven by applyNetAction; pure + deterministic) -----------
@@ -269,19 +319,36 @@ export class NetSession {
   }
 
   /**
-   * The scalar servedFraction ∈ [0,1] for a contract this instant, from the router's
-   * verdict over the contract's ACTIVE axes. ACT 1 is BINARY: 1.0 if a path region→sat→
-   * groundNet exists, else 0.0. (Acts 2–3 will measure a held-fraction across the hand-off
-   * cycle here, same `coveredFraction` machinery; the struct/state-machine never change.)
-   * Pure; reuses the cached {@link RouterState}.
+   * The scalar servedFraction ∈ [0,1] for a contract this instant, from the router's verdict
+   * over the contract's ACTIVE axes. Two regimes, gated purely by the `activeAxes` mask:
+   *
+   *   - CONNECTIVITY-ONLY (Act 1): BINARY — 1.0 if a path region→sat→groundNet exists this
+   *     instant, else 0.0. BYTE-IDENTICAL to the old body (golden-safe for REGION-0).
+   *   - AVAILABILITY ACTIVE (Act 2): the region must be HELD across the hand-off window, not
+   *     merely reachable this instant. We compute the ROLLING {@link windowAvailability} and
+   *     feed a fraction that drops to 0 while availability is in breach — an instantaneous gap
+   *     (the sawtooth trough) OR a sustained rolling shortfall (avail < slaAvail). A lone LEO
+   *     sawtooths + rolling-avail ≈ 0 ⇒ feeds 0 ⇒ the SHARED grace breaches it on schedule; a
+   *     phased N=4 holds served continuously + avail = 1.0 ⇒ feeds 1.0 ⇒ completes. ONE breach
+   *     convention (the imported `stepActiveContract`), no second state machine, no reshape.
+   *
+   * Pure; reuses the cached {@link RouterState} for the instant verdict + the pure
+   * {@link windowAvailability} for the rolling held-fraction. `lastAvailability` is a readout.
    */
   private servedFractionFor(eph: Ephemeris, contract: Contract, t: number): number {
     const prev = this.routerStates.get(contract.id) ?? null;
     const next = resolveTick(eph, contract, this.satList, this.groundNets, t, prev);
     this.routerStates.set(contract.id, next);
     this.lastSolve.set(contract.id, next.result);
-    // Act 1: the only ACTIVE axis is connectivity (path existence) ⇒ binary served fraction.
-    return next.result.served ? 1.0 : 0.0;
+    // Act 1 (connectivity-only): binary served fraction — the byte-identical legacy path.
+    if (!contract.activeAxes.has("availability")) {
+      return next.result.served ? 1.0 : 0.0;
+    }
+    // Act 2 (availability active): the held-fraction over the trailing hand-off cycle.
+    const avail = windowAvailability(eph, contract, this.satList, this.groundNets, t);
+    contract.lastAvailability = avail; // the sawtooth-meter readout (set each step).
+    if (!next.result.served) return 0.0; // instant gap (a sawtooth trough) → 0.
+    return avail >= contract.slaAvail ? 1.0 : 0.0; // sustained shortfall → 0; held → 1.0.
   }
 
   /**
@@ -311,11 +378,26 @@ export class NetSession {
       if (c.state === "offered") stepOfferedContract(c, t);
     }
 
+    // (2a) The AVAILABILITY clean-streak reset for a not-yet-ACTIVE availability contract
+    // (§3.3, the gate-hardening field): while an availability-active demand is still OFFERED
+    // (not yet accepted), the clean hand-off streak cannot have started — pin it to `t` so the
+    // streak measures only sustained-clean time AFTER the contract is live (a freshly accepted
+    // contract must still hold a full hand-off cycle before the gate fires, never from t=0).
+    for (const c of this.contractList) {
+      if (c.state !== "active" && c.activeAxes.has("availability")) this.cleanServedSinceS = t;
+    }
+
     // (2) Accrue revenue + advance ACTIVE contract state machines. One summed wallet add.
     let netDelta = 0;
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
       const frac = this.servedFractionFor(eph, c, t);
+      // The AVAILABILITY clean-streak stamp (§3.3, the gate-hardening field): whenever an
+      // availability-active contract feeds a 0 served-fraction (a breach reset — an instant gap
+      // OR a rolling shortfall), the clean hand-off streak RESTARTS at this sim-time. The Act-2
+      // gate fires only once the streak has run ≥ NET_HANDOFF_CYCLE_S, so a single served tick
+      // mid-sawtooth cannot spuriously satisfy it. Pure (a function of t + the served fraction).
+      if (frac <= 0 && c.activeAxes.has("availability")) this.cleanServedSinceS = t;
       // The € rate from the net contract's pay/penalty at this served fraction.
       const earned = netRevenueRatePerSecond(c, frac) * dtSeconds;
       netDelta += earned;
@@ -385,6 +467,8 @@ export class NetSession {
       scenarioCursor: this.scenarioCursor,
       gateTicks: this.gateTicks.slice(),
       lastStepS: this.lastStepS,
+      cleanServedSinceS: this.cleanServedSinceS,
+      wasteLoggedSats: this.wasteLoggedSats,
     };
   }
 
@@ -410,6 +494,8 @@ export class NetSession {
     this.gateTicks.length = 0;
     for (const gt of s.gateTicks) this.gateTicks.push(gt);
     this.lastStepS = s.lastStepS;
+    this.cleanServedSinceS = s.cleanServedSinceS;
+    this.wasteLoggedSats = s.wasteLoggedSats;
     // The cached router paths are derived; the next step() rebuilds them on a full search
     // (the topology key for a restored roster differs from the empty initial state).
     this.routerStates.clear();

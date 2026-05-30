@@ -91,6 +91,33 @@ export const NET_ACT1_GROUND: GroundNet = {
   bodyId: "earth",
 };
 
+/** Latitude (radians) the Act-2 high-latitude region (and its co-located ground) sit at —
+ * BEYOND the parked equatorial GEO's measured footprint edge. The GEO over lon 0 serves a
+ * region centre out to ~lat 64° (the worst disc-edge point sets below the 5° gate past that,
+ * MEASURED empirically in _measure); 70° sits safely beyond it, so the equatorial GEO ALONE
+ * physically CANNOT reach REGION-1 at any longitude — the latitude wall that forces an
+ * inclined constellation (Act-2 variant (a), pure geometry; latency is not a lever until
+ * Act 3). The bent path region→sat→ground only closes for REGION-1 via the co-located
+ * high-lat {@link NET_ACT2_GROUND}, not the equatorial GROUND-0. */
+export const NET_ACT2_REGION_LAT_RAD = 70 * DEG_RAD;
+
+/** Longitude (radians) of the Act-2 high-latitude region + its ground (5° E). */
+export const NET_ACT2_REGION_LON_RAD = 5 * DEG_RAD;
+
+/** The Act-2 ground-network endpoint: a SECOND ground station co-located under REGION-1's
+ * high latitude (the ground network GROWS in Act 2 to support the new region). The bent path
+ * region→sat→ground spans ~70° from the equatorial GROUND-0 — wider than a LEO can bridge —
+ * so REGION-1 is only reachable via THIS high-lat ground. The equatorial GEO cannot downlink
+ * to it either (it is ~70° from the GEO's nadir, beyond the GEO footprint), so adding it does
+ * NOT let the GEO serve REGION-1 (Act-2 invariant 1). REGION-0 keeps terminating at GROUND-0. */
+export const NET_ACT2_GROUND: GroundNet = {
+  id: "GROUND-1",
+  latRad: NET_ACT2_REGION_LAT_RAD,
+  lonRad: NET_ACT2_REGION_LON_RAD,
+  altitudeM: 0,
+  bodyId: "earth",
+};
+
 /** A single body-fixed disc sample point (lat,lon in radians). */
 export interface RegionPoint {
   latRad: number;

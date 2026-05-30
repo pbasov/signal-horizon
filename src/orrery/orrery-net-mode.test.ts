@@ -94,3 +94,55 @@ describe("orrery net render mode: the Decision-G de-squash override is scoped be
     expect(A1_BODY_RADIUS_M).not.toBe(REAL_EARTH_RADIUS_M);
   });
 });
+
+/**
+ * orrery B4 — THE ACT-2 HAND-OFF + SAWTOOTH-METER PURE HELPERS (design §4.4 axis-2 / §6). The
+ * render-only verdicts the net-mode overlay paints are split into `this`-free static helpers so
+ * the make-or-break Act-2 viz contract is pinned WITHOUT a DOM/WebGL render:
+ *   - the region disc holds GREEN across a constellation HAND-OFF (footprint A leaves as B
+ *     arrives, served stays true + a footprint stays covering ⇒ never dim) and DIPS dim on a
+ *     lone-LEO gap (the footprint sets, served drops);
+ *   - the availability SAWTOOTH meter tone is a pure function of (rolling availability, the bar):
+ *     GOOD while it holds the bar (the flattened constellation), WARN while it dips (the saw).
+ */
+describe("orrery B4: the Act-2 hand-off + sawtooth-meter render verdicts are pure + correct", () => {
+  it("regionLit: a constellation HAND-OFF keeps the region GREEN (served + a footprint always covering)", () => {
+    // Mid-hand-off: several footprints sweeping, served true ⇒ LIT. As one slides off the count
+    // stays ≥ 1 (another slid on) and served stays true, so the region NEVER goes dim.
+    expect(Orrery.regionLit(true, 4)).toBe(true); // full constellation overhead.
+    expect(Orrery.regionLit(true, 2)).toBe(true); // mid-hand-off (A leaving, B arrived).
+    expect(Orrery.regionLit(true, 1)).toBe(true); // exactly one covering (the hand-off seam).
+  });
+
+  it("regionLit: a lone-LEO GAP dips the region DIM (footprint set ⇒ no covering disc + unserved)", () => {
+    // The sawtooth trough: the single footprint has set, so there is no covering disc AND the
+    // router reports the region unserved — the region disc reads dim (amber).
+    expect(Orrery.regionLit(false, 0)).toBe(false);
+    // Belt-and-suspenders: served can never be true with zero covering footprints in net mode,
+    // but if a stale verdict raced ahead, no covering disc still reads as not-lit.
+    expect(Orrery.regionLit(true, 0)).toBe(false);
+    expect(Orrery.regionLit(false, 1)).toBe(false); // unserved despite a disc nearby ⇒ dim.
+  });
+
+  it("availMeterTone: the sawtooth meter is GOOD while it holds the bar, WARN while it dips below", () => {
+    const bar = 0.99; // ACT2_SLA_AVAIL.
+    // The N=4 constellation flattens at/above the bar ⇒ GOOD (motion tamed).
+    expect(Orrery.availMeterTone(1.0, bar)).toBe("good");
+    expect(Orrery.availMeterTone(0.99, bar)).toBe("good"); // exactly at the bar holds.
+    // A lone LEO / N≤3 sawtooths below ⇒ WARN (the visible breach).
+    expect(Orrery.availMeterTone(0.0, bar)).toBe("warn"); // a lone LEO trough.
+    expect(Orrery.availMeterTone(0.688, bar)).toBe("warn"); // the measured N=3 rolling avail.
+    expect(Orrery.availMeterTone(0.985, bar)).toBe("warn"); // a hair under the bar still warns.
+  });
+
+  it("the sawtooth/flat distinction is a deterministic function of the value series vs the bar", () => {
+    const bar = 0.99;
+    // A lone-LEO history SAWTOOTHS: it crosses the bar boundary (some samples warn, some good).
+    const sawtooth = [1.0, 0.4, 0.0, 0.3, 0.9, 1.0, 0.2, 0.0];
+    const tones = sawtooth.map((v) => Orrery.availMeterTone(v, bar));
+    expect(tones).toContain("warn"); // the troughs (the visible sawtooth breach).
+    // A held N=4 history is FLAT at the bar: every sample holds ⇒ all GOOD (the flattened line).
+    const flat = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+    expect(flat.every((v) => Orrery.availMeterTone(v, bar) === "good")).toBe(true);
+  });
+});

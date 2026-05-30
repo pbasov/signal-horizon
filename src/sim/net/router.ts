@@ -115,38 +115,83 @@ function bestAntenna(sat: NetSat): { eirp: number; rangeRefM: number } {
  * region endpoint's normal is the point's own outward normal; the ground endpoint's
  * normal is its surface normal (raised by altitude). Pure.
  *
+ * --- THE HAND-OFF PRIMITIVE (Act 2 / design §4.4) --------------------------------
+ * With N sats over a region (the constellation), SEVERAL may bridge at once during a
+ * hand-off (one rising as another sets). We pick the STRONGEST-MARGIN bridge — the sat
+ * with the largest `min(up.received, down.received)` — tie-broken by `satId` ASCENDING.
+ * Because `received ∝ 1/d²` and the inverse-square budget never binds at these orbits
+ * (only the 5° elevation gate does), the strongest-margin sat is the one HIGHEST above
+ * the local horizon: a pure function of geometry + t, INDEPENDENT of roster order. So a
+ * re-solve on a rise/set deterministically picks the rising sat as the setting one drops
+ * — and a batch launched in any order yields the same bridge. (This is also the seed for
+ * the Act-3 cost-weighted Dijkstra: today's max-margin is the degenerate one-hop case.)
+ *
+ * --- THE GROUND NETWORK (Act 2, the high-lat region) -----------------------------
+ * The ground network is a SET of stations (Act 1: one equatorial GROUND-0; Act 2 adds a
+ * high-lat GROUND-1 under REGION-1). A region bridges iff SOME (sat, ground) pair closes
+ * both hops; we pick the strongest-margin pair across ALL grounds, the margin folding in
+ * the downlink too — so an equatorial region keeps terminating at GROUND-0 (the only ground
+ * its sats can downlink to) and the high-lat region terminates at GROUND-1 (the equatorial
+ * ground is ~70° away, beyond a LEO's bridge span). The cross-ground tie-break is by satId
+ * ascending then groundId ascending — order-independent, pure. An EQUATORIAL region with one
+ * reachable ground gets a byte-identical bridge to the single-ground form (golden-safe).
+ *
  * Returns the bridging sat id + realized latency, or null with the binding cause.
  */
 export function bridgeForPoint(
   eph: Ephemeris,
   point: RegionPoint,
-  groundNet: GroundNet,
+  groundNets: GroundNet[],
   sats: NetSat[],
   t: number,
-): { satId: string; latencyS: number } | { satId: null; cause: Exclude<LinkCause, "ok"> } {
+): { satId: string; groundId: string; latencyS: number } | { satId: null; cause: Exclude<LinkCause, "ok"> } {
   const from = surfacePointRelative(point.latRad, point.lonRad, t);
   const normal = surfaceNormalRelative(point.latRad, point.lonRad, t);
-  // Ground endpoint world position + its outward normal (altitude raises the horizon).
-  const groundR = groundRadiusM(groundNet);
-  const gd = surfaceNormalRelative(groundNet.latRad, groundNet.lonRad, t);
-  const gto: Vec3 = [gd[0] * groundR, gd[1] * groundR, gd[2] * groundR];
 
   let worstCause: Exclude<LinkCause, "ok"> = "set_below_horizon";
-  for (const sat of sats) {
-    const { eirp, rangeRefM } = bestAntenna(sat);
-    const satPos = satPositionRelative(eph, sat, t);
-    const up = evaluateLink(from, normal, satPos, eirp, rangeRefM);
-    if (!up.closes) {
-      if (up.cause !== "ok") worstCause = up.cause;
-      continue;
+  // The strongest-margin (sat, ground) bridge so far (the highest-above-the-horizon sat
+  // over the ground it downlinks to). margin = min(up.received, down.received); ties break
+  // by satId ascending then groundId ascending — order-independent across roster + grounds.
+  let bestSatId: string | null = null;
+  let bestGroundId: string | null = null;
+  let bestLatencyS = Infinity;
+  let bestMargin = -Infinity;
+  for (const groundNet of groundNets) {
+    // Ground endpoint world position + its outward normal (altitude raises the horizon).
+    const groundR = groundRadiusM(groundNet);
+    const gd = surfaceNormalRelative(groundNet.latRad, groundNet.lonRad, t);
+    const gto: Vec3 = [gd[0] * groundR, gd[1] * groundR, gd[2] * groundR];
+    for (const sat of sats) {
+      const { eirp, rangeRefM } = bestAntenna(sat);
+      const satPos = satPositionRelative(eph, sat, t);
+      const up = evaluateLink(from, normal, satPos, eirp, rangeRefM);
+      if (!up.closes) {
+        if (up.cause !== "ok") worstCause = up.cause;
+        continue;
+      }
+      // Downlink: the sat seen from the ground endpoint's local horizon.
+      const down = evaluateLink(gto, gd, satPos, eirp, rangeRefM);
+      if (!down.closes) {
+        if (down.cause !== "ok") worstCause = down.cause;
+        continue;
+      }
+      const margin = Math.min(up.received, down.received);
+      const better =
+        margin > bestMargin ||
+        (margin === bestMargin &&
+          bestSatId !== null &&
+          (sat.id < bestSatId ||
+            (sat.id === bestSatId && bestGroundId !== null && groundNet.id < bestGroundId)));
+      if (better) {
+        bestMargin = margin;
+        bestSatId = sat.id;
+        bestGroundId = groundNet.id;
+        bestLatencyS = up.latencyS + down.latencyS;
+      }
     }
-    // Downlink: the sat seen from the ground endpoint's local horizon.
-    const down = evaluateLink(gto, gd, satPos, eirp, rangeRefM);
-    if (!down.closes) {
-      if (down.cause !== "ok") worstCause = down.cause;
-      continue;
-    }
-    return { satId: sat.id, latencyS: up.latencyS + down.latencyS };
+  }
+  if (bestSatId !== null && bestGroundId !== null) {
+    return { satId: bestSatId, groundId: bestGroundId, latencyS: bestLatencyS };
   }
   return { satId: null, cause: worstCause };
 }
@@ -177,8 +222,7 @@ export function solve(
   faults?: ReadonlySet<string>,
 ): SolveResult {
   const losses: LinkLossStamp[] = [];
-  const groundNet = groundNets[0];
-  if (!groundNet || sats.length === 0) {
+  if (groundNets.length === 0 || sats.length === 0) {
     return {
       served: false,
       path: null,
@@ -191,22 +235,30 @@ export function solve(
   const live = faults && faults.size ? sats.filter((s) => !faults.has(s.id)) : sats;
 
   // The region endpoint is sampled at its CENTRE for the path-existence verdict; the
-  // WHOLE-DISC margin (every Fibonacci sample reachable) is asserted via isPointServed.
+  // WHOLE-DISC margin (every Fibonacci sample reachable) is asserted via isPointServed. The
+  // bent path closes via the strongest (sat, ground) bridge across ALL ground stations (Act 2
+  // adds the high-lat GROUND-1 for REGION-1); an equatorial region keeps GROUND-0 (golden-safe).
   const centre: RegionPoint = { latRad: contract.region.latRad, lonRad: contract.region.lonRad };
-  const bridge = bridgeForPoint(eph, centre, groundNet, live, t);
+  const bridge = bridgeForPoint(eph, centre, groundNets, live, t);
   if (bridge.satId === null) {
-    losses.push({ aId: contract.region.id, bId: groundNet.id, cause: bridge.cause, atS: t });
+    losses.push({ aId: contract.region.id, bId: groundNets[0].id, cause: bridge.cause, atS: t });
+    // When the contract ENFORCES the availability axis, an instantaneous gap (the sat set
+    // with no riser) reads as an AVAILABILITY shortfall (a region that needs continuous
+    // coverage is not held this instant) — drives the Act-2 trace wording. Without the axis
+    // (Act 1) the same gap is a plain CONNECTIVITY shortfall ("no path"). The verdict bit is
+    // identical; only the named binding axis differs, so callers/goldens stay stable.
+    const enforcesAvail = contract.activeAxes?.has("availability") ?? false;
     return {
       served: false,
       path: null,
       latencyS: Infinity,
-      bindingConstraint: "connectivity",
+      bindingConstraint: enforcesAvail ? "availability" : "connectivity",
       losses,
     };
   }
   return {
     served: true,
-    path: [contract.region.id, bridge.satId, groundNet.id],
+    path: [contract.region.id, bridge.satId, bridge.groundId],
     latencyS: bridge.latencyS,
     bindingConstraint: null,
     losses,
@@ -224,10 +276,9 @@ export function isPointServed(
   t: number,
   faults?: ReadonlySet<string>,
 ): boolean {
-  const groundNet = groundNets[0];
-  if (!groundNet || sats.length === 0) return false;
+  if (groundNets.length === 0 || sats.length === 0) return false;
   const live = faults && faults.size ? sats.filter((s) => !faults.has(s.id)) : sats;
-  return bridgeForPoint(eph, point, groundNet, live, t).satId !== null;
+  return bridgeForPoint(eph, point, groundNets, live, t).satId !== null;
 }
 
 // ── the re-solve split: cached path + topology fingerprint (design §2.4) ─────────
