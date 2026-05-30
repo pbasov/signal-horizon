@@ -28,6 +28,7 @@ import { orbitRenderRadius, type OrbitRenderScale } from "./orbit-render-scale";
 import { pickNearest, type PickCandidate } from "./pick";
 import { solveOrbit, orbitPeriodSeconds } from "../sim/m2/orbit";
 import type { SatOrbit } from "../sim/m2/roster";
+import { A1_BODY_RADIUS_M, A1_RENDER_BAND_M } from "../sim/net/world";
 
 const DEG = Math.PI / 180;
 
@@ -205,6 +206,15 @@ const EARTH_BILLBOARD_PX = 40;
  * disc / the Moon ring / Earth↔Mars are all untouched. */
 const ORBIT_DESQUASH_LIFT_M = 1.8e7;
 const ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
+/** NET-MODE de-squash tunables (design §6 / Decision-G), scaled to the TOY world. The toy
+ * band is ~1002 km over a 300 km body — three orders of magnitude smaller than the real
+ * Earth↔GEO span — so the system-scale 1.8e7 m lift (18 000 km, larger than the whole toy
+ * band) would invert the concave curve. These toy-scaled constants keep `lift < (band −
+ * surface)` (the {@link OrbitRenderScale} invariant): the lift (120 km) puts the LEO clear of
+ * the 300 km disc, and the exponent fans the toy GEO/LEO into separate visual radii. Used
+ * ONLY when {@link Orrery.netRenderMode} is on — the off-mode de-squash is unchanged. */
+const NET_ORBIT_DESQUASH_LIFT_M = 1.2e5;
+const NET_ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
 /** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
  * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
 const PICK_TOLERANCE_PX = 26;
@@ -302,6 +312,15 @@ export class Orrery {
    * the selection ring + is the click-to-focus target. Set on click/F, not per frame. */
   selectedId: string | null = null;
   private activePreset = 0; // EARTH — the near-body framing where sats visibly orbit (the default)
+  /**
+   * NET RENDER MODE (design §6 / Decision-G): when true, the near-body de-squash is driven
+   * from the TOY body radius {@link A1_BODY_RADIUS_M} (300 km) + band {@link A1_RENDER_BAND_M}
+   * instead of the real `eph.radiusMeters("earth")` (6371 km) — otherwise the toy GEO/LEO
+   * radii log-fold to sub-pixel and the make-or-break Act-1 viz collapses. SCOPED STRICTLY:
+   * when OFF (the default), the M1-cache / M2 / M3 framings are byte-identical to before this
+   * flag existed (the de-squash reads the real radius exactly as it always did). Set by the
+   * net-game wiring (A4 human pass); default OFF so every existing framing is unaffected. */
+  netRenderMode = false;
 
   private bodyMeshes = new Map<string, THREE.Mesh>();
   private haloMesh?: THREE.Mesh;
@@ -1264,12 +1283,37 @@ export class Orrery {
    * VISUAL LIE on rendered radius only — it never touches src/sim metres.
    */
   private refreshOrbitScale(): void {
-    const band = this.cur.orbitBandM;
-    const surfaceM = this.ctx.eph.radiusMeters(this.focusId);
-    this.orbitScale =
-      band > surfaceM && surfaceM > 0
-        ? { surfaceM, bandOuterM: band, surfaceLiftM: ORBIT_DESQUASH_LIFT_M, altExponent: ORBIT_DESQUASH_ALT_EXPONENT }
-        : null;
+    const realSurfaceM = this.ctx.eph.radiusMeters(this.focusId);
+    this.orbitScale = Orrery.computeOrbitScale(this.netRenderMode, realSurfaceM, this.cur.orbitBandM);
+  }
+
+  /**
+   * The PURE surface+band → {@link OrbitRenderScale} choice (Decision-G, design §6), split out
+   * so the net-mode override is unit-testable without a DOM/WebGL render. STRICTLY scoped:
+   *   - net mode OFF (every M1-cache / M2 / M3 framing): `surfaceM == realSurfaceM` (the real
+   *     `eph.radiusMeters(focus)`) and the band is the live animated `orbitBandM` — BYTE-
+   *     IDENTICAL to the pre-net-mode behaviour, so no existing framing shifts a pixel;
+   *   - net mode ON (the Act-1 toy world): `surfaceM == A1_BODY_RADIUS_M` (300 km) and the band
+   *     is {@link A1_RENDER_BAND_M} (1.2·a_GEO) — so the toy GEO/LEO radii fan out off the toy
+   *     surface instead of log-folding to sub-pixel.
+   * Returns null (identity de-squash) when the band does not clear the surface, exactly as
+   * before. Pure — no `this`, no eph, no DOM.
+   */
+  static computeOrbitScale(
+    netRenderMode: boolean,
+    realSurfaceM: number,
+    animatedBandM: number,
+  ): OrbitRenderScale | null {
+    const surfaceM = netRenderMode ? A1_BODY_RADIUS_M : realSurfaceM;
+    const band = netRenderMode ? A1_RENDER_BAND_M : animatedBandM;
+    // The lift/exponent are toy-scaled in net mode (the toy band is ~1 Mm, so the system-
+    // scale 18 000 km lift would break the lift < band−surface invariant); off-mode keeps
+    // the exact system-scale tunables, so no existing framing changes.
+    const lift = netRenderMode ? NET_ORBIT_DESQUASH_LIFT_M : ORBIT_DESQUASH_LIFT_M;
+    const altExponent = netRenderMode ? NET_ORBIT_DESQUASH_ALT_EXPONENT : ORBIT_DESQUASH_ALT_EXPONENT;
+    return band > surfaceM && surfaceM > 0
+      ? { surfaceM, bandOuterM: band, surfaceLiftM: lift, altExponent }
+      : null;
   }
 
   /** The combined focus-relative scale (scene units per TRUE metre) for distance d:

@@ -86,6 +86,36 @@ export const KIND_DECLINE_CONTRACT = "decline_contract";
  */
 export const KIND_PLACE_DC = "place_dc";
 
+// --- M1-as-one-game (the net/ connectivity game, design §4) ----------------------
+// The net/ NetSession's action boundary. These are ADDITIVE — they do not touch any
+// existing kind, and the net/ replay carries its OWN golden (the m1/m2 goldens are
+// untouched). All net_launch planner params cross the wire as RADIANS + SI METRES.
+
+/**
+ * net/ A2 — the player LAUNCHES a satellite via the consequence-preview planner (design
+ * §2.3/§4). Payload `{ presetId?: string, semiMajorM, incRad, subLonRad, count }`:
+ * `semiMajorM` is the semi-major axis in METRES, `incRad`/`subLonRad` are the inclination
+ * + desired body-fixed sub-longitude in RADIANS, `count` is the batch size (1 in Act 1).
+ * The unit-exact boundary lets the applier recompute the epoch-correct `m0 = subLon + ω·atTick·dt`
+ * at apply time (the world.ts resolveOrbit invariant), so the parked longitude is exact at
+ * any commit tick. Applied at `atTick` so the launched orbit reproduces on replay.
+ */
+export const KIND_NET_LAUNCH = "net_launch";
+/**
+ * net/ A2 — the player ACCEPTS an OFFERED net contract by id (design §2.2/§4). Payload
+ * `{ contractId }`; the session moves it OFFERED → ACTIVE at `atTick` so it begins accruing
+ * router-coverage revenue. The scenario beat that OFFERS contracts is deterministic in the
+ * session step + needs no action; only the accept is logged player intent.
+ */
+export const KIND_NET_ACCEPT = "net_accept";
+/**
+ * net/ A2 — the player sets a contract's per-contract PREFER weights (the §7.3 tune-by-
+ * exception, first used in Act 3). Payload `{ contractId, lat, bw, stab }` (plain numbers).
+ * Logged so the routing bias reproduces on replay. `stab` is present but `w_stab` is dormant
+ * in M1.
+ */
+export const KIND_NET_SET_PREFER = "net_set_prefer";
+
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
  * never leak across instances (matching the C# DeepCopy semantics).
@@ -197,6 +227,50 @@ export function declineContract(contractId: string, atTick = 0): SimAction {
  */
 export function placeDC(siteIndex: number, atTick = 0): SimAction {
   return simAction(KIND_PLACE_DC, atTick, { siteIndex: Math.trunc(siteIndex) });
+}
+
+/**
+ * net/ A2 — LAUNCH a satellite into a planner orbit, at a tick. The orbit params cross the
+ * wire as RADIANS + SI METRES (`semiMajorM` metres, `incRad`/`subLonRad` radians), `count`
+ * is the batch size (1 in Act 1), and an optional `presetId` records which preset seeded the
+ * draft (for the readout). The applier recomputes the epoch-correct `m0` at `atTick·dt`, so
+ * live + replay reach the same parked longitude.
+ */
+export function netLaunch(
+  params: { presetId?: string; semiMajorM: number; incRad: number; subLonRad: number; count?: number },
+  atTick = 0,
+): SimAction {
+  const payload: Record<string, JsonValue> = {
+    semiMajorM: params.semiMajorM,
+    incRad: params.incRad,
+    subLonRad: params.subLonRad,
+    count: Math.max(1, Math.trunc(params.count ?? 1)),
+  };
+  if (params.presetId !== undefined) payload.presetId = params.presetId;
+  return simAction(KIND_NET_LAUNCH, atTick, payload);
+}
+
+/**
+ * net/ A2 — ACCEPT an offered net contract by id, at a tick. The session moves it OFFERED →
+ * ACTIVE at `atTick` so live + replay begin accruing its router-coverage revenue together.
+ */
+export function netAccept(contractId: string, atTick = 0): SimAction {
+  return simAction(KIND_NET_ACCEPT, atTick, { contractId });
+}
+
+/**
+ * net/ A2 — set a contract's per-contract PREFER weights, at a tick (the §7.3 tune-by-
+ * exception). Plain numbers; first used in Act 3, present here so the action boundary is
+ * complete from day one.
+ */
+export function netSetPrefer(
+  contractId: string,
+  lat: number,
+  bw: number,
+  stab: number,
+  atTick = 0,
+): SimAction {
+  return simAction(KIND_NET_SET_PREFER, atTick, { contractId, lat, bw, stab });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

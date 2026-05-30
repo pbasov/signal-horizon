@@ -1,0 +1,209 @@
+/**
+ * net/ — the demand GEOMETRY: a target {@link Region} (geodesic disc, body-fixed) and a
+ * real {@link GroundNet} ground-network endpoint, plus the decoupled region-coverage
+ * sampler (region/point, not an M2 grid). Migrated from a1/region.ts (geometry half).
+ *
+ * A region is a geodesic disc on the toy body: a body-fixed centre (lat,lon) plus an
+ * angular radius. `coveredFraction` samples the disc with a deterministic Fibonacci
+ * spiral (NO RNG) and returns the fraction of sample points a caller-supplied
+ * `isCoveredAt(point) => boolean` predicate accepts. The predicate is injected so this
+ * file stays free of the link-budget/router import — both compose on top of it.
+ *
+ * Dropped in the migration (design §1, A0): the co-located A1Ground (reworked here into
+ * a real GroundNet endpoint), the `windowCoverage`/`minFraction`/`meanFraction` layer,
+ * and the `A1_AVAILABILITY_BAR` — the 0.802/0.85 forced-imperfection machinery. Act 1
+ * has NO forced imperfection (design §5).
+ *
+ * RE-CENTERED (design §5 must-fix): the Act-1 region is now EQUATORIAL (lat 0) so the
+ * parked equatorial GEO sits at its nadir and covers the WHOLE disc with margin. The
+ * elevation floor defaults to field.ts's real MIN_ELEVATION_RAD = 5°.
+ *
+ * PURE: no three, no DOM, no wall-clock, no RNG. The Fibonacci spiral is a fixed
+ * function of (centre, radius, sampleCount, index) — same inputs → byte-identical
+ * sample set, so the coverage check is reproducible.
+ *
+ * @see docs/signal-horizon-m1-design.md §1 (endpoint), §2.2 (demand geometry), §5.
+ */
+
+import { MIN_ELEVATION_RAD } from "../coverage/field";
+
+const DEG_RAD = Math.PI / 180;
+
+/** Angular radius (radians) of the Act-1 equatorial region disc. 10° — the parked
+ * equatorial GEO covers the whole disc at eirp 1.0 with large margin (worst-case edge
+ * elevation ≈ 74° vs the 5° floor; received ≈ 8500× the budget). Re-derived + pinned
+ * in A1 (the §5 WHOLE-DISC must-fix). */
+export const NET_ACT1_REGION_RADIUS_RAD = 10 * DEG_RAD;
+
+/** Minimum elevation angle (radians) for a usable net link — the horizon mask.
+ * Defaults to field.ts's real operational floor (5°); a single net/ constant so a
+ * future derivation can re-tune it without forking field.ts. */
+export const NET_MIN_ELEVATION_RAD = MIN_ELEVATION_RAD;
+
+/** A target region: a geodesic disc on the toy body, body-fixed (rides θ(t)). */
+export interface Region {
+  id: string;
+  label: string;
+  /** Disc-centre latitude (radians). */
+  latRad: number;
+  /** Disc-centre longitude (radians). */
+  lonRad: number;
+  /** Angular radius of the disc (radians). */
+  radiusRad: number;
+  /** The body the region rides ("earth"). */
+  bodyId: "earth";
+}
+
+/** A ground-network endpoint — a body-fixed surface station the path terminates at. */
+export interface GroundNet {
+  id: string;
+  /** Station latitude (radians). */
+  latRad: number;
+  /** Station longitude (radians). */
+  lonRad: number;
+  /** Antenna altitude above the toy surface (metres) — raises the local horizon. */
+  altitudeM: number;
+  /** The body the station rides ("earth"). */
+  bodyId: "earth";
+}
+
+/** Number of Fibonacci-spiral disc sample points. */
+export const NET_SPACE_SAMPLES = 400;
+
+/** The Act-1 equatorial region offered (design §5): lat 0°, lon 0°, rad 10°. The
+ * parked equatorial GEO sits at its nadir and covers the WHOLE disc (binary SERVED). */
+export const NET_ACT1_REGION: Region = {
+  id: "REGION-0",
+  label: "equatorial metro",
+  latRad: 0,
+  lonRad: 0,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "earth",
+};
+
+/** The Act-1 ground-network endpoint (design §5): equatorial, same meridian as the
+ * region, with a modest antenna altitude so the local horizon clears. */
+export const NET_ACT1_GROUND: GroundNet = {
+  id: "GROUND-0",
+  latRad: 0,
+  lonRad: 0,
+  altitudeM: 0,
+  bodyId: "earth",
+};
+
+/** A single body-fixed disc sample point (lat,lon in radians). */
+export interface RegionPoint {
+  latRad: number;
+  lonRad: number;
+}
+
+/** The golden angle (radians) — the irrational turn that gives the Fibonacci
+ * spiral its near-uniform, gap-free angular spread. */
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
+/**
+ * Deterministic Fibonacci-spiral sample of `sampleCount` body-fixed (lat,lon)
+ * points filling the geodesic disc of angular radius `region.radiusRad` centred
+ * on the region. NO RNG — purely a function of (region, sampleCount, index).
+ *
+ * Construction: for sample i the geodesic offset angle ψ_i from the centre is
+ * chosen so cos(ψ) is uniform in [cos(radius), 1] — i.e. EQUAL-AREA on the
+ * sphere-cap (each annulus carries the same number of points per area), and the
+ * azimuth φ_i = i · goldenAngle. The offset is then rotated onto the sphere about
+ * an orthonormal basis built at the region-centre direction, and the resulting
+ * unit vector is mapped back to (lat,lon).
+ */
+export function sampleRegionPoints(
+  region: { latRad: number; lonRad: number; radiusRad: number },
+  sampleCount: number,
+): RegionPoint[] {
+  const out: RegionPoint[] = [];
+  if (sampleCount <= 0) return out;
+
+  // Centre direction + an orthonormal tangent basis (e1, e2) at the centre.
+  const centre = latLonToUnit(region.latRad, region.lonRad);
+  // Pick a reference not parallel to centre, then Gram–Schmidt for e1, e2.
+  const ref: [number, number, number] =
+    Math.abs(centre[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const e1 = normalize(cross(ref, centre));
+  const e2 = cross(centre, e1); // already unit (centre ⟂ e1, both unit)
+
+  const cosR = Math.cos(region.radiusRad);
+
+  for (let i = 0; i < sampleCount; i++) {
+    // Equal-area radial: cos(ψ) uniform in [cosR, 1]. The (i+0.5)/N midpoint
+    // avoids placing a point exactly at the centre or the rim edge.
+    const cosPsi = 1 - ((i + 0.5) / sampleCount) * (1 - cosR);
+    const sinPsi = Math.sqrt(Math.max(0, 1 - cosPsi * cosPsi));
+    const phi = i * GOLDEN_ANGLE;
+    const cp = Math.cos(phi);
+    const sp = Math.sin(phi);
+    // point = cos(ψ)·centre + sin(ψ)·(cosφ·e1 + sinφ·e2)
+    const ux = cosPsi * centre[0] + sinPsi * (cp * e1[0] + sp * e2[0]);
+    const uy = cosPsi * centre[1] + sinPsi * (cp * e1[1] + sp * e2[1]);
+    const uz = cosPsi * centre[2] + sinPsi * (cp * e1[2] + sp * e2[2]);
+    const ll = unitToLatLon(ux, uy, uz);
+    out.push({ latRad: ll.latRad, lonRad: ll.lonRad });
+  }
+  return out;
+}
+
+/**
+ * The fraction of the region disc that is covered, evaluated at a single instant:
+ * sample the disc with the deterministic Fibonacci spiral and count the fraction of
+ * sample points the injected `isCoveredAt` predicate accepts. The predicate is the
+ * generic edge predicate (a point is covered iff the router/link-budget reaches it
+ * at the bound instant). Returns a value in [0, 1].
+ */
+export function coveredFraction(
+  region: { latRad: number; lonRad: number; radiusRad: number },
+  sampleCount: number,
+  isCoveredAt: (p: RegionPoint) => boolean,
+): number {
+  if (sampleCount <= 0) return 0;
+  const points = sampleRegionPoints(region, sampleCount);
+  let covered = 0;
+  for (const p of points) {
+    if (isCoveredAt(p)) covered++;
+  }
+  return covered / points.length;
+}
+
+// ── small local helpers (inlined; keeps the import surface minimal + the file
+//    trivially pure) ────────────────────────────────────────────────────────────
+
+/** Body-fixed (lat,lon) → outward unit vector — the SAME convention frame.ts /
+ * roster.ts / field.ts use: [cosLat·cosLon, cosLat·sinLon, sinLat]. */
+function latLonToUnit(latRad: number, lonRad: number): [number, number, number] {
+  const cl = Math.cos(latRad);
+  return [cl * Math.cos(lonRad), cl * Math.sin(lonRad), Math.sin(latRad)];
+}
+
+/** Outward unit vector → (lat,lon) in radians. Inverse of latLonToUnit. */
+function unitToLatLon(
+  x: number,
+  y: number,
+  z: number,
+): { latRad: number; lonRad: number } {
+  const m = Math.hypot(x, y, z) || 1;
+  const nz = Math.max(-1, Math.min(1, z / m));
+  return { latRad: Math.asin(nz), lonRad: Math.atan2(y, x) };
+}
+
+function cross(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): [number, number, number] {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function normalize(
+  v: readonly [number, number, number],
+): [number, number, number] {
+  const m = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / m, v[1] / m, v[2] / m];
+}
