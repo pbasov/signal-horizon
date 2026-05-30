@@ -46,12 +46,28 @@ import {
   acceptContract as acceptContractAction,
   declineContract as declineContractAction,
   placeDC as placeDCAction,
+  netLaunch as netLaunchAction,
+  netAccept as netAcceptAction,
+  type SimAction,
 } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
 import { applyBuildAction } from "./sim/m2/apply-build-action";
 import { BuildSession } from "./sim/m2/session";
+// net/ Act-1 — the connectivity game (design §5/§6). NetSession is the live mutable world
+// (roster + REGION-0 contract + wallet + scenario cursor); applyNetAction is the SHARED
+// applier live + replay use; the world planner gives the truthful consequence preview.
+import { NetSession, NET_RNG_SEED } from "./sim/net/session";
+import { applyNetAction } from "./sim/net/apply-action";
+import {
+  NET_PLANNER_PRESETS,
+  previewLaunch,
+  type PreviewWorld,
+} from "./sim/net/world";
+import { surfacePointRelative } from "./sim/net/link-budget";
+import { ACT1_CONTRACT_ID } from "./sim/net/scenario";
+import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
-import { orbitPeriodSeconds } from "./sim/m2/orbit";
+import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
 import { DC_CANDIDATES } from "./sim/m3/dc-sites";
 import { resolveDCCompute, computeLiftMultiplier } from "./sim/m3/datacenter";
@@ -141,6 +157,26 @@ const session = new M1Session();
 // readout rises as you build. f64→f32 happens only in the orrery; main.ts hands the
 // orrery f64 world positions + the pure score.
 const build = new BuildSession();
+
+// --- net/ Act-1 — THE NET SESSION (the connectivity game, design §5/§6) ------
+// The live mutable connectivity world: the launched-sat roster + the scenario-emitted
+// REGION-0 contract + a € wallet + the seeded splitmix64 + the scenario cursor. A SEPARATE
+// deterministic world from the M1 cache session AND the M2 build session (its own snapshot +
+// its own golden 10424955607522567073n), driven by logged net_launch/net_accept actions
+// applied via the SHARED applyNetAction in the SAME step-then-post-drain order the M2 build
+// session uses. Seeded with NET_RNG_SEED (4242424242424242n) so the live world == the golden.
+const netSession = new NetSession(undefined, NET_RNG_SEED);
+// APP MODE — Act 1 (net) is what BOOTS (the cold player sees + plays the connectivity game).
+// The existing M1-cache / M2 / M3 wiring stays instantiable behind ?mode=cache (the live loop
+// drives whichever world is active; net mode also flips orrery.netRenderMode so the toy globe
+// is visible). The net session is ALWAYS stepped so the scenario emits + the loop is live the
+// instant the mode is entered.
+type AppMode = "net" | "cache";
+const APP_MODE: AppMode =
+  new URLSearchParams(window.location.search).get("mode") === "cache" ? "cache" : "net";
+const netMode = APP_MODE === "net";
+// The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps).
+let netPresetCursor = 0;
 // The coverage grid (built once) for the live coverage score. Same default level as the
 // session's internal grid, so cell ids align and scoring against the session's CURRENT
 // (M2e dynamic) demand — read via build.demandField — is well-keyed. Pure reads; nothing
@@ -532,6 +568,206 @@ function contractsRenderState(): ContractsRenderState {
   };
 }
 
+// --- net/ Act-1 — the live render-state projections + the launch/accept loop --
+
+/** The world surface previewLaunch reads: the standing contracts (region + active axes) +
+ * the ground-net endpoints. The NetSession satisfies {@link PreviewWorld} structurally. */
+function netPreviewWorld(): PreviewWorld {
+  return {
+    contracts: netSession.contracts.map((c) => ({
+      id: c.id,
+      region: c.region,
+      activeAxes: c.activeAxes,
+    })),
+    grounds: netSession.grounds,
+  };
+}
+
+/**
+ * net/ A4 — build the LAUNCH PLANNER panel's per-frame {@link NetPlannerRenderState}: the
+ * wallet, the REGION-0 contract (state + served + earned), the preset buttons, and the
+ * TRUTHFUL consequence preview of the selected preset via the pure {@link previewLaunch}
+ * (the SAME router + link budget the live world runs, so the preview == the post-commit
+ * verdict). Pure reads of the net session; computed here so the panel stays a thin painter.
+ */
+function netPlannerRenderState(): NetPlannerRenderState {
+  const t = clock.seconds;
+  const selected = NET_PLANNER_PRESETS[netPresetCursor % NET_PLANNER_PRESETS.length];
+  const preview = previewLaunch(eph, netPreviewWorld(), selected.draft, t, selected.costBaseEur);
+  // The selected preset's per-REGION-0 preview slice (its consequence on the Act-1 demand).
+  const slice = preview.contracts.find((c) => c.contractId === ACT1_CONTRACT_ID) ?? null;
+
+  const c = netSession.contractById(ACT1_CONTRACT_ID);
+  const solve = c ? netSession.lastSolveFor(c.id) : null;
+  const shortfall = netSession.currentShortfall(t);
+
+  return {
+    balanceEur: netSession.balance,
+    contract: c
+      ? {
+          id: c.id,
+          label: c.label,
+          state: c.state,
+          served: c.state === "active" && (solve?.served ?? false),
+          earnedEur: c.earnedEur,
+        }
+      : null,
+    presets: NET_PLANNER_PRESETS.map((p, i) => ({
+      id: p.id,
+      label: p.label,
+      selected: i === netPresetCursor % NET_PLANNER_PRESETS.length,
+    })),
+    preview: {
+      coveredFraction: slice?.coveredFraction ?? 0,
+      periodS: preview.periodS,
+      latencyFloorS: slice?.latencyFloorS ?? Number.POSITIVE_INFINITY,
+      costEur: preview.costEur,
+      served: slice?.served ?? false,
+    },
+    launched: netSession.sats.length > 0,
+    shortfall: shortfall?.message ?? null,
+  };
+}
+
+/**
+ * net/ A4 — build the ORRERY's per-frame net slice (design §6): the highlighted REGION-0
+ * (lit the instant the router reports it SERVED, dim otherwise) + the launched sat's
+ * footprint over the region. World positions are the TOY-frame earth-relative surface points
+ * (link-budget surfacePointRelative) PLUS earth's ephemeris position, so the orrery rebases
+ * them like any body. PURE reads of the net session; only consumed while netRenderMode is on.
+ */
+function netRenderState(): import("./orrery/orrery").NetRenderState {
+  const t = clock.seconds;
+  const earth = eph.position("earth", t);
+  const add = (rel: Vec3): Vec3 => [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
+  const c = netSession.contractById(ACT1_CONTRACT_ID);
+  if (c === null) return { region: null, footprint: null };
+
+  const solve = netSession.lastSolveFor(c.id);
+  const served = c.state === "active" && (solve?.served ?? false);
+  const center = add(surfacePointRelative(c.region.latRad, c.region.lonRad, t));
+  const region = {
+    id: c.region.id,
+    centerPosM: center,
+    radiusRad: c.region.radiusRad,
+    served,
+  };
+  // The footprint sits over the region nadir once a covering sat is up (a parked GEO holds
+  // station). Show it only when there is a sat AND the region is served (the cover beat).
+  const footprint =
+    served && netSession.sats.length > 0
+      ? { centerPosM: center, radiusRad: c.region.radiusRad * 1.15 }
+      : null;
+  return { region, footprint };
+}
+
+/**
+ * net/ A4 — project the net roster into the orrery's {@link BuildRenderState} so the EXISTING
+ * sat-marker + orbit-plane-ring render path draws the launched net sats (no duplicate mesh
+ * machinery): each net sat's earth-relative {@link solveOrbit} position is shifted by earth's
+ * ephemeris position into a world point + its Kepler orbit handed over for the dashed ring. No
+ * heatmap/DC/coverage concern in net mode (those are empty), so the shell never lights — the
+ * net region/footprint overlay carries the Act-1 coverage cue instead. PURE reads of the net
+ * session.
+ */
+function netBuildRenderState(): BuildRenderState {
+  const t = clock.seconds;
+  const earth = eph.position("earth", t);
+  const assets = netSession.sats.map((s) => {
+    const rel = solveOrbit(s.orbit, t);
+    const posM: Vec3 = [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
+    const eirp = s.loadout.reduce((m, a) => Math.max(m, a.eirp), 0);
+    return { id: s.id, kind: "sat" as const, posM, eirp, orbit: s.orbit };
+  });
+  return {
+    assets,
+    datacenters: [],
+    coveredDemandFraction: 0,
+    groundCount: 0,
+    satCount: assets.length,
+    balanceEur: netSession.balance,
+    bankrupt: false,
+    totalDemand: 0,
+    baselineDemand: 0,
+  };
+}
+
+/**
+ * net/ A4 — LAUNCH the SELECTED preset (design §2.3/§5): append a net_launch action at the
+ * current tick (radians + SI metres on the wire) and DEFER it to drain post-step via the
+ * SHARED applyNetAction (the SAME step-then-post-drain order the replay golden uses). The
+ * default GEO PARK already parks over REGION-0 — pressing LAUNCH on it wins Act 1.
+ */
+function netLaunch(): void {
+  const preset = NET_PLANNER_PRESETS[netPresetCursor % NET_PLANNER_PRESETS.length];
+  const action = netLaunchAction(
+    {
+      presetId: preset.id,
+      semiMajorM: preset.draft.semiMajorM,
+      incRad: preset.draft.incRad,
+      subLonRad: preset.draft.subLonRad,
+      count: preset.draft.count,
+    },
+    clock.tick,
+  );
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "sats_launched") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "NET-LAUNCH",
+      value: preset.label,
+      msg: `${preset.label} reached orbit — footprint ${preset.id === "GEO_PARK" ? "parks over" : "sweeps past"} REGION-0`,
+    });
+  }
+}
+
+/**
+ * net/ A4 — ACCEPT the Act-1 REGION-0 contract (design §2.2/§5): record a net_accept action
+ * at the current tick + apply it via the SHARED applyNetAction. The parked GEO is already
+ * serving the whole disc, so the contract earns from the first served step — the launch→
+ * cover→PAID chain closes.
+ */
+function netAccept(): void {
+  const action = netAcceptAction(ACT1_CONTRACT_ID, clock.tick);
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "contract_accepted") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "NET-CONTRACT",
+      value: ACT1_CONTRACT_ID,
+      msg: `accepted REGION-0 — serve it to EARN (the wallet ticks while served)`,
+    });
+  }
+}
+
+/**
+ * net/ — apply a net action via the SHARED {@link applyNetAction} at the current tick AND
+ * record it to the SaveGame log (only when it actually took, mirroring the m2 build handlers).
+ * The action's step for clock.tick already ran in the prior drain, so applying here is the
+ * SAME "step then post-step apply" order the replay golden uses — live == replay. Returns the
+ * outcome for the caller's log decision (null on a non-net action / no-op).
+ */
+function applyAndRecordNetAction(action: SimAction): ReturnType<typeof applyNetAction> {
+  const res = applyNetAction(eph, netSession, action, DT);
+  if (res && res.kind !== "rejected") addAction(save, action);
+  return res;
+}
+
+/** Cycle the selected planner preset (GEO PARK ↔ LEO SWEEP) for the next LAUNCH. */
+function cycleNetPreset(): void {
+  netPresetCursor = (netPresetCursor + 1) % NET_PLANNER_PRESETS.length;
+  const p = NET_PLANNER_PRESETS[netPresetCursor];
+  log.append({
+    tSim: clock.seconds,
+    sev: "info",
+    entity: "NET-PRESET",
+    value: p.label,
+    msg: `selected · press LAUNCH to commit`,
+  });
+}
+
 // --- audio (M1-11) ----------------------------------------------------------
 // The one-way cue bus: tickSim (orchestration, NOT the pure sim) emits semantic
 // cues on demand-state transitions; the frame loop drains them into AudioCue.
@@ -562,6 +798,13 @@ function tickSim(t: number): void {
   // wallet (DT-invariant, summed once per step). This is what CLOSES the §3 loop — the
   // coverage the player built now EARNS € back. Same shared step() the replay drives.
   build.step(eph, t, DT);
+  // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
+  // scenario emit (REGION-0 onto the board) + serve/breach + revenue + the gate. A net action
+  // is recorded at clock.tick and applied IMMEDIATELY in its handler (after THIS tick's step
+  // has already run in the prior drain) — exactly the m2 build pattern, which is byte-identical
+  // to the replay golden's "step at atTick, then apply post-step" order. Stepped every tick so
+  // the scenario is live the instant net mode boots (the contract is offered before launch).
+  netSession.step(eph, t, DT);
   // The Mission's single Earth→Mars packet represents the AGGREGATE in-flight
   // wait (all feeds share the same geometry); the orrery draws a packet PER feed
   // in flight from the per-feed readout. Launch the packet whenever any leg is
@@ -606,9 +849,17 @@ const orrery = new Orrery({
     return p ? { fromId: p.fromId, toId: p.toId, progress: p.progress, freshness: p.freshness } : null;
   },
   // M2c — hand the orrery the live build roster + coverage score each frame (only
-  // read when the heatmap is up, so it costs nothing while the shell is off).
-  build: () => buildRenderState(),
+  // read when the heatmap is up, so it costs nothing while the shell is off). In net
+  // mode the build roster is empty (the net session is the live world), so the markers
+  // path simply draws the net sat fed through the SAME provider below.
+  build: () => (netMode ? netBuildRenderState() : buildRenderState()),
+  // net/ Act-1 — the live region/footprint slice (design §6); read only in net render mode.
+  net: () => netRenderState(),
 });
+// net/ Act-1 — flip the orrery into NET RENDER MODE while net mode is the active app mode,
+// so the toy globe (sized to A1_BODY_RADIUS_M) is visible and the parked GEO holds station.
+// OFF for the M1-cache mode (every existing framing is byte-identical to before this flag).
+orrery.netRenderMode = netMode;
 
 const log = new SystemLog();
 const telemetry = new Telemetry();
@@ -625,6 +876,18 @@ const contractsPanel = new Contracts();
 // sim state; main.ts hands it a per-frame Fleet projected from the orrery's focused body
 // + the live roster + the dataset sats. Summonable via the SD-36 rail (the FLEET button).
 const fleetPanel = new FleetPanel();
+// net/ Act-1 — THE LAUNCH PLANNER (design §2.3/§5/§6): the offered REGION-0 contract + the
+// presets + the truthful consequence preview + the LAUNCH/ACCEPT buttons. Holds no sim state;
+// main.ts hands it a per-frame NetPlannerRenderState and wires the buttons to the net loop
+// (the launch/accept appliers + the preset cursor). Summonable via the LAUNCH rail button.
+const netPlannerPanel = new NetPlanner({
+  onSelectPreset: (id) => {
+    const i = NET_PLANNER_PRESETS.findIndex((p) => p.id === id);
+    if (i >= 0) netPresetCursor = i;
+  },
+  onLaunch: () => netLaunch(),
+  onAccept: () => netAccept(),
+});
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
@@ -667,6 +930,7 @@ const registry = new Map<string, PanelHandle>([
   ["parse", parse],
   ["contracts", contractsPanel],
   ["fleet", fleetPanel],
+  ["net-planner", netPlannerPanel],
 ]);
 
 const shell = new Shell(wmCanvas, registry);
@@ -728,6 +992,15 @@ function refreshParse(force = false): void {
 
 status.setPresetTabs(presets.map((p) => p.name));
 setWmPreset(0); // PLAY (the default working layout)
+// net/ Act-1 — BOOT INTO NET MODE: surface the LAUNCH planner so the cold player sees the
+// Act-1 game (orrery hero on the left, the planner on the right where CONTRACTS sits). We
+// swap the CONTRACTS tile for the net planner via the SAME shell summon the rail uses, then
+// re-focus the orrery so the player starts on the globe. The cache-mode boot is unchanged.
+if (netMode) {
+  shell.setFocus("contracts");
+  shell.summonPanel("net-planner");
+  shell.setFocus("orrery");
+}
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
@@ -789,19 +1062,25 @@ window.addEventListener("keydown", (e) => {
     // coverage lever). Recorded + applied via the shared applier; the web grows.
     deployGroundStation();
   } else if (k === "l" || k === "L") {
-    // M2c — LAUNCH a satellite into the selected preset (the pricier, bigger
-    // coverage lever, with a deterministic failure chance — the §4.7 launch market).
-    launchSatellite();
+    // net/ Act-1 — in NET mode L LAUNCHES the selected planner preset (the parked GEO
+    // PARK default already works). In cache mode L is the M2c sat launch.
+    if (netMode) netLaunch();
+    else launchSatellite();
   } else if (k === ";") {
-    // M2c — cycle the selected launch preset (LEO → MEO → GEO) for the next L.
-    launchPresetCursor = (launchPresetCursor + 1) % LAUNCH_PRESETS.length;
-    log.append({
-      tSim: clock.seconds,
-      sev: "info",
-      entity: "LAUNCH-SEL",
-      value: LAUNCH_PRESETS[launchPresetCursor].label,
-      msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
-    });
+    // net/ Act-1 — in NET mode ; cycles the planner preset (GEO PARK ↔ LEO SWEEP) for the
+    // next L; in cache mode it cycles the M2c launch preset (LEO → MEO → GEO).
+    if (netMode) {
+      cycleNetPreset();
+    } else {
+      launchPresetCursor = (launchPresetCursor + 1) % LAUNCH_PRESETS.length;
+      log.append({
+        tSim: clock.seconds,
+        sev: "info",
+        entity: "LAUNCH-SEL",
+        value: LAUNCH_PRESETS[launchPresetCursor].label,
+        msg: `selected · €${Math.round(LAUNCH_PRESETS[launchPresetCursor].costEur)} · press L to launch`,
+      });
+    }
   } else if (k === "m" || k === "M") {
     // M3a — PLACE an ORBITAL DATACENTER at the selected candidate site (GDD §4.5: compute as
     // infrastructure, a force-multiplier on the loop). Recorded + applied via the shared applier;
@@ -822,9 +1101,10 @@ window.addEventListener("keydown", (e) => {
     // offered + active ones. UI cursor only (no sim mutation, no logged action).
     cycleSelectedContract(k === "N" ? -1 : 1);
   } else if (k === "k" || k === "K") {
-    // M2d — ACCEPT the targeted OFFERED contract (it goes ACTIVE + starts earning from
-    // the live coverage of its region). Recorded + applied via the shared applier.
-    acceptSelectedContract();
+    // net/ Act-1 — in NET mode K ACCEPTS the REGION-0 contract (close the serve→pay loop);
+    // in cache mode K accepts the targeted M2d offered contract.
+    if (netMode) netAccept();
+    else acceptSelectedContract();
   } else if (k === "j" || k === "J") {
     // M2d — DECLINE the targeted OFFERED contract (it leaves the board, not taken).
     declineSelectedContract();
@@ -970,6 +1250,10 @@ function frame(now: number): void {
   // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
   // the live build session each frame; the panel rebuilds its rows only on a change.
   contractsPanel.render(contractsRenderState());
+  // net/ Act-1 — paint the LAUNCH PLANNER (the offered REGION-0 + presets + the truthful
+  // consequence preview + the LAUNCH/ACCEPT face). Projected each frame from the live net
+  // session; the panel rebuilds its DOM only on change.
+  netPlannerPanel.render(netPlannerRenderState());
   // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
   // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
   // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change

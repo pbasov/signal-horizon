@@ -12,6 +12,8 @@ describe("window-summon rail — the panel list", () => {
       "finance",
       "telemetry",
       "contracts",
+      // net/ Act-1 — the LAUNCH planner (host "net-planner", labelled LAUNCH on the rail).
+      "net-planner",
       "parse",
       "fleet",
     ]);

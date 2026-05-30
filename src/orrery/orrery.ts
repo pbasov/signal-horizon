@@ -153,12 +153,40 @@ export interface BuildRenderState {
   baselineDemand: number;
 }
 
+/** net/ Act-1 — the live NET render slice (design §6): the highlighted region (lit the
+ * instant the router reports it SERVED, dim otherwise) + the launched sat's footprint, in
+ * the TOY-radius world. Supplied per-frame by main.ts from the pure NetSession + previewLaunch;
+ * the orrery reads it ONLY while {@link Orrery.netRenderMode} is on. World positions are
+ * earth-relative metres in the toy frame (the orrery rebases them like any body). */
+export interface NetRenderState {
+  /** The Act-1 region: its body-fixed surface world point, angular radius, and SERVED state. */
+  region: {
+    id: string;
+    /** Earth-relative world position (m) of the region-centre surface point at this t. */
+    centerPosM: Vec3;
+    /** Angular radius of the region disc (radians) — sizes the lit disc on the globe. */
+    radiusRad: number;
+    /** True the instant router.solve reports the region SERVED (lit); false ⇒ dim. */
+    served: boolean;
+  } | null;
+  /** The launched sat's footprint: a disc over the region the sat currently covers (the
+   * make-or-break "footprint snaps over the region" beat). Null until a covering sat is up. */
+  footprint: {
+    /** Earth-relative world position (m) of the footprint-centre surface point (the nadir). */
+    centerPosM: Vec3;
+    /** Angular radius of the footprint disc (radians). */
+    radiusRad: number;
+  } | null;
+}
+
 export interface OrreryCtx {
   eph: Ephemeris;
   now(): number;
   packet(): PacketRenderState | null;
   /** M2c — the live build roster + coverage score (null until wired). */
   build?(): BuildRenderState | null;
+  /** net/ Act-1 — the live region/footprint slice, read only in net render mode. */
+  net?(): NetRenderState | null;
 }
 
 interface BodySpec {
@@ -423,6 +451,18 @@ export class Orrery {
    * visible action. Built once + hidden; {@link updateSelection} shows/positions it. */
   private selectionMesh?: THREE.Mesh;
 
+  // --- net/ Act-1 region + footprint overlay (design §6) ----------------------
+  /** The highlighted Act-1 region disc: a halo that reads DIM (amber, low) while UNSERVED
+   * and LIT (signal-green, bright) the instant the router reports it served — the single
+   * legible Act-1 state change. Built once + hidden; shown only in net render mode. */
+  private netRegionMesh?: THREE.Mesh;
+  /** The launched sat's footprint disc, parked over the region (the cover→paid beat). */
+  private netFootprintMesh?: THREE.Mesh;
+  /** Latest net render slice (region + footprint), set per-frame by main.ts in net mode. */
+  private netState: NetRenderState | null = null;
+  private readonly _netDim = new THREE.Color(0.95, 0.6, 0.2); // amber: UNSERVED region.
+  private readonly _netLit = new THREE.Color(0.55, 1.0, 0.7); // signal-green: SERVED.
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -517,6 +557,18 @@ export class Orrery {
     this.selectionMesh.visible = false;
     this.selectionMesh.renderOrder = 13; // above everything else so the cue always reads.
     this.scene.add(this.selectionMesh);
+
+    // net/ Act-1 — the region disc (lit/dim) + the launched sat's footprint disc. Both are
+    // dithered halo billboards on the toy globe, built once + hidden; updateNetOverlay shows
+    // + positions + tints them only in net render mode (off-mode they never draw).
+    this.netRegionMesh = this.buildHaloDisc([0.95, 0.6, 0.2]); // seeded amber (UNSERVED).
+    this.netRegionMesh.visible = false;
+    this.netRegionMesh.renderOrder = 8; // on the globe, under the markers.
+    this.scene.add(this.netRegionMesh);
+    this.netFootprintMesh = this.buildHaloDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
+    this.netFootprintMesh.visible = false;
+    this.netFootprintMesh.renderOrder = 7;
+    this.scene.add(this.netFootprintMesh);
 
     this.attachInput();
   }
@@ -714,6 +766,60 @@ export class Orrery {
     mesh.position.copy(this._rp);
     this.sizeBillboard(mesh, px, worldPerPx);
     mesh.visible = true;
+  }
+
+  /**
+   * net/ Act-1 — draw the highlighted region + the launched sat's footprint (design §6).
+   * The region disc reads DIM (amber) while UNSERVED and LIT (signal-green, brighter +
+   * wider) the instant the router reports it served — the single legible Act-1 state
+   * change. The footprint disc sits over the region's nadir. Both are rebased like a body
+   * and sized as billboards proportional to the toy globe's apparent disc (the region's
+   * angular radius scaled off the Earth billboard px). Hidden when net mode is off or the
+   * slice is empty. Render-only — no sim feedback; no per-frame allocation.
+   */
+  private updateNetOverlay(focusAbs: Vec3, worldPerPx: number): void {
+    const region = this.netRegionMesh;
+    const footprint = this.netFootprintMesh;
+    if (!region || !footprint) return;
+    const ns = this.netState;
+    if (ns === null) {
+      region.visible = false;
+      footprint.visible = false;
+      return;
+    }
+
+    // The region disc: lit/dim by the served verdict (the make-or-break state change).
+    if (ns.region) {
+      this.renderInto(this._rp, ns.region.centerPosM, focusAbs);
+      region.position.copy(this._rp);
+      const mat = region.material as THREE.ShaderMaterial;
+      mat.uniforms.uColor.value.copy(ns.region.served ? this._netLit : this._netDim);
+      // A served region reads a touch wider + brighter (the lit pulse); the angular radius
+      // maps to a px size off the Earth billboard (a hemisphere ≈ the full disc).
+      const px = this.netDiscPx(ns.region.radiusRad) * (ns.region.served ? 1.25 : 1.0);
+      this.sizeBillboard(region, px, worldPerPx);
+      region.visible = true;
+    } else {
+      region.visible = false;
+    }
+
+    // The footprint disc over the region (the cover beat): a cool-cyan wash the sat casts.
+    if (ns.footprint) {
+      this.renderInto(this._rp, ns.footprint.centerPosM, focusAbs);
+      footprint.position.copy(this._rp);
+      this.sizeBillboard(footprint, this.netDiscPx(ns.footprint.radiusRad), worldPerPx);
+      footprint.visible = true;
+    } else {
+      footprint.visible = false;
+    }
+  }
+
+  /** Map a region/footprint angular radius (radians) to a billboard px size on the toy
+   * globe. The Earth billboard spans the toy globe diameter; a disc of angular radius ψ
+   * spans ≈ sin(ψ) of the globe radius, so its diameter px ≈ EARTH_PX·sin(ψ), floored so a
+   * small region still reads. Pure presentation. */
+  private netDiscPx(radiusRad: number): number {
+    return Math.max(10, EARTH_BILLBOARD_PX * Math.sin(Math.max(0, radiusRad)));
   }
 
   /**
@@ -1037,6 +1143,10 @@ export class Orrery {
 
     // Fix #4 — the selection reticle over the click-/F-selected target.
     this.updateSelection(t, focusAbs, worldPerPx);
+
+    // net/ Act-1 — the region (lit/dim) + footprint discs, only in net render mode.
+    this.netState = this.netRenderMode ? (this.ctx.net?.() ?? null) : null;
+    this.updateNetOverlay(focusAbs, worldPerPx);
 
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);

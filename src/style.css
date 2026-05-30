@@ -664,3 +664,35 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background-color: #6c6c77; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- net/ Act-1 LAUNCH planner (the clickable Act-1 face) ----------------- */
+/* Reuses the .telem dashed-group chrome + the .row/.v value classes; only the
+   preset/commit BUTTONS + the hint line are net-specific (1-bit chrome, §8). */
+.net-presets, .net-buttons { display: flex; gap: 4px; margin: 3px 0 1px; }
+.net-btn {
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--line-dim);
+  padding: 4px 7px;
+  cursor: pointer;
+  /* hard edges only — 1-bit chrome */
+}
+.net-btn:hover { color: var(--fg); border-color: var(--line); }
+.net-btn:disabled { opacity: 0.4; cursor: default; }
+/* SELECTED preset / a READY commit button: coloured for SIGNAL, redundant with the
+   filled/inverted treatment so it reads colour-off too (CVD-safe). */
+.net-btn.active {
+  color: var(--bg);
+  background: var(--cyan);
+  border-color: var(--cyan);
+  font-weight: 700;
+}
+.net-btn.ready { color: var(--green); border-color: var(--green); }
+.net-hint { margin-top: 4px; color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+.net-hint.warn { color: var(--amber); }
+.net-hint.good { color: var(--green); }

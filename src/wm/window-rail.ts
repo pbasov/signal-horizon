@@ -36,6 +36,9 @@ export const RAIL_PANELS: RailPanel[] = [
   { host: "finance", label: "FINANCE" },
   { host: "telemetry", label: "TELEMETRY" },
   { host: "contracts", label: "CONTRACTS" },
+  // net/ Act-1 — THE LAUNCH PLANNER (design §2.3/§5): the offered REGION-0 contract + the
+  // presets + the consequence preview + the LAUNCH/ACCEPT buttons, summoned like any panel.
+  { host: "net-planner", label: "LAUNCH" },
   { host: "parse", label: "PARSE" },
   // M-fleet — THE FLEET TILE (the focused body's constellation), summoned into the
   // focused tile like any other panel via the SD-36 mechanism.
