@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import * as THREE from "three";
 import { Orrery } from "./orrery";
 import { orbitRenderRadius } from "./orbit-render-scale";
 import {
@@ -144,5 +145,50 @@ describe("orrery B4: the Act-2 hand-off + sawtooth-meter render verdicts are pur
     // A held N=4 history is FLAT at the bar: every sample holds ⇒ all GOOD (the flattened line).
     const flat = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
     expect(flat.every((v) => Orrery.availMeterTone(v, bar) === "good")).toBe(true);
+  });
+});
+
+/**
+ * orrery P1 (GDD §5) — THE LIVE-NETWORK LINK UTILISATION COLOUR RAMP. The §4.3 oversubscription data
+ * (a bridging sat's shared-load / capacity), previously TEXT-ONLY, drives each link's colour on the
+ * globe: cool-green at headroom → amber near capacity → red at/over capacity, so a congesting link
+ * reads warm BEFORE it breaches. The ramp is a pure, `this`-free static helper so the contract is
+ * pinned WITHOUT a WebGL render.
+ */
+describe("orrery P1: the live-network link utilisation → colour ramp (congestion visible before breach)", () => {
+  const cool = new THREE.Color(0.35, 1.0, 0.55); // headroom green.
+  const warm = new THREE.Color(1.0, 0.72, 0.2); // near-capacity amber.
+  const hot = new THREE.Color(1.0, 0.28, 0.26); // at/over-capacity red.
+  const ramp = (u: number): THREE.Color =>
+    Orrery.utilColor(u, cool, warm, hot, new THREE.Color());
+
+  it("headroom (util 0) reads COOL GREEN — the link is far from breach", () => {
+    expect(ramp(0).getHex()).toBe(cool.getHex());
+  });
+
+  it("near capacity (util 0.75) reads AMBER — the warning before breach", () => {
+    expect(ramp(0.75).getHex()).toBe(warm.getHex());
+  });
+
+  it("at/over capacity (util ≥ 1) reads RED — the breach point, clamped", () => {
+    expect(ramp(1.0).getHex()).toBe(hot.getHex());
+    expect(ramp(1.5).getHex()).toBe(hot.getHex()); // over-cap clamps to red (no overshoot).
+  });
+
+  it("the ramp is MONOTONE warm — green→amber→red as utilisation rises (warning before breach)", () => {
+    // Green channel falls and red channel rises as the link congests: a rising-load link visibly warms.
+    const g = [0, 0.25, 0.5, 0.75, 1.0].map((u) => ramp(u).g);
+    for (let i = 1; i < g.length; i++) expect(g[i]).toBeLessThanOrEqual(g[i - 1] + 1e-6);
+    const r = [0, 0.5, 0.85, 1.0].map((u) => ramp(u).r);
+    for (let i = 1; i < r.length; i++) expect(r[i]).toBeGreaterThanOrEqual(r[i - 1] - 1e-6);
+  });
+
+  it("a mid-headroom link (util 0.375) is a green→amber BLEND (not yet a warning, but trending)", () => {
+    const c = ramp(0.375); // halfway from green to amber.
+    expect(c.getHex()).not.toBe(cool.getHex());
+    expect(c.getHex()).not.toBe(warm.getHex());
+    // It sits between cool and warm on each channel (a true interpolation, no snap).
+    expect(c.r).toBeGreaterThan(cool.r);
+    expect(c.r).toBeLessThan(warm.r);
   });
 });

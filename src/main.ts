@@ -71,18 +71,18 @@ import {
   type LaunchDraft,
   type PreviewWorld,
 } from "./sim/net/world";
-import { surfacePointRelative } from "./sim/net/link-budget";
+import { surfacePointRelative, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-budget";
 // §3 — the spin angle θ(t) so the operated-body graticule turns with the body (the SAME convention
 // the surface frame + the orrery render-axis swap use). Pure scalar; render-only consumer.
 import { earthThetaAt } from "./sim/net/frame";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
-import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL } from "./sim/net/scenario";
+import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
 import { ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
-import { renderFaultLine } from "./sim/net/trace";
+import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
 import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -211,6 +211,14 @@ const netSession = new NetSession(undefined, NET_RNG_SEED);
 // and never reads this param, so the three goldens are PROVABLY untouched. Never reached in normal
 // play (the param is absent). Labelled DEBUG in SYSTEM.LOG so it can never be mistaken for real play.
 const netDebugView = netMode && (NET_QUERY.get("netview") === "mars" || NET_QUERY.get("netact") === "4");
+// P1 (GDD §5) — DEBUG-ONLY view seed for THE LIVE NETWORK (the headless-screenshot affordance): a
+// `?netview=net` (or `?netact=3`) query param drives the live session to a MULTI-SAT served state (the
+// parked GEO over REGION-0 + the N=4 LEO_SWEEP constellation over REGION-1, escalation on) so a
+// screenshot can show real region→sat→ground links — green→amber→red by utilisation + the hand-off
+// re-route — WITHOUT driving the full gated arc. Same discipline as the Mars seed: public mutation
+// surface only, NOT a sim/action/replay path (the replay harness builds its own session), so the
+// three goldens are provably untouched. Never reached in normal play; DEBUG-labelled.
+const netLiveDebugView = netMode && (NET_QUERY.get("netview") === "net" || NET_QUERY.get("netact") === "3");
 // The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps). The
 // preset is the FLOOR (§3.1: one-click); it SETS the editable draft below. Dragging the draft is the
 // CEILING. -1 ⇒ no preset matches the current (hand-dragged) draft, so no preset button lights.
@@ -895,7 +903,12 @@ function netConstellation(): void {
  * surfaces. Pure read of the session (never mutates sim state).
  */
 const netFaultSeen = new Set<string>();
-let netShortfallLogged = false;
+/** P1 (§7.4) — the set of trace shortfalls ALREADY surfaced (keyed subjectId|kindOfFix), so EVERY
+ * shortfall the trace names is logged ONCE — not just shortfalls[0] — without per-frame spam. */
+const netShortfallSeen = new Set<string>();
+/** P1 (§7.5) — the set of predictability loss-stamps ALREADY surfaced (keyed aId|bId|cause|atS), so
+ * each "link X↔Y lost: cause at T" stamp (renderLossStamp, previously dead code) is logged once. */
+const netLossSeen = new Set<string>();
 function drainNetFaultLog(): void {
   if (!netMode || !netSession.faultsEnabled) return;
   const t = clock.seconds;
@@ -922,14 +935,30 @@ function drainNetFaultLog(): void {
   }
   netFaultSeen.clear();
   for (const id of live) netFaultSeen.add(id);
-  // The TRACE shortfall — surface the first resilience/optimisation/binding shortfall (the
-  // predictability seed + the kind-of-fix the trace named) once, when it first appears.
-  if (!netShortfallLogged) {
-    const report = netSession.trace;
-    const sf = report?.shortfalls[0];
-    if (sf !== undefined) {
+  // P1 (§7.4) — THE TRACE, FIRST-CLASS: surface ALL of diagnose()'s shortfalls (binding constraint +
+  // the kind-of-fix wording for every unmet/at-risk contract + the SPOF / over-provision parses), NOT
+  // just shortfalls[0]. De-duped by subject+fix so each distinct shortfall logs ONCE (no per-frame
+  // spam). This is the §7.4 self-diagnosing view drained to SYSTEM.LOG — "the solver says no" turned
+  // into "I launch THAT."
+  const report = netSession.trace;
+  if (report !== null) {
+    for (const sf of report.shortfalls) {
+      const key = `${sf.subjectId}|${sf.kindOfFix}`;
+      if (netShortfallSeen.has(key)) continue;
+      netShortfallSeen.add(key);
       log.append({ tSim: t, sev: "warn", entity: sf.subjectId, value: sf.kindOfFix, msg: sf.message });
-      netShortfallLogged = true;
+    }
+    // P1 (§7.5) — THE PREDICTABILITY LOSS-STAMP, surfaced via renderLossStamp (previously DEAD CODE
+    // outside tests): "link X↔Y lost: Y set below horizon at 14:32" — the geometric cause + sim-time
+    // every link loss carries. De-duped by the stamp identity so each loss logs once. The §7.5 seed
+    // the spec calls REQUIRED-in-M1, now legible in SYSTEM.LOG.
+    for (const loss of report.losses) {
+      // De-dupe on the STABLE link+cause identity (not atS, which is fresh each solve) so a persistently
+      // down link logs its loss-stamp ONCE — at the time it first lost — not every congestion re-solve.
+      const key = `${loss.aId}|${loss.bId}|${loss.cause}`;
+      if (netLossSeen.has(key)) continue;
+      netLossSeen.add(key);
+      log.append({ tSim: t, sev: "info", entity: `${loss.aId}↔${loss.bId}`, value: "LINK LOST", msg: renderLossStamp(loss) });
     }
   }
 }
@@ -1038,6 +1067,9 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       mars: netMarsSlice(t),
       draft: netDraftSlice(t, add, null),
       servedLink: null,
+      // P1 — the live network: even with no current teaching contract, draw any OTHER active served
+      // contract's path (e.g. an Act-3a corridor contract while the teaching cursor is elsewhere).
+      servedLinks: netServedLinksSlice(t, add),
     };
   }
 
@@ -1071,7 +1103,11 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // orrery draws it as a real 3D sphere + focuses/zooms it when the planner is open. Read from the
   // region's bodyId — NEVER hardcoded "earth" (the Act-4 Mars teaser region rides "mars").
   const body = netBodySlice(c.region.bodyId, t, plannerActive);
-  return { body, region, footprints, availability, mars: netMarsSlice(t), draft, servedLink };
+  // P1 (GDD §5) — THE LIVE NETWORK: every active served contract's router path drawn region→sat→
+  // ground, coloured by the bridging sat's utilisation + flashed on a re-route (the self-healing
+  // reroute made legible). The single `servedLink` above stays for the planner draft beam.
+  const servedLinks = netServedLinksSlice(t, add);
+  return { body, region, footprints, availability, mars: netMarsSlice(t), draft, servedLink, servedLinks };
 }
 
 /**
@@ -1178,6 +1214,70 @@ function netServedLinkSlice(
     satPosM: add(satPositionRelative(eph, sat, t)),
     groundPosM: add(surfacePointRelative(ground.latRad, ground.lonRad, t)),
   };
+}
+
+/** P1 (GDD §5) — the RE-ROUTE tracker (render-only, NOT folded): the bridging sat id each active
+ * contract was last served via. When a contract's `path[1]` changes between frames (a LEO set below
+ * the horizon, a fault removed the sat — the router re-solved to the rising/parallel sat), we stamp
+ * a re-route flash so the orrery pulses the new path. Keyed by contract id; cleared when a contract
+ * stops being served. A pure read of the live SolveResult — never mutates sim state, no golden. */
+const netLinkLastSat = new Map<string, string>();
+const netLinkReroute = new Map<string, number>();
+/** How fast the re-route flash decays per frame (≈ a half-second pulse at 60fps) — render-only. */
+const NET_REROUTE_DECAY = 0.04;
+
+/**
+ * P1 (GDD §5 survival condition) — DRAW THE LIVE NETWORK for EVERY active served contract. Generalizes
+ * the P0 single served-beam to all contracts + multi-hop/constellation paths: for each active contract
+ * whose last router {@link import("./sim/net/router").SolveResult} carries a `path` (region→sat→ground
+ * node ids), resolve each node to its earth-relative world point (region/ground = surface points, sat =
+ * its orbit position) and emit the hop list — so the constellation hand-off is visible (as the router
+ * re-solves to the rising sat, `path[1]` migrates and the beam follows). Each link carries:
+ *   - `util` = `loadOnSat(path[1]) / NET_LINK_CAPACITY_UNITS` (the §4.3 oversubscription data, now ON
+ *      THE GLOBE as colour — green headroom → red over-cap), so a congesting link reads warm BEFORE it
+ *      breaches; and
+ *   - `rerouteAge` — flashed to 1 the frame the bridging sat changed (set/fault re-route), decaying —
+ *      so the self-healing reroute is legible.
+ * Mars-body contracts are skipped (the Act-4 crawler renders the interplanetary leg; a toy-frame beam
+ * at 1 AU would be geometrically meaningless). A render-only read of the live session; no golden.
+ */
+function netServedLinksSlice(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): import("./orrery/orrery").NetRenderState["servedLinks"] {
+  const out: import("./orrery/orrery").NetRenderState["servedLinks"] = [];
+  const grounds = [...netSession.grounds];
+  const live = new Set<string>();
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") continue;
+    if (c.region.bodyId !== "earth") continue; // Act-4 Mars leg is the crawler's job, not a toy beam.
+    const solve = netSession.lastSolveFor(c.id);
+    if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
+    const path = solve.path; // [regionId, satId, groundId] (the router's own node-id path).
+    const satId = path[1];
+    const sat = netSession.sats.find((s) => s.id === satId);
+    if (sat === undefined) continue;
+    const ground = grounds.find((g) => g.id === path[path.length - 1]);
+    // Resolve the path node ids to world points: region surface → sat orbit → ground surface.
+    const points: Vec3[] = [
+      add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
+      add(satPositionRelative(eph, sat, t)),
+    ];
+    if (ground !== undefined) points.push(add(surfacePointRelative(ground.latRad, ground.lonRad, t)));
+    // §4.3 utilisation of the bridging sat (shared load / capacity) — green headroom → red over-cap.
+    const util = netSession.loadOnSat(satId) / NET_LINK_CAPACITY_UNITS;
+    // RE-ROUTE detection: the bridging sat changed since the last served frame ⇒ flash the new path.
+    live.add(c.id);
+    const prevSat = netLinkLastSat.get(c.id);
+    if (prevSat !== undefined && prevSat !== satId) netLinkReroute.set(c.id, 1);
+    netLinkLastSat.set(c.id, satId);
+    const reroute = netLinkReroute.get(c.id) ?? 0;
+    if (reroute > 0) netLinkReroute.set(c.id, Math.max(0, reroute - NET_REROUTE_DECAY));
+    out.push({ contractId: c.id, points, util, rerouteAge: reroute });
+  }
+  // Drop trackers for contracts no longer served (so a re-acquire flashes as a fresh re-route).
+  for (const id of [...netLinkLastSat.keys()]) if (!live.has(id)) { netLinkLastSat.delete(id); netLinkReroute.delete(id); }
+  return out;
 }
 
 /**
@@ -1467,6 +1567,66 @@ function seedNetMarsDebugView(): void {
     entity: "DEBUG",
     value: "netview=mars",
     msg: "DEBUG VIEW — net session seeded at the Act-4 Mars frontier (relay launched, sample present). Not reached in normal play; does NOT affect replay.",
+  });
+}
+
+/**
+ * P1 (GDD §5) — DEBUG SEED for THE LIVE NETWORK (the headless-screenshot affordance). Drive the LIVE
+ * net session to a MULTI-SAT served state so a shot shows real region→sat→ground links (coloured by
+ * utilisation, with the constellation hand-off) WITHOUT playing the full gated arc. Uses ONLY the
+ * session's public mutation surface (the SAME verbs the live game uses): launch the parked GEO +
+ * accept REGION-0 (Act 1, one served beam), launch the N=4 LEO_SWEEP constellation + accept REGION-1
+ * (Act 2, the multi-sat hand-off — the beam migrates as the router re-solves to the rising sat), then
+ * enable escalation so the shared-link utilisation grows and the link tint warms by sight. Steps the
+ * live session a bounded number of fixed ticks so the solves settle + the load aggregates. NOT a
+ * sim/action/replay path (the replay harness builds its own session + never reads this), so the three
+ * goldens are provably untouched. NOT recorded to the SaveGame log (a render seed, not player input).
+ */
+function seedNetLiveNetworkDebugView(): void {
+  const t = clock.seconds;
+  const geo = NET_PLANNER_PRESETS.find((p) => p.id === "GEO_PARK") ?? NET_PLANNER_PRESETS[0];
+  const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
+  // (1) ACT 1 — the parked GEO over REGION-0, then accept it (one served region→sat→ground beam).
+  applyNetAction(eph, netSession, netLaunchAction({
+    presetId: geo.id,
+    semiMajorM: geo.draft.semiMajorM,
+    incRad: geo.draft.incRad,
+    subLonRad: geo.draft.subLonRad,
+    count: 1,
+  }, clock.tick), DT);
+  netSession.step(eph, t, DT);
+  applyNetAction(eph, netSession, netAcceptAction(ACT1_CONTRACT_ID, clock.tick), DT);
+  // (2) Step until the act2 gate fires (REGION-0 served+paid opens act2 — the scenario emits REGION-1).
+  //     Bounded: state-gated, so a small budget of fixed ticks reaches it deterministically.
+  for (let i = 0; i < 200 && netSession.cursor < 2; i++) netSession.step(eph, t, DT);
+  // (3) ACT 2 — the N=4 LEO_SWEEP constellation as ONE batch (the §3.4 hand-off constellation), then
+  //     accept the availability-axis REGION-1. The beam MIGRATES from the setting sat to the rising
+  //     one each re-solve (the hand-off, drawn). Only if the LEO preset + the act2 contract are live.
+  if (leo !== undefined && netSession.contractById(ACT2_CONTRACT_ID) !== null) {
+    applyNetAction(eph, netSession, netLaunchAction({
+      presetId: leo.id,
+      semiMajorM: leo.semiMajorM,
+      incRad: leo.incRad,
+      subLonRad: leo.subLonRad,
+      count: ACT2_ZERO_GAP_N,
+      phaseSpreadRad: (2 * Math.PI) / ACT2_ZERO_GAP_N,
+    }, clock.tick), DT);
+    netSession.step(eph, t, DT);
+    applyNetAction(eph, netSession, netAcceptAction(ACT2_CONTRACT_ID, clock.tick), DT);
+  }
+  // (4) Enable escalation so the shared-link utilisation grows (the §4.3 congestion colour warms by
+  //     sight). Same flag the act3a beat flips; pure (no physics). Then step a bounded run so the
+  //     constellation holds REGION-1 served, the hand-off plays, and the load aggregates onto sats.
+  netSession.enableEscalation();
+  for (let i = 0; i < 400; i++) netSession.step(eph, t + i * DT, DT);
+  clock.setTick(clock.tick + 400);
+  netSession.step(eph, clock.seconds, DT);
+  log.append({
+    tSim: clock.seconds,
+    sev: "warn",
+    entity: "DEBUG",
+    value: "netview=net",
+    msg: "DEBUG VIEW — net session seeded multi-sat served (GEO + N=4 LEO constellation, escalation on) so the live region→sat→ground links draw. Not reached in normal play; does NOT affect replay.",
   });
 }
 
@@ -1764,6 +1924,16 @@ if (netDebugView) {
   seedNetMarsDebugView();
   orrery.setPreset(3); // SYSTEM — the Earth↔Mars span (the frontier money shot).
   if (!clock.paused) clock.togglePause(); // freeze the crawl + the stale read for the shot.
+}
+// P1 (GDD §5) — DEBUG VIEW seed for THE LIVE NETWORK (?netview=net / ?netact=3): drive the live
+// session to a multi-sat served state so a headless screenshot shows the real region→sat→ground
+// links (coloured by utilisation + the hand-off), framed at EARTH (the near-body view where the sats
+// visibly orbit) + paused so the web sits still for the shot. Never reached in normal play; NOT a
+// sim/action/replay path (the replay harness builds its own session) — the three goldens are untouched.
+else if (netLiveDebugView) {
+  seedNetLiveNetworkDebugView();
+  orrery.setPreset(0); // EARTH — the near-body framing where the constellation + links read large.
+  if (!clock.paused) clock.togglePause(); // freeze the hand-off so the links sit still for the shot.
 }
 
 // E10a/E10b — DEV-ONLY time seek so the screenshot harness can jump to a precise

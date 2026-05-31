@@ -285,6 +285,30 @@ export interface NetRenderState {
    * them so "the signal reaches there" is visible on the globe (currently not drawn). Null when no
    * launched sat serves the region. A render-only read of the SAME bridge the router uses. */
   servedLink: { regionPosM: Vec3; satPosM: Vec3; groundPosM: Vec3 } | null;
+  /**
+   * P1 (GDD §5 survival condition) — THE LIVE NETWORK, DRAWN. One entry per ACTIVE served contract:
+   * the router's own path `region→…→sat→…→ground` (the {@link import("../sim/net/router").SolveResult}
+   * `path` node ids, resolved to earth-relative world points main.ts feeds in — NO geometry recomputed
+   * here), so EVERY contract's current serving path is a beam on the globe (the P0 single beam
+   * generalized to all contracts + a constellation hand-off: as a LEO sets and the router re-solves to
+   * the rising sat, the beam migrates because `path[1]` migrates).
+   *
+   * COLOUR BY UTILISATION / HEADROOM (§4.3, was text-only): each hop carries a `util ∈ [0,1]` =
+   * `loadOnSat(sat) / NET_LINK_CAPACITY_UNITS` (the session's shared-load aggregate), mapped
+   * cool-green (headroom) → amber (near capacity) → red (at/over capacity) so a congesting link is
+   * VISIBLE before it breaches. `rerouteAge ∈ [0,1]` rises to 1 the instant the path's bridging sat
+   * changed (a set/fault re-route) and decays — the orrery flashes the new path so the self-healing
+   * re-route reads, rather than snapping invisibly. Empty until ≥1 active contract is served. */
+  servedLinks: {
+    /** The contract id this path serves (the re-route tracker keys on it). */
+    contractId: string;
+    /** The hop world points, region→…→ground (≥2). Each adjacent pair is one drawn segment. */
+    points: Vec3[];
+    /** Utilisation ∈ [0,1] of the bridging sat (loadOnSat / capacity) — drives the green→red tint. */
+    util: number;
+    /** Re-route flash ∈ [0,1]: 1 the frames just after the bridging sat changed, decaying to 0. */
+    rerouteAge: number;
+  }[];
 }
 
 export interface OrreryCtx {
@@ -405,6 +429,12 @@ const PICK_TOLERANCE_PX = 26;
  * is a small set (the measured zero-gap N=4, plus headroom for over-build); only the on-screen
  * discs are capped, the served verdict itself is unbounded. */
 const MAX_NET_FOOTPRINTS = 12;
+/** P1 (GDD §5) — the LIVE-NETWORK link buffer caps: at most this many active served contracts'
+ * paths are drawn at once, each with up to this many hops (region→sat→ground = 2 hops in Act 1;
+ * headroom for the multi-hop relay graph of Acts 2–3). The pooled LineSegments holds
+ * MAX_NET_LINKS·MAX_NET_LINK_HOPS segments; per-frame the writer fills the in-use prefix. */
+const MAX_NET_LINKS = 16;
+const MAX_NET_LINK_HOPS = 4;
 /** §3 — the DRAFT ground-track dashed-line vertex cap (the previewLaunch ground-track is sampled
  * at NET_GROUND_TRACK_SAMPLES=64 over one period; the line draws a dash per adjacent pair). */
 const NET_DRAFT_TRACK_SAMPLES = 64;
@@ -773,6 +803,19 @@ export class Orrery {
   /** Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam (a bright green dashed
    * segment set through the three world points), drawn when a launched sat bridges the region. */
   private netServedLink?: THREE.LineSegments;
+  /** P1 (GDD §5) — THE LIVE NETWORK: one pooled LineSegments carrying EVERY active served contract's
+   * router path region→…→ground, PER-VERTEX coloured by the bridging sat's utilisation (green
+   * headroom → amber near-cap → red over-cap) so congestion reads on the globe BEFORE a breach, and
+   * a re-route flash (a brief white-hot pulse) when a path's bridging sat changes (the self-healing
+   * reroute made legible). Built once with a fixed segment cap; positions+colours rewritten per frame
+   * from {@link NetRenderState.servedLinks} (render-only, no per-frame alloc). */
+  private netServedLinks?: THREE.LineSegments;
+  /** Scratch colours reused across frames to tint the network links without per-frame Color alloc. */
+  private readonly _netUtilCool = new THREE.Color(0.35, 1.0, 0.55); // headroom: cool green.
+  private readonly _netUtilWarm = new THREE.Color(1.0, 0.72, 0.2); // near capacity: amber.
+  private readonly _netUtilHot = new THREE.Color(1.0, 0.28, 0.26); // at/over capacity: red.
+  private readonly _netLinkScratch = new THREE.Color();
+  private readonly _netRerouteFlash = new THREE.Color(0.95, 1.0, 1.0); // re-route pulse: white-hot.
 
   // --- §3 the OPERATED BODY as a real 3D sphere + graticule (body-agnostic) -------------------
   /** THE OPERATED-BODY SPHERE: a REAL {@link THREE.SphereGeometry} (a UNIT sphere scaled per frame
@@ -964,6 +1007,14 @@ export class Orrery {
     this.netServedLink.visible = false;
     this.netServedLink.renderOrder = 14; // above the discs so the beam reads on the globe.
     this.scene.add(this.netServedLink);
+    // P1 (GDD §5) — THE LIVE NETWORK: one pooled PER-VERTEX-COLOURED line for ALL active served
+    // contracts' router paths, tinted green→amber→red by each bridging sat's utilisation (congestion
+    // visible before breach) + flashed white-hot on a re-route. Built once + hidden; positions +
+    // colours rewritten per frame from the servedLinks slice.
+    this.netServedLinks = this.buildVertexColorLine(MAX_NET_LINKS * MAX_NET_LINK_HOPS, 0.9);
+    this.netServedLinks.visible = false;
+    this.netServedLinks.renderOrder = 15; // above the single draft beam so the live web reads on top.
+    this.scene.add(this.netServedLinks);
 
     this.attachInput();
   }
@@ -1619,6 +1670,43 @@ export class Orrery {
   }
 
   /**
+   * P1 (GDD §5) — a PER-VERTEX-COLOURED dashed polyline buffer ({@link maxSegments} segments, 2
+   * verts each, each vert carrying an RGB so a hop can be tinted by its bridging sat's utilisation —
+   * green headroom → amber near-cap → red over-cap — and flashed on a re-route). The geometry holds
+   * `maxSegments` segments; the per-frame writer fills only the in-use prefix + collapses the unused
+   * tail to a degenerate point. Built once; no per-frame alloc.
+   */
+  private buildVertexColorLine(maxSegments: number, opacity: number): THREE.LineSegments {
+    const positions = new Float32Array(maxSegments * 2 * 3);
+    const colors = new Float32Array(maxSegments * 2 * 3);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity });
+    const line = new THREE.LineSegments(geo, mat);
+    line.frustumCulled = false;
+    return line;
+  }
+
+  /**
+   * P1 (GDD §5) — the §4.3 UTILISATION → colour ramp (split out, pure, unit-testable): cool-green at
+   * headroom (util 0), amber at near-capacity (util 0.75), red at/over capacity (util ≥ 1) — so a
+   * link riding close to breach reads warm and an over-subscribed one reads RED on the globe BEFORE it
+   * actually breaches. Writes into `out` (no alloc) and returns it. A deterministic lerp of the three
+   * tunable tints; clamped to [0,1]. */
+  static utilColor(
+    util: number,
+    cool: THREE.Color,
+    warm: THREE.Color,
+    hot: THREE.Color,
+    out: THREE.Color,
+  ): THREE.Color {
+    const u = util < 0 ? 0 : util > 1 ? 1 : util;
+    if (u <= 0.75) return out.copy(cool).lerp(warm, u / 0.75);
+    return out.copy(warm).lerp(hot, (u - 0.75) / 0.25);
+  }
+
+  /**
    * §3 — THE LIVE PLANNER DRAFT consequence ON THE GLOBE (the spec's most important UX principle):
    * as the player drags altitude / inclination / phase / RAAN, draw — TRUTHFULLY, from the pure
    * {@link import("../sim/net/world").previewLaunch} outputs main.ts feeds in (NO geometry recomputed
@@ -1711,6 +1799,71 @@ export class Orrery {
     } else {
       beam.visible = false;
     }
+  }
+
+  /**
+   * P1 (GDD §5 survival condition) — DRAW THE LIVE NETWORK. For every active served contract in
+   * {@link NetRenderState.servedLinks} draw its router path region→…→ground as a beam on the globe
+   * (the P0 single beam generalized to ALL contracts + a constellation hand-off — as the router
+   * re-solves to the rising sat, `path[1]` migrates and the beam follows). Each hop is PER-VERTEX
+   * coloured by the bridging sat's utilisation (the §4.3 oversubscription data, previously text-only):
+   * cool-green headroom → amber near-capacity → red at/over capacity ({@link Orrery.utilColor}), so a
+   * congesting link reads warm BEFORE it breaches. On a RE-ROUTE (the path's bridging sat changed —
+   * a set below the horizon or a fault removing a sat) the whole path is flashed toward white-hot by
+   * `rerouteAge`, then decays, so the self-healing reroute is legible rather than snapping invisibly.
+   * Render-only — positions + colours rewritten in place; no per-frame allocation, no sim touch.
+   */
+  private updateNetLinks(focusAbs: Vec3): void {
+    const line = this.netServedLinks;
+    if (!line) return;
+    const ns = this.netRenderMode ? this.netState : null;
+    const links = ns?.servedLinks ?? [];
+    if (links.length === 0) {
+      line.visible = false;
+      return;
+    }
+    const posAttr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const pos = posAttr.array as Float32Array;
+    const col = colAttr.array as Float32Array;
+    const segCap = pos.length / 6; // 6 floats per segment (2 verts × xyz).
+    let seg = 0;
+    for (const lk of links) {
+      const pts = lk.points;
+      if (pts.length < 2) continue;
+      // The base utilisation tint for this whole path (the bridging sat's headroom), pulled toward
+      // white-hot by the re-route flash so a freshly re-routed path pops, then settles to its tint.
+      Orrery.utilColor(lk.util, this._netUtilCool, this._netUtilWarm, this._netUtilHot, this._netLinkScratch);
+      const flash = lk.rerouteAge < 0 ? 0 : lk.rerouteAge > 1 ? 1 : lk.rerouteAge;
+      if (flash > 0) this._netLinkScratch.lerp(this._netRerouteFlash, flash);
+      const cr = this._netLinkScratch.r;
+      const cg = this._netLinkScratch.g;
+      const cb = this._netLinkScratch.b;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        if (seg >= segCap) break;
+        const a = pts[i];
+        const b = pts[i + 1];
+        let w = seg * 6;
+        this.writeRenderPoint(pos, w, a[0], a[1], a[2], focusAbs);
+        this.writeRenderPoint(pos, w + 3, b[0], b[1], b[2], focusAbs);
+        // Both verts of the hop carry the path tint (a flat-coloured segment).
+        for (let v = 0; v < 2; v++) {
+          col[w + v * 3] = cr;
+          col[w + v * 3 + 1] = cg;
+          col[w + v * 3 + 2] = cb;
+        }
+        seg++;
+      }
+      if (seg >= segCap) break;
+    }
+    // Collapse the unused tail to a degenerate (invisible) segment at the origin.
+    for (let s = seg; s < segCap; s++) {
+      const w = s * 6;
+      for (let f = 0; f < 6; f++) pos[w + f] = 0;
+    }
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+    line.visible = seg > 0;
   }
 
   private buildOverlayCorners(): void {
@@ -2072,6 +2225,9 @@ export class Orrery {
     // §3 — the LIVE PLANNER DRAFT consequence (footprint + ground-track + coverage-gap overlay) +
     // the served region→sat→ground beam, drawn on the globe as the player drags the orbit.
     this.updateNetDraft(focusAbs, worldPerPx);
+    // P1 (GDD §5) — THE LIVE NETWORK: every active served contract's router path drawn region→sat→
+    // ground, coloured by the bridging sat's utilisation + flashed on a re-route.
+    this.updateNetLinks(focusAbs);
     // net/ Act-4 — the Mars frontier teaser: the desaturating Mars data node + the relay node +
     // the Earth↔Mars signal crawling at the real light delay (shown only at act4 in net mode).
     this.updateNetMars(t, focusAbs, worldPerPx);
@@ -2902,6 +3058,10 @@ export class Orrery {
     sunHaloVisible: boolean;
     spherePxRadius: number;
     sphereHeightFraction: number;
+    /** P1 (GDD §5) — how many active served-contract paths the live network is drawing this frame. */
+    servedLinkCount: number;
+    /** P1 — whether the live-network LineSegments is currently visible (≥1 link drawn). */
+    servedLinkVisible: boolean;
   } {
     const sphere = this.netBodySphere;
     const grat = this.netBodyGraticule;
@@ -2931,6 +3091,9 @@ export class Orrery {
       spherePxRadius,
       // The sphere DIAMETER as a fraction of the pane height (the BUG-2 target: ~0.35–0.45).
       sphereHeightFraction: this.h > 0 ? (2 * spherePxRadius) / this.h : 0,
+      // P1 — the live network drawn this frame (the count from the slice + the mesh visibility).
+      servedLinkCount: this.netState?.servedLinks?.length ?? 0,
+      servedLinkVisible: this.netServedLinks?.visible ?? false,
     };
   }
 }
