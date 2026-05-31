@@ -452,6 +452,11 @@ function netStateHash(s: NetSession): bigint {
     acc = mixFloat(acc, c.lastAvailability);
     acc = mixFloat(acc, c.earnedEur);
     acc = mixFloat(acc, c.offeredLoad);
+    // P4 (§4.3): the SLOW load BASELINE the bursty offeredLoad oscillates around — the growing state
+    // the next step's escalation depends on (offeredLoad itself is the bursty realized value derived
+    // from baseline + t + loadPhase + a seeded-noise draw). Folded right after offeredLoad (its
+    // sibling) so two states with the same realized load but a different baseline never collide.
+    acc = mixFloat(acc, c.loadBaseline);
     // activeAxes by ASCENDING ordinal (connectivity=0…bandwidth=3) — never Set order.
     const ordinals = NetSession.foldAxisOrdinals(c.activeAxes);
     acc = mixInt(acc, BigInt(ordinals.length));
@@ -513,6 +518,41 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //   P0b       (launch CHARGE + failure roll)  10597504085086350891n
 //   P2        (telegraphed DROP + transient)  16182974603317469058n
 //   P3        (traffic classes + slider)      8969122486022400018n
+//   P4        (bursty non-coincident load +   4638365066733440034n
+//              slaBandwidth-reading bw axis)
+// What moved it in P4 (the M1-remediation §4.3 fix — oversubscription is the deterministic statistical
+// bet it was always meant to be, not a flat uniform cliff):
+//   (1) THE BURSTY, NON-COINCIDENT LOAD — `offeredLoad` is no longer a monotone ramp. The escalation
+//       law now grows a SLOW `loadBaseline` (the §3a network effect, frozen while breaching), and the
+//       realized `offeredLoad` is the bursty `burstyOfferedLoad(baseline, t, loadPhase, noise)` — a
+//       periodic "diurnal" oscillation (a pure function of t, period NET_LOAD_DIURNAL_PERIOD_S = 300 s,
+//       amplitude 0.45) PLUS a bounded ±0.06 noise term drawn from the session's SEEDED splitmix64,
+//       with a PER-CONTRACT `loadPhase` (a deterministic hash of the contract id) so REGION-0 and
+//       REGION-2 peak at DIFFERENT times (NON-COINCIDENT). The load RISES ABOVE and FALLS BELOW its
+//       slaBandwidth over time. The noise is drawn ONCE per active Earth contract per step (in
+//       contractList order) off the SHARED rng — so it advances the folded rng state (moving the
+//       downstream act3b fault stream's draws) and the per-step bursty offeredLoad + loadBaseline fold.
+//   (2) THE BANDWIDTH AXIS READS slaBandwidth — the dead `slaBandwidth` (the COMMITTED FLOOR, §4.1) is
+//       now LIVE: a bandwidth-active contract is MET when its served bandwidth over the shared link is
+//       ≥ its OWN slaBandwidth (NET_DEFAULT_SLA_BANDWIDTH = 0.6) and BREACHES when a coincident-peak
+//       spike pushes the shared peak past what honors every sharing contract's floor (capacity is then
+//       shared in PROPORTION to offered load, so served bw = capacity·ownLoad/sharedLoad). NOT a flat
+//       uniform `sharedLoad ≥ capacity` cliff. NET_LINK_CAPACITY_UNITS stays the per-antenna physical
+//       capacity. The mask flip is now keyed on the SLOW baseline (replay-stable, never flickers).
+//   (3) THE RE-TAME WITNESS — now structural: a contract re-tames when it is fully SERVED and the SOLE
+//       active loader of its bridge sat (the SPLIT happened), so a transient coincident bursty trough
+//       on a STILL-shared, still-oversubscribed sat can never spuriously latch it. The canonical arc
+//       (TICK_RELIEF = 27000) is UNCHANGED: REGION-2 dips near-breach ~t=447 (the coincident peak), the
+//       player's relief (the parallel equatorial LEO + the REGION-0 prefer-yield) splits the shared sat
+//       at t=450, and the corridor re-tames a tick later — the dip + re-tame still latch like P3 did.
+//   (4) FOLD ADDITION — `loadBaseline` is folded right after `offeredLoad` (the slow state the next
+//       step's growth depends on; the bursty offeredLoad alone could collide across distinct baselines).
+//       The telegraphed fault now drops a DIFFERENT polar LEO (NET-SAT-3, was NET-SAT-4) because the
+//       per-contract noise draws shifted the shared rng stream — REGION-1's redundant N=4 still WEATHERS
+//       the permanent drop (active, never failed; its breach stays ≪ the fail grace), the acts all gate
+//       deterministically (cursor reaches + STOPS on act4), and the HORIZON is unchanged (560 s). The
+//       two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n) are DIFFERENT
+//       worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // What moved it in P3 (the M1-remediation §7.2/§7.3 fix — per-class routing made LIVE + the slider):
 //   (1) TRAFFIC CLASSES — every contract now carries a `trafficClass` that SETS its default `prefer`
 //       (§7.2 PREFER_FOR_CLASS): REGION-0 latency-class (lat-only, byte-identical to the old hardcoded
@@ -585,7 +625,7 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //       holds. The two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n)
 //       are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 8969122486022400018n;
+const NET_REPLAY_GOLDEN = 4638365066733440034n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -1158,12 +1198,18 @@ describe("SD-40 D1 — act4 Mars teaser: light-delay (deterministic minutes), fr
     expect(roundTripMin).toBeGreaterThan(6);
     expect(roundTripMin).toBeLessThan(45);
     // The EARTH toy latency stays MILLISECONDS — ~9 orders of magnitude below the Mars minutes; the
-    // Mars branch never touches Earth contracts. REGION-1 (the polar constellation) is robustly
-    // served; assert its toy latency is sub-second, AND every Earth contract with a finite latency
-    // is sub-second (none ever sees the interplanetary delay; toy paths are ~3-4 ms vs Mars ~923 s).
-    const earth = r.session.lastSolveFor(ACT2_CONTRACT_ID)!;
+    // Mars branch never touches Earth contracts. REGION-0 (the robustly-served equatorial trunk, NOT
+    // the polar constellation taking the telegraphed drop) is served at the horizon — assert its toy
+    // latency is sub-second. REGION-1 (the polar constellation) WEATHERED the permanent telegraphed
+    // drop (active, never failed) — under the bursty load + the N=4→N=3 reduction it sawtooths a brief
+    // hand-off gap that can land on the horizon tick, but its breach stays ≪ the fail grace, so it is
+    // NOT failed. AND every Earth contract with a finite latency is sub-second (none ever sees the
+    // interplanetary delay; toy paths are ~3-4 ms vs Mars ~923 s).
+    const earth = r.session.lastSolveFor(ACT1_CONTRACT_ID)!;
     expect(earth.served).toBe(true);
     expect(earth.latencyS).toBeLessThan(1); // sub-second toy path — NOT the Mars minutes.
+    const r1Weathered = r.session.contracts.find((c) => c.id === ACT2_CONTRACT_ID)!;
+    expect(r1Weathered.state).not.toBe("failed"); // the redundant polar N=4 weathered the drop.
     for (const c of r.session.contracts) {
       if (c.region.bodyId !== "earth") continue;
       const sv = r.session.lastSolveFor(c.id);

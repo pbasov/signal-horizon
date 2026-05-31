@@ -170,10 +170,27 @@ export interface Contract {
   slaAvail: number;
   /** Max one-way latency (seconds) the path must achieve (Act 3). */
   slaLatencyS: number;
-  /** Min per-user bandwidth (units) the path must carry (Act 3). */
+  /** Min per-user bandwidth (units) the path must carry (Act 3) — the COMMITTED FLOOR (§4.1/§4.3).
+   * The bandwidth axis (§4.3) is bandwidth-MET when the contract's served bandwidth over the shared
+   * link is ≥ this; it BREACHES when a coincident-peak spike pushes the shared link past what honors
+   * every sharing contract's floor. NOT a flat uniform cliff — the contract's OWN committed floor. */
   slaBandwidth: number;
-  /** Time-varying offered demand (drives oversubscription/congestion in Act 3). */
+  /** Time-varying offered demand (drives oversubscription/congestion in §4.3) — the BURSTY REALIZED
+   * load THIS instant: a monotone-grown {@link loadBaseline} PLUS a deterministic diurnal oscillation
+   * + a bounded seeded-noise term, with a PER-CONTRACT {@link loadPhase} so different contracts peak
+   * at DIFFERENT times (non-coincident peaks). It RISES ABOVE and FALLS BELOW {@link slaBandwidth}
+   * over time. A pure function of (t, loadPhase, the session's seeded splitmix64) — replay-safe. */
   offeredLoad: number;
+  /** The MONOTONE-GROWN baseline the bursty {@link offeredLoad} oscillates around (§3a — "demand
+   * grows where you serve"). It grows logistically toward the ceiling via {@link escalateLoad} ONLY
+   * where served well (frozen while breaching); the diurnal+noise burst rides ON TOP of it. Folded
+   * (it is the slow state the burst is a pure function of). Initialised = the offer's offeredLoad. */
+  loadBaseline: number;
+  /** The PER-CONTRACT diurnal PHASE (radians) so peaks are NON-COINCIDENT (§4.3 — "share a link
+   * across contracts whose peaks don't coincide"). A deterministic pure hash of the contract id into
+   * [0, 2π) — two contracts over the same shared sat peak at DIFFERENT times unless their phases
+   * happen to align. Folded (stable per contract; never drawn from the clock). Set at offer. */
+  loadPhase: number;
 
   // --- THE GATE MASK: which axes the serve/breach evaluator ENFORCES this act ---
   /** Act1 {connectivity}; Act2 +availability; Act3 +latency,+bandwidth. The UI reads this
@@ -236,10 +253,15 @@ export const NET_DEFAULT_TERM_SECONDS = 6 * 3600.0; // 6 sim-hours.
 
 /** Default availability/latency/bandwidth bars carried in the struct but HIDDEN in Act 1
  * (activeAxes={connectivity}). Sane non-trivial values so Act 2/3 inherit a real bar when
- * the mask opens. Placeholders. */
+ * the mask opens. Placeholders.
+ *
+ * NET_DEFAULT_SLA_BANDWIDTH is the COMMITTED FLOOR (§4.1/§4.3). Sized BELOW the initial
+ * offeredLoad (1.0) and the trough of the diurnal burst so a contract ALONE on a sat (its
+ * served bandwidth = its full offeredLoad) always honors its floor — the bandwidth axis bites
+ * ONLY when a coincident-peak spike on a SHARED sat cuts a contract's fair share below it. */
 export const NET_DEFAULT_SLA_AVAIL = 0.99;
 export const NET_DEFAULT_SLA_LATENCY_S = 0.05; // 50 ms one-way.
-export const NET_DEFAULT_SLA_BANDWIDTH = 1.0;
+export const NET_DEFAULT_SLA_BANDWIDTH = 0.6;
 
 /** The neutral prefer weights (latency-biased, bandwidth secondary, stability dormant). */
 export const NET_DEFAULT_PREFER: PreferWeights = { lat: 1.0, bw: 0.0, stab: 0.0 };
@@ -276,13 +298,93 @@ export const ESCALATION_RATE_PER_S = 2.0e-2;
  * Placeholder on the `offeredLoad` scale. */
 export const ESCALATION_LOAD_CEILING = 1.4;
 
-/** The offeredLoad a served contract crosses to make its BANDWIDTH axis bite (the §4.4
- * escalation-triggered mask flip): once a served contract's grown load reaches this, the act3a
- * escalation step adds "bandwidth" to its activeAxes (one-line mask add, no struct reshape). Set
- * ABOVE the initial contract load (1.0) so the axis is genuinely ESCALATION-triggered (it flips
- * only after demand has grown — NOT at t=0), and BELOW the ceiling (1.4) so escalation actually
- * reaches it. Placeholder on the `offeredLoad` scale. */
+/** The loadBaseline a served contract crosses to make its BANDWIDTH axis bite (the §4.4
+ * escalation-triggered mask flip): once a served contract's grown BASELINE reaches this, the act3a
+ * escalation step adds "bandwidth" to its activeAxes (one-line mask add, no struct reshape). Keyed
+ * on the SLOW {@link loadBaseline} (not the bursty realized offeredLoad) so the mask flip is a
+ * monotone, replay-stable event — it never flickers on/off with the diurnal oscillation. Set ABOVE
+ * the initial baseline (1.0) so the axis is genuinely ESCALATION-triggered (it flips only after
+ * demand has grown — NOT at t=0), and BELOW the ceiling (1.4) so escalation reaches it. Placeholder. */
 export const ESCALATION_BANDWIDTH_AXIS_THRESHOLD = 1.2;
+
+// --- THE BURSTY, NON-COINCIDENT LOAD MODEL (Act 3a / §4.3 — the oversubscription tension) ---------
+//
+// The §4.3 tension ("N contracts, M sats — share a link across contracts whose peaks DON'T coincide;
+// cut it as thin as you dare before a breach costs more than the hardware") needs a TIME-VARYING
+// offered load, not a monotone ramp: a load that RISES ABOVE and FALLS BELOW its sla_bandwidth over
+// time, with PER-CONTRACT phase so two contracts sharing one sat peak at DIFFERENT times. The model
+// is `offeredLoad(t) = baseline · (1 + AMP·sin(2π·t/PERIOD + phase) + noise)`, where:
+//   - `baseline`  — the monotone-grown {@link loadBaseline} (the §3a network effect stays);
+//   - the SIN term is the deterministic "diurnal" oscillation (a periodic function of t — NO clock);
+//   - `phase`     — the PER-CONTRACT {@link loadPhase} (a pure hash of the id) so peaks are
+//                   NON-COINCIDENT (two contracts peak at different t unless their phases align);
+//   - `noise`     — a bounded term drawn from the session's SEEDED splitmix64 (NO unseeded random),
+//                   so a coincident-peak spike is the STATISTICAL BET the player makes, not scripted.
+// PURE + replay-safe: a function of (t, loadPhase) for the periodic part + the folded rng for noise.
+
+/** The diurnal oscillation PERIOD (sim-seconds): the toy "day" over which a contract's load swings
+ * peak→trough→peak. Sized a few toy LEO periods (≈ 2·A1_LEO_PERIOD_S = 300 s) so within a short
+ * sitting a contract sweeps through several peaks — and two contracts at different phases visibly
+ * peak at different times (the non-coincident-peak bet plays out over the act3a corridor). Placeholder. */
+export const NET_LOAD_DIURNAL_PERIOD_S = 300.0;
+
+/** The diurnal oscillation AMPLITUDE (fraction of the baseline). The sin term swings the load
+ * ±AMP·baseline around the baseline, so offeredLoad rises ABOVE and falls BELOW sla_bandwidth over
+ * time. 0.45 ⇒ a baseline-1.0 contract swings ≈ 0.55 → 1.45 (its trough 0.55 stays just under a
+ * lone-sat floor of 0.6 only at the deepest trough — the bandwidth floor 0.6 is comfortably honored
+ * by a contract ALONE on a sat at its baseline; the bite is a SHARED-sat coincident peak). Sized so
+ * a coincident peak of two ~1.0-baseline contracts (≈ 2.9) blows past the 1.5 capacity while a
+ * non-coincident pairing (one near-peak ≈ 1.45 + one near-trough ≈ 0.55 ≈ 2.0) still over-subscribes
+ * but less deeply — the statistical-multiplexing gradient. Placeholder on the offeredLoad scale. */
+export const NET_LOAD_DIURNAL_AMPLITUDE = 0.45;
+
+/** The bounded NOISE amplitude (fraction of the baseline) the seeded splitmix64 adds each step — a
+ * small jitter so a peak is never perfectly periodic (the bet has real variance), bounded so it can
+ * never dominate the diurnal signal or send the load negative. ±0.06·baseline. Placeholder. */
+export const NET_LOAD_NOISE_AMPLITUDE = 0.06;
+
+/**
+ * THE BURSTY, NON-COINCIDENT OFFERED LOAD (design §4.3). A pure function of the slow `baseline`, the
+ * sim-time `t`, the PER-CONTRACT `phase` (so peaks are non-coincident), and a bounded `noise01` ∈
+ * [0,1) drawn from the session's SEEDED splitmix64 (the caller draws it; this function is pure):
+ *
+ *   offeredLoad = baseline · (1 + AMP·sin(2π·t/PERIOD + phase) + NOISE_AMP·(2·noise01 − 1))
+ *
+ * RISES ABOVE and FALLS BELOW sla_bandwidth over time; bounded below by 0 (clamped). Deterministic:
+ * the periodic part is `sin(t)` (no clock), the noise is a seeded draw mapped to [−1,1). So sharing a
+ * sat across two contracts whose phases DON'T align is viable (their peaks miss); if the phases align
+ * the shared link spikes over capacity and one tips toward breach (the §4.3 statistical bet). Pure.
+ */
+export function burstyOfferedLoad(
+  baseline: number,
+  t: number,
+  phase: number,
+  noise01: number,
+): number {
+  if (baseline <= 0) return 0;
+  const diurnal = NET_LOAD_DIURNAL_AMPLITUDE * Math.sin((2 * Math.PI * t) / NET_LOAD_DIURNAL_PERIOD_S + phase);
+  const noise = NET_LOAD_NOISE_AMPLITUDE * (2 * noise01 - 1);
+  const load = baseline * (1 + diurnal + noise);
+  return load > 0 ? load : 0;
+}
+
+/**
+ * THE PER-CONTRACT DIURNAL PHASE (radians, [0, 2π)) — a deterministic pure hash of the contract id
+ * so different contracts peak at DIFFERENT times (NON-COINCIDENT peaks, §4.3). NOT drawn from a
+ * clock or an unseeded random — a stable function of the id, so the same contract always carries the
+ * same phase across runs/restores (folded). A simple string-fold (FNV-1a-ish over the char codes)
+ * mapped into [0, 2π). The act3a corridor (REGION-2) and the equatorial trunk (REGION-0) get
+ * DIFFERENT phases by construction (their ids differ), so the SAME shared equatorial sat sees their
+ * peaks at different t — the bet is real. Pure.
+ */
+export function loadPhaseForId(id: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (h / 4294967296) * (2 * Math.PI);
+}
 
 /**
  * Advance a contract's `offeredLoad` by the EXACT CLOSED-FORM LOGISTIC FLOW toward
@@ -335,6 +437,11 @@ export function offerNetContract(
     slaLatencyS: opts?.slaLatencyS ?? NET_DEFAULT_SLA_LATENCY_S,
     slaBandwidth: opts?.slaBandwidth ?? NET_DEFAULT_SLA_BANDWIDTH,
     offeredLoad: opts?.offeredLoad ?? 1.0,
+    // The slow baseline the bursty offeredLoad oscillates around (= the initial offeredLoad at offer;
+    // it grows via escalateLoad while served well). The PER-CONTRACT diurnal phase is a pure hash of
+    // the id so peaks are non-coincident (§4.3) — two contracts sharing a sat peak at different t.
+    loadBaseline: opts?.offeredLoad ?? 1.0,
+    loadPhase: loadPhaseForId(id),
     activeAxes: opts?.activeAxes ?? new Set<SlaAxis>(["connectivity"]),
     trafficClass,
     prefer: opts?.prefer ? { ...opts.prefer } : preferForClass(trafficClass),

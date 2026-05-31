@@ -97,6 +97,12 @@ export interface RoutableContract {
   prefer?: PreferWeights;
   /** E1: max one-way latency (s) the path must achieve; absent ⇒ Infinity (no ceiling). */
   slaLatencyS?: number;
+  /** P4 (§4.3): the contract's COMMITTED bandwidth FLOOR — the bandwidth axis is MET when this
+   * contract's served bandwidth over the shared link is ≥ this; absent ⇒ 0 (no floor ever binds). */
+  slaBandwidth?: number;
+  /** P4 (§4.3): the contract's bursty REALIZED offered load THIS instant (its share of the shared
+   * link is proportional to this); absent ⇒ 0 (it asks for nothing, so its floor is trivially met). */
+  offeredLoad?: number;
 }
 
 /** The router's default PREFER weights when a contract carries none (E1 back-compat). The
@@ -359,23 +365,39 @@ export function solve(
     };
   }
 
-  //   BANDWIDTH (§4.3) — the shared-link limit, felt: when the chosen bridge's shared load is at
-  //   or over capacity (`congestion_term ≥ 1`, i.e. sharedLoad ≥ NET_LINK_CAPACITY_UNITS) the
-  //   link is CONGESTED and a bandwidth-active contract is unserved binary. The router already
-  //   routed AROUND congestion (the cost-blend prefers a less-loaded parallel path when one
-  //   exists); this verdict bites only when the chosen — already the cheapest — path is itself
-  //   over capacity. bindingConstraint = "bandwidth".
+  //   BANDWIDTH (§4.3) — the shared-link limit, felt via the contract's OWN committed FLOOR (P4):
+  //   the shared bridge carries `sharedLoad = Σ offeredLoad` over the per-antenna physical capacity
+  //   NET_LINK_CAPACITY_UNITS. While the shared peak is AT OR UNDER capacity the link HONORS every
+  //   sharing contract's full offered load — so it is bandwidth-MET (a low-demand contract under its
+  //   own floor is still met: the link delivers everything it asked for). It is ONLY when a
+  //   COINCIDENT-PEAK spike pushes the shared peak OVER capacity that the link can no longer honor
+  //   every floor: capacity is then shared in PROPORTION to each contract's offered load, so this
+  //   contract's served bandwidth is `capacity · offeredLoad / sharedLoad`. It BREACHES iff that
+  //   over-subscribed share falls below its OWN `slaBandwidth` (the committed floor — NOT a flat
+  //   uniform cliff). The router already routed AROUND congestion (the cost-blend prefers a less-
+  //   loaded parallel path), so this bites only when the chosen — already the cheapest — path's peak
+  //   still over-subscribes this contract below its floor. binding = "bandwidth".
   if (contract.activeAxes?.has("bandwidth") ?? false) {
+    const slaBandwidth = contract.slaBandwidth ?? 0;
     const sharedLoad = loadBySat?.get(bridge.satId) ?? 0;
-    if (sharedLoad >= NET_LINK_CAPACITY_UNITS) {
-      losses.push({ aId: bridge.satId, bId: bridge.groundId, cause: "out_of_budget", atS: t });
-      return {
-        served: false,
-        path: [contract.region.id, bridge.satId, bridge.groundId],
-        latencyS: bridge.latencyS,
-        bindingConstraint: "bandwidth",
-        losses,
-      };
+    // ONLY an OVER-SUBSCRIBED link (shared peak strictly over capacity) can starve a contract below
+    // its floor; under capacity the link honors all offered load (always met). Guard slaBandwidth ≤ 0
+    // (no floor binds) + the degenerate sharedLoad ≤ 0.
+    if (slaBandwidth > 0 && sharedLoad > NET_LINK_CAPACITY_UNITS && sharedLoad > 0) {
+      const ownLoad = contract.offeredLoad ?? 0;
+      // The proportional fair share of the over-subscribed link (sharedLoad ≥ ownLoad whenever this
+      // contract loads the sat, so the share is well-defined).
+      const servedBandwidth = (NET_LINK_CAPACITY_UNITS * ownLoad) / sharedLoad;
+      if (servedBandwidth < slaBandwidth) {
+        losses.push({ aId: bridge.satId, bId: bridge.groundId, cause: "out_of_budget", atS: t });
+        return {
+          served: false,
+          path: [contract.region.id, bridge.satId, bridge.groundId],
+          latencyS: bridge.latencyS,
+          bindingConstraint: "bandwidth",
+          losses,
+        };
+      }
     }
   }
 

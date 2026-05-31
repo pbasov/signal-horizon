@@ -50,6 +50,7 @@ import {
   recordNetEarned,
   cloneNetContract,
   escalateLoad,
+  burstyOfferedLoad,
   ESCALATION_SERVE_THRESHOLD,
   ESCALATION_BANDWIDTH_AXIS_THRESHOLD,
 } from "./contract";
@@ -723,22 +724,41 @@ export class NetSession {
    * Two halves, both folded:
    *   1. DIP — an active contract whose `breachSecondsAccum` crossed the near-breach threshold
    *      (NET_NEAR_BREACH_GRACE_FRACTION of the shared grace) while escalation was on: it dipped
-   *      near-breach under risen load. (Reachable because the bandwidth axis bites BINARY — the
-   *      HIGH-1 fix — so the shared grace actually accrues.) Recorded in `nearBreachWitnessed`.
-   *   2. RE-TAME — a witnessed contract back to fully SERVED (`servedFraction == 1.0`): the player
-   *      re-engineered (a parallel path / a net_set_prefer override) and re-tamed it ⇒ the cycle
-   *      is demonstrated, set `act3aReTameWitnessed`. State-gated, not clock-timed. Pure.
+   *      near-breach under risen load. (Reachable because the bandwidth axis bites when a coincident
+   *      peak cuts its served bandwidth below its committed slaBandwidth floor — §4.3 — so the shared
+   *      grace actually accrues.) Recorded in `nearBreachWitnessed`.
+   *   2. RE-TAME — a witnessed contract back to fully SERVED on a SPLIT (un-shared) bridge: it is
+   *      served AND it is the SOLE active loader of its chosen bridge sat — NO other active contract
+   *      routes over the same sat this step. That un-shared state is the STRUCTURAL signature of the
+   *      player's RELIEF (a parallel path + a net_set_prefer override SPLITS the shared sat so the
+   *      corridor rides its OWN link), so the service is DURABLE — not a transient bursty trough where
+   *      both sharing contracts happened to dip at once on a STILL-shared, still-oversubscribed sat.
+   *      So the cycle (your success congests it, you re-engineer, it re-tames) is genuinely FELT, and
+   *      the diurnal load merely dipping into a coincident trough on a shared link can NEVER spuriously
+   *      latch it (the sat is still shared then). State-gated, not clock-timed. Pure.
    */
   private updateReTameWitness(contract: Contract, servedFraction: number): void {
     if (this.act3aReTameWitnessed) return; // once witnessed, latched (idempotent).
     const nearBreach =
       contract.breachSecondsAccum >= NET_NEAR_BREACH_GRACE_FRACTION * NET_BREACH_GRACE_SECONDS;
-    if (nearBreach) this.nearBreachWitnessed.add(contract.id);
-    else if (this.nearBreachWitnessed.has(contract.id) && servedFraction >= ESCALATION_SERVE_THRESHOLD) {
-      // A dipped-then-re-tamed contract: the act3a concept (your success congests it, you
-      // re-engineer, it re-tames) is FELT. Latch the witness (the gate reads it).
-      this.act3aReTameWitnessed = true;
+    if (nearBreach) {
+      this.nearBreachWitnessed.add(contract.id);
+      return;
     }
+    if (!this.nearBreachWitnessed.has(contract.id)) return;
+    if (servedFraction < ESCALATION_SERVE_THRESHOLD) return;
+    // The contract must be the SOLE active loader of its bridge sat — the SPLIT happened (no other
+    // active contract shares its chosen sat this step). That is the structural signature of the
+    // relief; a transient coincident trough on a still-SHARED sat can never satisfy it.
+    const bridgeSat = this.chosenSatByContract.get(contract.id) ?? null;
+    if (bridgeSat === null) return;
+    for (const [otherId, otherSat] of this.chosenSatByContract) {
+      if (otherId === contract.id) continue;
+      const other = this.contractById(otherId);
+      if (other?.state === "active" && otherSat === bridgeSat) return; // still SHARED — not re-tamed.
+    }
+    // A dipped-then-re-tamed contract alone on its split bridge: the act3a concept is FELT. Latch it.
+    this.act3aReTameWitnessed = true;
   }
 
   /**
@@ -888,30 +908,53 @@ export class NetSession {
   }
 
   /**
-   * THE ESCALATION LAW (design §3a / onboarding line 99). For each ACTIVE contract served WELL
-   * the prior step (`lastServedFraction >= ESCALATION_SERVE_THRESHOLD`), grow its `offeredLoad`
-   * by the EXACT CLOSED-FORM LOGISTIC FLOW toward the ceiling over `dtSeconds` (the M2
-   * dynamic-demand semigroup — DT-INVARIANT, bounded, no shock-compounding). Once a served
-   * contract's grown load crosses ESCALATION_BANDWIDTH_AXIS_THRESHOLD, the BANDWIDTH axis is
-   * added to its `activeAxes` (the §4.4 escalation-triggered mask flip — one-line mask add, NO
-   * struct reshape) so the shared-link limit can bite. Pure; no RNG. Folds via offeredLoad +
-   * activeAxes (both already in netStateHash).
+   * THE ESCALATION LAW + THE BURSTY, NON-COINCIDENT LOAD (design §3a / §4.3, onboarding line 99).
+   * Two layers, both deterministic + replay-safe:
+   *
+   *   1. THE SLOW BASELINE GROWTH (the §3a network effect). For each ACTIVE Earth contract served
+   *      WELL the prior step (`lastServedFraction >= ESCALATION_SERVE_THRESHOLD`), grow its
+   *      `loadBaseline` by the EXACT CLOSED-FORM LOGISTIC FLOW toward the ceiling over `dtSeconds`
+   *      (the M2 dynamic-demand semigroup — DT-INVARIANT, bounded, no shock-compounding). A
+   *      breaching/under-served contract does NOT grow its baseline ("demand grows where you serve").
+   *
+   *   2. THE BURSTY REALIZED LOAD (the §4.3 oversubscription tension). EVERY active Earth contract's
+   *      `offeredLoad` is re-derived as the bursty {@link burstyOfferedLoad}(baseline, t, loadPhase,
+   *      noise) — a periodic "diurnal" oscillation (a pure function of t — NO clock) PLUS a bounded
+   *      noise term drawn from the session's SEEDED splitmix64 (NO unseeded random). The PER-CONTRACT
+   *      `loadPhase` makes peaks NON-COINCIDENT: two contracts sharing one sat peak at DIFFERENT t
+   *      (sharing is viable) unless their phases align (the shared link spikes over capacity and one
+   *      tips toward breach — the statistical bet). The load RISES ABOVE and FALLS BELOW slaBandwidth
+   *      over time. Even a breaching contract's load still oscillates (only the BASELINE is frozen).
+   *
+   * Once a served contract's BASELINE crosses ESCALATION_BANDWIDTH_AXIS_THRESHOLD the BANDWIDTH axis
+   * is added to its `activeAxes` (the §4.4 escalation-triggered mask flip — keyed on the SLOW baseline
+   * so it never flickers with the burst). The noise is drawn ONCE per active Earth contract per step,
+   * in `contractList` order (deterministic), so the rng advances identically across runs/restores.
+   * Folds via loadBaseline + offeredLoad + activeAxes + the rng state (all in netStateHash).
    */
-  private stepEscalation(dtSeconds: number): void {
+  private stepEscalation(t: number, dtSeconds: number): void {
     if (dtSeconds <= 0) return;
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
       // ACT 4 FENCE (§8): the escalation/oversubscription economy is an EARTH concept (act3a). The
       // Mars teaser is connectivity-only by SIGHT — NO freshness economy, NO bandwidth axis. Skip
-      // any non-Earth contract so escalation never grows the Mars load / flips its bandwidth axis.
+      // any non-Earth contract so escalation never grows its load / flips its bandwidth axis.
       if (c.region.bodyId !== "earth") continue;
-      // Grow demand only where served WELL the prior step (lastServedFraction set by the m2
-      // transition above) — a breaching/under-served contract does not escalate.
-      if (c.lastServedFraction < ESCALATION_SERVE_THRESHOLD) continue;
-      c.offeredLoad = escalateLoad(c.offeredLoad, dtSeconds);
-      // The §4.4 escalation-triggered BANDWIDTH-axis mask flip (deterministic in step). Add the
-      // axis ONCE the load crosses the threshold; idempotent (Set add of an already-present axis).
-      if (c.offeredLoad >= ESCALATION_BANDWIDTH_AXIS_THRESHOLD && !c.activeAxes.has("bandwidth")) {
+      // (1) Grow the SLOW BASELINE only where served WELL the prior step (a breaching/under-served
+      // contract's baseline is frozen — "demand grows where you serve well"). The bursty oscillation
+      // below still applies to a frozen-baseline contract (the load rises + falls; the baseline does not).
+      if (c.lastServedFraction >= ESCALATION_SERVE_THRESHOLD) {
+        c.loadBaseline = escalateLoad(c.loadBaseline, dtSeconds);
+      }
+      // (2) THE BURSTY REALIZED LOAD: a diurnal oscillation (periodic-of-t) + a bounded SEEDED noise
+      // term, with the per-contract phase so peaks are non-coincident. The noise draw advances the
+      // folded rng deterministically (one draw per active Earth contract per step, in list order).
+      const noise01 = this.rng.nextDouble();
+      c.offeredLoad = burstyOfferedLoad(c.loadBaseline, t, c.loadPhase, noise01);
+      // The §4.4 escalation-triggered BANDWIDTH-axis mask flip — keyed on the SLOW baseline (a
+      // monotone, replay-stable event; never flickers with the burst). Idempotent (Set add of a
+      // present axis). Once on, the contract's committed slaBandwidth floor is enforced (§4.3).
+      if (c.loadBaseline >= ESCALATION_BANDWIDTH_AXIS_THRESHOLD && !c.activeAxes.has("bandwidth")) {
         c.activeAxes = new Set<SlaAxis>([...c.activeAxes, "bandwidth"]);
       }
     }
@@ -1030,7 +1073,7 @@ export class NetSession {
     // — DT-invariant, mirroring the M2 dynamic-demand cadence), grow each well-served contract's
     // offeredLoad logistically toward the ceiling, and flip the bandwidth axis on once it crosses
     // the escalation threshold (the §4.4 escalation-triggered mask add). Gated ON by act3a.
-    if (this.escalationOn) this.stepEscalation(dtSeconds);
+    if (this.escalationOn) this.stepEscalation(t, dtSeconds);
 
     // (2d) THE act3b WITNESSES + THE TRACE (Act 3b / C2). AFTER serve/breach (so the served fractions
     // + the SolveResults are this tick's truth) and only while faults are on. (i) WEATHER-A-FAULT:

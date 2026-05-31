@@ -24,8 +24,11 @@ import type { PreferWeights } from "./contract";
  *     + w_stab·instability_term (w_stab DORMANT, contributes 0);
  *   - the LATENCY axis: a path whose latencyS > slaLatencyS does NOT satisfy a latency-active
  *     contract (bindingConstraint = "latency"); the GEO ceiling felt, a short LEO passes;
- *   - the BANDWIDTH axis: a chosen bridge over capacity (sharedLoad ≥ NET_LINK_CAPACITY_UNITS)
- *     is congested ⇒ binary-unserved (bindingConstraint = "bandwidth") when the axis is active;
+ *   - the BANDWIDTH axis (P4, §4.3): reads the contract's OWN slaBandwidth (the committed floor) —
+ *     a bandwidth-active contract whose PROPORTIONAL served share over an OVER-SUBSCRIBED shared link
+ *     (sharedLoad > capacity ⇒ share = capacity·ownLoad/sharedLoad) falls below its slaBandwidth
+ *     breaches (bindingConstraint = "bandwidth"); a contract alone on its bridge gets its full offered
+ *     load (NOT a flat sharedLoad ≥ capacity cliff);
  *   - congestion RAISES the congestion_term so a `prefer.bw` contract routes AROUND a loaded
  *     sat onto a parallel path;
  *   - BACK-COMPAT: with `prefer` defaults + no `loadBySat`, the pick + verdict are byte-identical
@@ -42,6 +45,8 @@ function contract(opts?: {
   axes?: string[];
   prefer?: PreferWeights;
   slaLatencyS?: number;
+  slaBandwidth?: number;
+  offeredLoad?: number;
 }): RoutableContract {
   return {
     id: "C",
@@ -49,6 +54,8 @@ function contract(opts?: {
     activeAxes: new Set((opts?.axes ?? ["connectivity"]) as never),
     prefer: opts?.prefer,
     slaLatencyS: opts?.slaLatencyS,
+    slaBandwidth: opts?.slaBandwidth,
+    offeredLoad: opts?.offeredLoad,
   };
 }
 
@@ -146,21 +153,59 @@ describe("C1a — the LATENCY axis (the GEO ceiling, felt; activated one at a ti
   });
 });
 
-describe("C1a — the BANDWIDTH axis (the shared-link limit bites BINARY — the HIGH-1 fix)", () => {
-  it("a bandwidth-active contract whose chosen bridge is over capacity is binary-unserved (bindingConstraint='bandwidth')", () => {
+describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (§4.3, not a flat cliff)", () => {
+  it("a bandwidth-active contract whose served share over an OVER-SUBSCRIBED shared link falls below its slaBandwidth breaches (bindingConstraint='bandwidth')", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS]]); // exactly at capacity ⇒ congested.
-    const r = solve(eph, contract({ axes: ["connectivity", "bandwidth"] }), sats, [NET_ACT1_GROUND], 0, undefined, load);
+    // The shared peak is 2× capacity (a coincident spike from two ~equal contracts); this contract's
+    // own offered load is one half (= capacity), so its PROPORTIONAL served share is
+    // capacity·ownLoad/sharedLoad = capacity·cap/(2·cap) = cap/2 = 0.75 — BELOW its 1.0 committed floor.
+    const sharedLoad = NET_LINK_CAPACITY_UNITS * 2;
+    const load = new Map([["SAT-A", sharedLoad]]);
+    const r = solve(
+      eph,
+      contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS }),
+      sats,
+      [NET_ACT1_GROUND],
+      0,
+      undefined,
+      load,
+    );
     expect(r.served).toBe(false);
     expect(r.bindingConstraint).toBe("bandwidth");
-    expect(r.path).not.toBeNull(); // the bridge exists; capacity is what fails.
+    expect(r.path).not.toBeNull(); // the bridge exists; the over-subscribed share is what fails the floor.
     expect(r.losses.length).toBeGreaterThan(0);
   });
 
-  it("UNDER capacity, the same contract is served (the comfortable case)", () => {
+  it("UNDER capacity the same contract is served — the shared link honors its full offered load (≥ its floor)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 0.5]]);
-    const r = solve(eph, contract({ axes: ["connectivity", "bandwidth"] }), sats, [NET_ACT1_GROUND], 0, undefined, load);
+    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 0.5]]); // shared peak under capacity.
+    const r = solve(
+      eph,
+      contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS * 0.5 }),
+      sats,
+      [NET_ACT1_GROUND],
+      0,
+      undefined,
+      load,
+    );
+    expect(r.served).toBe(true);
+    expect(r.bindingConstraint).toBeNull();
+  });
+
+  it("a contract ALONE on its bridge (sole loader) is served even when its load exceeds capacity — served bw = its full offered load ≥ its floor", () => {
+    const sats = [equatorialLeo("SAT-A", 0)];
+    // The bursty load peaks above capacity but the contract is the SOLE loader, so its served
+    // bandwidth = its full offered load (the link honors it; no one else is contending) ≥ its floor.
+    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 1.2]]);
+    const r = solve(
+      eph,
+      contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 0.6, offeredLoad: NET_LINK_CAPACITY_UNITS * 1.2 }),
+      sats,
+      [NET_ACT1_GROUND],
+      0,
+      undefined,
+      load,
+    );
     expect(r.served).toBe(true);
     expect(r.bindingConstraint).toBeNull();
   });
@@ -168,8 +213,24 @@ describe("C1a — the BANDWIDTH axis (the shared-link limit bites BINARY — the
   it("with the bandwidth axis ABSENT, an over-capacity load does NOT breach (the axis is un-enforced)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
     const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 10]]);
-    const r = solve(eph, contract({ axes: ["connectivity"] }), sats, [NET_ACT1_GROUND], 0, undefined, load);
+    const r = solve(
+      eph,
+      contract({ axes: ["connectivity"], slaBandwidth: 1.0, offeredLoad: 5 }),
+      sats,
+      [NET_ACT1_GROUND],
+      0,
+      undefined,
+      load,
+    );
     expect(r.served).toBe(true);
+    expect(r.bindingConstraint).toBeNull();
+  });
+
+  it("a bandwidth-active contract with NO slaBandwidth floor (0) never breaches on the bandwidth axis (no floor binds)", () => {
+    const sats = [equatorialLeo("SAT-A", 0)];
+    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 5]]);
+    const r = solve(eph, contract({ axes: ["connectivity", "bandwidth"] }), sats, [NET_ACT1_GROUND], 0, undefined, load);
+    expect(r.served).toBe(true); // slaBandwidth absent ⇒ 0 ⇒ the axis never binds.
     expect(r.bindingConstraint).toBeNull();
   });
 });
@@ -220,13 +281,17 @@ describe("C1a — E2/E3 are signature-stable (back-compat by no-op defaults)", (
 
   it("E3: resolveTick re-solves when the congestion epoch bumps (a rising load refreshes the cached verdict)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    // Accept on the bandwidth axis; epoch 0 with comfortable load ⇒ served.
-    const c = contract({ axes: ["connectivity", "bandwidth"] });
+    // Accept on the bandwidth axis with a committed floor (slaBandwidth 1.0); the contract's own
+    // offered load is one half of the heavy shared peak below (= capacity). Epoch 0, comfortable
+    // shared load (under capacity) ⇒ served (its full offered share honored ≥ its floor).
+    const c = contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS });
     const lightLoad = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 0.5]]);
     const s0 = resolveTick(eph, c, sats, [NET_ACT1_GROUND], 0, null, undefined, lightLoad, 0);
     expect(s0.result.served).toBe(true);
-    // The load rises over capacity AND the session bumps the epoch ⇒ topoKey flips ⇒ full re-solve
-    // through the cache ⇒ the bandwidth bite refreshes the cached verdict (no stale "served").
+    // The shared peak rises to 2× capacity (a coincident spike) AND the session bumps the epoch ⇒
+    // topoKey flips ⇒ full re-solve through the cache ⇒ this contract's proportional share
+    // (capacity·cap/(2·cap) = 0.75) falls below its 1.0 floor ⇒ the bandwidth bite refreshes the
+    // cached verdict (no stale "served").
     const heavyLoad = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
     const s1 = resolveTick(eph, c, sats, [NET_ACT1_GROUND], 1 / 60, s0, undefined, heavyLoad, 1);
     expect(s1.result.served).toBe(false);

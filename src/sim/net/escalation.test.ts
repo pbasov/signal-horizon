@@ -10,7 +10,7 @@ import {
 } from "../action";
 import { GEO_PARK, LEO_SWEEP } from "./world";
 import { standardLoadout, type NetSat } from "./sat";
-import { NET_REF_LINK_DISTANCE_M, NET_LINK_CAPACITY_UNITS } from "./link-budget";
+import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 import {
   ACT1_CONTRACT_ID,
   ACT2_CONTRACT_ID,
@@ -157,11 +157,18 @@ describe("C1b — escalation tips a shared link to breach (binary), then a paral
     // returned to fully SERVED (the re-tame) ⇒ the cursor advanced past act3a (the act3b fence).
     expect(s.escalationReTamed()).toBe(true);
     expect(s.cursor).toBeGreaterThanOrEqual(3);
-    // After the relief, the shared link is SPLIT: the corridor REGION-2 rides its own short path
-    // under capacity (re-tamed).
+    // After the relief, the shared link is SPLIT: the corridor REGION-2 rides its OWN bridge path
+    // (re-tamed) — it is the SOLE active loader of its chosen sat (the relief's parallel LEO + the
+    // REGION-0 prefer-yield vacated the shared sat). Under the bursty load a SOLO contract's peak can
+    // momentarily exceed NET_LINK_CAPACITY_UNITS while still served (its served bandwidth = its full
+    // offered load ≥ its committed slaBandwidth floor), so the durable signal is the STRUCTURAL split
+    // (sole loader) + fully served — NOT a single-tick load-under-capacity reading.
     expect(r2.lastServedFraction).toBe(1.0);
     const r2Sat = s.lastSolveFor(r2.id)!.path![1];
-    expect(s.loadOnSat(r2Sat)).toBeLessThan(NET_LINK_CAPACITY_UNITS);
+    const sharesR2Sat = s.contracts.some(
+      (c) => c.id !== r2.id && c.state === "active" && s.lastSolveFor(c.id)?.path?.[1] === r2Sat,
+    );
+    expect(sharesR2Sat).toBe(false); // REGION-2 rides its OWN bridge — the shared sat was split.
   }, 60000);
 
   it("the act3a gate does NOT fire before the near-breach dip + re-tame (state-gated, not clock-timed)", () => {
@@ -195,25 +202,27 @@ describe("C1b — escalation grows ONLY a well-served contract, ONLY when gated 
     expect(r0.offeredLoad).toBe(1.0); // …but the load NEVER grew (escalation dormant).
   });
 
-  it("a contract's load FREEZES while it is breaching (served-fraction 0) — demand grows only where you serve well", () => {
+  it("a contract's BASELINE freezes while it is breaching (served-fraction 0) — demand grows only where you serve well", () => {
     // The full arc, sampled just AFTER the bandwidth bite drives the corridor to a sustained breach
     // but BEFORE the relief: while the corridor is unserved (lastServedFraction 0), the escalation
-    // law does NOT grow its offeredLoad (the §3a "where you serve well" rule). We assert the load is
-    // PINNED at the ceiling-or-below value it had reached when it was last served — it does not
-    // climb further while breaching.
+    // law does NOT grow its slow `loadBaseline` (the §3a "where you serve well" rule). The bursty
+    // realized `offeredLoad` still OSCILLATES (the diurnal+noise burst rides on the frozen baseline —
+    // load rises and falls over time even while breaching), but the BASELINE the burst rides on is
+    // PINNED at the value it had reached when last served — it does not climb further while breaching.
     const m = new Map<number, SimAction[]>();
     act3aLog(m);
     const early = drive(24000, m); // mid-breach (after the bite, before the relief).
     const r2early = early.contractById(ACT3A_CONTRACT_ID)!;
     expect(r2early.lastServedFraction).toBe(0); // breaching under the shared-link congestion.
-    const loadAtBreachStart = r2early.offeredLoad;
-    // 1000 more ticks of breach: the load must NOT have grown (it is frozen while unserved).
+    const baselineAtBreachStart = r2early.loadBaseline;
+    // 1000 more ticks of breach: the BASELINE must NOT have grown (it is frozen while unserved); the
+    // realized offeredLoad keeps oscillating (the burst is a pure function of t + phase + seeded noise).
     const m2 = new Map<number, SimAction[]>();
     act3aLog(m2);
     const later = drive(25000, m2);
     const r2later = later.contractById(ACT3A_CONTRACT_ID)!;
     expect(r2later.lastServedFraction).toBe(0); // still breaching (pre-relief).
-    expect(r2later.offeredLoad).toBe(loadAtBreachStart); // FROZEN — no growth while unserved.
+    expect(r2later.loadBaseline).toBe(baselineAtBreachStart); // BASELINE FROZEN — no growth while unserved.
   }, 60000);
 });
 
