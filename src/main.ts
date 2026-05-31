@@ -72,6 +72,9 @@ import {
   type PreviewWorld,
 } from "./sim/net/world";
 import { surfacePointRelative } from "./sim/net/link-budget";
+// §3 — the spin angle θ(t) so the operated-body graticule turns with the body (the SAME convention
+// the surface frame + the orrery render-axis swap use). Pure scalar; render-only consumer.
+import { earthThetaAt } from "./sim/net/frame";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL } from "./sim/net/scenario";
@@ -1000,8 +1003,14 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
   const c = currentNetContract();
+  // §3 — whether the LAUNCH planner is open (drives the orrery's planner-focus close-up).
+  const plannerActive = shell.visibleHosts().includes("net-planner");
   if (c === null) {
     return {
+      // §3 — the operated body even with no contract: the camera focus body, so the orrery still
+      // draws the toy globe sphere (body-agnostic — never hardcoded "earth"; the focus is "earth"
+      // in the toy net frame but this reads whatever the camera focuses).
+      body: netBodySlice(orrery.focusId, t, plannerActive),
       region: null,
       footprints: [],
       availability: null,
@@ -1037,7 +1046,37 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // region, and the SERVED region→sat→ground beam when a launched sat bridges it ("signal reaches").
   const draft = netDraftSlice(t, add, c);
   const servedLink = netServedLinkSlice(c, t, add);
-  return { region, footprints, availability, mars: netMarsSlice(t), draft, servedLink };
+  // §3 — THE OPERATED BODY (body-agnostic): the body the active contract's region sits on, so the
+  // orrery draws it as a real 3D sphere + focuses/zooms it when the planner is open. Read from the
+  // region's bodyId — NEVER hardcoded "earth" (the Act-4 Mars teaser region rides "mars").
+  const body = netBodySlice(c.region.bodyId, t, plannerActive);
+  return { body, region, footprints, availability, mars: netMarsSlice(t), draft, servedLink };
+}
+
+/**
+ * §3 — build the OPERATED-BODY slice for the orrery (body-agnostic): the body's id, its world
+ * centre, its RENDER radius, the spin angle θ(t), and whether the planner is open. The render radius
+ * is the TOY {@link A1_BODY_RADIUS_M} for the toy net frame ("earth") — the SAME radius
+ * surfacePointRelative uses, so the sphere and the surface coverage points share one scale — and the
+ * REAL ephemeris radius for any other body (e.g. the Act-4 Mars teaser). NEVER hardcodes "earth":
+ * the id is passed in (the region's bodyId or the focus body). Pure read of the ephemeris + frame.
+ */
+function netBodySlice(
+  bodyId: string,
+  t: number,
+  plannerActive: boolean,
+): import("./orrery/orrery").NetRenderState["body"] {
+  // The toy net frame's surface math uses A1_BODY_RADIUS_M (300 km) for "earth"; everything else
+  // (the Act-4 Mars region) is on its real ephemeris radius. This keeps the sphere matched to the
+  // surfacePointRelative scale the region/footprint/ground-track world points are built at.
+  const renderRadiusM = bodyId === "earth" ? A1_BODY_RADIUS_M : eph.radiusMeters(bodyId);
+  return {
+    id: bodyId,
+    centerPosM: eph.position(bodyId, t),
+    renderRadiusM,
+    spinThetaRad: earthThetaAt(t),
+    plannerActive,
+  };
 }
 
 /**
@@ -1715,6 +1754,11 @@ if (import.meta.env.DEV) {
     session.step(eph, clock.seconds, DT);
     tickSim(clock.seconds);
   };
+  // §3 — DEV-ONLY orrery introspection for the headless planner-globe verify (tools/verify-planner-
+  // globe.mjs): confirms the operated body is a REAL SphereGeometry (NOT a billboard), reports its
+  // operated body id (body-agnostic — read from the net slice), and the smoothed planner-focus value
+  // (0 normal framing → 1 close-up). Stripped from production builds. Render-only read.
+  (window as unknown as { netGlobeDebug?: () => unknown }).netGlobeDebug = () => orrery.netGlobeDebug();
 }
 
 // --- keyboard ---------------------------------------------------------------

@@ -163,6 +163,28 @@ export interface BuildRenderState {
  * the orrery reads it ONLY while {@link Orrery.netRenderMode} is on. World positions are
  * earth-relative metres in the toy frame (the orrery rebases them like any body). */
 export interface NetRenderState {
+  /**
+   * §3 — THE OPERATED BODY (body-agnostic). The body the active contract's region sits on (its
+   * `region.bodyId`), supplied per-frame so the orrery draws a REAL 3D sphere at THAT body's render
+   * radius + focuses/zooms it when the planner is open. NEVER hardcoded "earth": for the toy net
+   * frame this is "earth" with `renderRadiusM == A1_BODY_RADIUS_M` (the de-squashed toy radius); for
+   * any other body it is that body's id + its real `eph.radiusMeters(bodyId)`. Null only before a
+   * contract exists (then the orrery falls back to the camera focus body). */
+  body: {
+    /** The operated body's ephemeris id (the region's bodyId, or the focus body). */
+    id: string;
+    /** Earth-relative-or-absolute world position (m) of the body centre at this t — the orrery
+     * rebases it like any body (it is just `eph.position(id, t)`). */
+    centerPosM: Vec3;
+    /** The body's RENDER radius (metres): A1_BODY_RADIUS_M for the toy net frame, the real
+     * ephemeris radius otherwise. The de-squash/log-fold turn this into scene units. */
+    renderRadiusM: number;
+    /** The body spin angle θ(t) (radians) so the graticule visibly turns with the body. */
+    spinThetaRad: number;
+    /** True while the LAUNCH PLANNER is open/active — the orrery focuses + zooms this body CLOSE so
+     * coverage reads in detail, then smoothly restores the normal framing when it goes false. */
+    plannerActive: boolean;
+  } | null;
   /** The Act-1 region: its body-fixed surface world point, angular radius, and SERVED state. */
   region: {
     id: string;
@@ -342,6 +364,40 @@ const NET_ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
 const NET_CAMERA_DIST_SCALE = 1.6;
 const NET_CAMERA_FOV_SCALE = 0.7;
 const NET_GLOBE_PX_SCALE = 4.4;
+/** §3 — THE PLANNER CLOSE-UP framing. When the LAUNCH planner is open/active, the camera FOCUSES
+ * the operated body and ZOOMS IN CLOSE so the region + the coverage gap read IN DETAIL (the region
+ * fills a good part of the view, not a sub-pixel dot). On top of the net dolly-in we pull the
+ * distance down + narrow the lens further; the body de-squash + the sphere render radius do the
+ * rest. Render-only; restored smoothly (the same lerp the presets use) the instant the planner
+ * closes. `< 1` dollies in / narrows. */
+const NET_PLANNER_DIST_SCALE = 0.42;
+const NET_PLANNER_FOV_SCALE = 0.78;
+/** §3 — THE PLANNER CLOSE-UP SPHERE FILL (BUG-2 fix). The fixed {@link NET_PLANNER_DIST_SCALE}
+ * dolly framed the toy sphere at ~11px — a speck — because the operated-body SCENE radius (~0.006
+ * units, the de-squashed/log-folded toy radius) is tiny and a fixed dolly cannot know it. Instead,
+ * at the close-up we compute the camera distance DIRECTLY from the sphere's scene radius so the
+ * sphere DIAMETER fills this fraction of the pane HEIGHT, regardless of the de-squash scale:
+ *   the sphere (radius R, at the look-at origin) subtends half-angle asin(R/d); its on-screen
+ *   radius as a fraction of the half-FOV is (R/d)/tan(halfFov). For a diameter == FILL·h the
+ *   on-screen radius == FILL·h/2, i.e. that half-FOV fraction == FILL, so
+ *       d = R / (FILL · tan(halfFov)).
+ * FILL 0.40 ⇒ the sphere fills ~40% of the pane height (a big, central, legible globe). */
+const NET_PLANNER_SPHERE_FILL = 0.4;
+/** §3 — THE OPERATED-BODY SPHERE. A real {@link THREE.SphereGeometry} (NOT a billboard) drawn for
+ * the operated body in net render mode: a dim, dark, 1-bit-styled globe at the body's render radius
+ * with a lat/lon GRATICULE that rotates with the body spin θ(t). The geometry is a UNIT sphere
+ * (radius 1, scaled per-frame to the de-squashed render radius); the graticule is built once over
+ * the unit sphere + spun by θ(t). Body-agnostic: nothing here references "earth" — the id + radius
+ * arrive in the {@link NetRenderState.body} slice. */
+const NET_SPHERE_SEGMENTS = 48;
+/** Graticule density: parallels (lat lines) + meridians (lon lines) over the unit sphere. */
+const NET_GRATICULE_PARALLELS = 6;
+const NET_GRATICULE_MERIDIANS = 12;
+const NET_GRATICULE_SAMPLES = 64;
+/** §3 — surface coverage-disc tessellation: a tangent surface patch (a small spherical cap) is
+ * drawn as a triangle fan of this many segments, oriented to lie ON the sphere surface (not a
+ * camera-facing billboard) so the region / footprint / gap paint flat against the globe. */
+const NET_SURFACE_DISC_SEGMENTS = 40;
 /** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
  * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
 const PICK_TOLERANCE_PX = 26;
@@ -411,6 +467,80 @@ const HALO_FRAG = /* glsl */ `
     float r = length(p);
     if (r > 1.0) discard;
     float bright = pow(max(0.0, 1.0 - r), 2.2);
+    ivec2 ip = ivec2(mod(gl_FragCoord.xy / uCell, 4.0));
+    float threshold = (BAYER[ip.y * 4 + ip.x] + 0.5) / 16.0;
+    if (bright < threshold) discard;
+    fragColor = vec4(uColor, 1.0);
+  }
+`;
+
+/**
+ * §3 — THE OPERATED-BODY SPHERE shaders. A REAL 3D sphere (NOT a billboard): the vertex shader
+ * carries the view-space normal so the fragment shader can Lambert-shade a dim, dark, 1-bit
+ * (Bayer-dithered) globe — the same stipple aesthetic as the body billboards, but on actual
+ * geometry. Kept deliberately dark so the bright coverage overlay pops against it (the planner
+ * "dim the sphere under the region so the overlay pops" cue). The sun direction is a view-space
+ * uniform set per frame (the same value the billboard terminator uses). */
+const SPHERE_VERT = /* glsl */ `
+  out vec3 vNormalView;
+  void main() {
+    vNormalView = normalize(normalMatrix * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const SPHERE_FRAG = /* glsl */ `
+  precision highp float;
+  uniform vec3 uColor;
+  uniform vec3 uSunDirView;
+  uniform float uCell;
+  uniform float uDim;
+  in vec3 vNormalView;
+  out vec4 fragColor;
+  const float BAYER[16] = float[16](
+    0.0, 8.0, 2.0, 10.0,
+    12.0, 4.0, 14.0, 6.0,
+    3.0, 11.0, 1.0, 9.0,
+    15.0, 7.0, 13.0, 5.0
+  );
+  void main() {
+    vec3 N = normalize(vNormalView);
+    float lambert = clamp(dot(N, normalize(uSunDirView)), 0.0, 1.0);
+    // A DIM, DARK globe: a low day-side, a near-black night side, so the bright surface
+    // coverage overlay reads clearly against it. uDim scales the whole thing down.
+    float bright = mix(0.06, 0.42, lambert) * uDim;
+    ivec2 ip = ivec2(mod(gl_FragCoord.xy / uCell, 4.0));
+    float threshold = (BAYER[ip.y * 4 + ip.x] + 0.5) / 16.0;
+    if (bright < threshold) discard;
+    fragColor = vec4(uColor, 1.0);
+  }
+`;
+
+/** §3 — the SURFACE-COVERAGE-PATCH shader. The region / footprint / coverage-gap discs are drawn as
+ * flat triangle-fan caps oriented to lie ON the sphere surface (NOT camera-facing billboards), so
+ * coverage paints flat against the globe. A radial Bayer-dithered fill (bright centre, soft edge)
+ * keeps the 1-bit aesthetic; `uColor` is the high-contrast tint (region bright, gap RED, covered
+ * GREEN, footprint cyan). Position is a local unit disc in the patch's own tangent plane (vUv ∈
+ * [0,1]²); the mesh's matrix orients + scales it onto the surface point. */
+const SURFACE_DISC_FRAG = /* glsl */ `
+  precision highp float;
+  uniform vec3 uColor;
+  uniform float uCell;
+  uniform float uAlpha;
+  in vec2 vUv;
+  out vec4 fragColor;
+  const float BAYER[16] = float[16](
+    0.0, 8.0, 2.0, 10.0,
+    12.0, 4.0, 14.0, 6.0,
+    3.0, 11.0, 1.0, 9.0,
+    15.0, 7.0, 13.0, 5.0
+  );
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;
+    float r = length(p);
+    if (r > 1.0) discard;
+    // Bright interior with a soft dithered rim so the patch reads as a crisp coverage spot.
+    float bright = mix(1.0, 0.35, smoothstep(0.65, 1.0, r)) * uAlpha;
     ivec2 ip = ivec2(mod(gl_FragCoord.xy / uCell, 4.0));
     float threshold = (BAYER[ip.y * 4 + ip.x] + 0.5) / 16.0;
     if (bright < threshold) discard;
@@ -644,6 +774,28 @@ export class Orrery {
    * segment set through the three world points), drawn when a launched sat bridges the region. */
   private netServedLink?: THREE.LineSegments;
 
+  // --- §3 the OPERATED BODY as a real 3D sphere + graticule (body-agnostic) -------------------
+  /** THE OPERATED-BODY SPHERE: a REAL {@link THREE.SphereGeometry} (a UNIT sphere scaled per frame
+   * to the operated body's de-squashed render radius), dim + dark + 1-bit-dithered — NOT the
+   * constant-screen-size billboard. Built once + hidden; shown only in net render mode, positioned +
+   * sized + sun-lit per frame from the {@link NetRenderState.body} slice (the body's id + radius). */
+  private netBodySphere?: THREE.Mesh;
+  /** A faint lat/lon GRATICULE child of the sphere (its own LineSegments over the unit sphere) that
+   * ROTATES with the body spin θ(t) so the globe visibly turns. Built once; spun per frame. */
+  private netBodyGraticule?: THREE.LineSegments;
+  /** Render-only smoothed PLANNER-FOCUS state: how strongly the camera is dollied into the operated
+   * body (0 = normal net framing, 1 = the close-up). Lerps toward the target each frame so opening /
+   * closing the planner glides smoothly (the same feel as a preset change). */
+  private netPlannerFocus = 0;
+  private readonly _netBodyDark = new THREE.Color(0.5, 0.56, 0.7); // dim slate globe tint.
+  private _sphereSunDir = new THREE.Vector3();
+  /** Surface-coverage patch scratch: a basis (centre normal + two tangents) reused to orient a
+   * tangent disc onto the sphere surface without per-frame Vector3 alloc. */
+  private _surfN = new THREE.Vector3();
+  private _surfT = new THREE.Vector3();
+  private _surfB = new THREE.Vector3();
+  private _surfM = new THREE.Matrix4();
+
   constructor(private ctx: OrreryCtx) {
     this.host = document.createElement("div");
     this.host.className = "orrery-host";
@@ -739,17 +891,23 @@ export class Orrery {
     this.selectionMesh.renderOrder = 13; // above everything else so the cue always reads.
     this.scene.add(this.selectionMesh);
 
-    // net/ Act-1 — the region disc (lit/dim) + the launched sat's footprint disc. Both are
-    // dithered halo billboards on the toy globe, built once + hidden; updateNetOverlay shows
-    // + positions + tints them only in net render mode (off-mode they never draw).
-    this.netRegionMesh = this.buildHaloDisc([0.95, 0.6, 0.2]); // seeded amber (UNSERVED).
+    // §3 — THE OPERATED BODY AS A REAL 3D SPHERE (body-agnostic): a dim, dark, 1-bit sphere at the
+    // operated body's render radius + a lat/lon GRATICULE that rotates with the body spin θ(t). Built
+    // once + hidden; shown only in net render mode, positioned/sized/lit per frame from the body slice.
+    this.buildNetBodySphere();
+
+    // net/ Act-1 — the region patch (lit/dim) + the launched sat's footprint patch. Now ORIENTED
+    // SURFACE DISCS (NOT camera-facing billboards): each lies tangent ON the operated-body sphere at
+    // its surface point so coverage paints flat against the globe. Built once + hidden; updateNetOverlay
+    // shows + positions + orients + tints them only in net render mode (off-mode they never draw).
+    this.netRegionMesh = this.buildSurfaceDisc([0.95, 0.6, 0.2]); // seeded amber (UNSERVED).
     this.netRegionMesh.visible = false;
     this.netRegionMesh.renderOrder = 8; // on the globe, under the markers.
     this.scene.add(this.netRegionMesh);
-    // Act-2 — a POOL of cool-cyan footprint discs (one per covering sat). The hand-off render:
+    // Act-2 — a POOL of cool-cyan footprint SURFACE discs (one per covering sat). The hand-off render:
     // with a constellation several sweep so the region stays lit as one slides off + the next on.
     for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
-      const m = this.buildHaloDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
+      const m = this.buildSurfaceDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
       m.visible = false;
       m.renderOrder = 7;
       this.netFootprintMeshes.push(m);
@@ -784,15 +942,18 @@ export class Orrery {
     // + tints them from previewLaunch's truthful outputs only in net render mode (off-mode dark).
     //  (a) the draft footprint disc (warm-cyan), (b) the coverage-gap overlay (a RED still-dark
     //  region disc under a GREEN covered disc), (c) the draft ground-track arc, (d) the served beam.
-    this.netGapDark = this.buildHaloDisc([1.0, 0.32, 0.3]); // RED: the still-dark region slice.
+    // The coverage-gap overlay is now ORIENTED SURFACE DISCS too (flat on the sphere): a RED still-
+    // dark region patch UNDER a GREEN covered patch whose radius scales with previewLaunch's truthful
+    // coveredFraction — so dragging the orbit VISIBLY opens/closes the red gap on the region surface.
+    this.netGapDark = this.buildSurfaceDisc([1.0, 0.28, 0.26]); // RED: the still-dark region slice.
     this.netGapDark.visible = false;
     this.netGapDark.renderOrder = 6; // under the green covered disc + the footprint.
     this.scene.add(this.netGapDark);
-    this.netGapCovered = this.buildHaloDisc([0.45, 1.0, 0.62]); // GREEN: the covered slice.
+    this.netGapCovered = this.buildSurfaceDisc([0.4, 1.0, 0.55]); // GREEN: the covered slice.
     this.netGapCovered.visible = false;
     this.netGapCovered.renderOrder = 7;
     this.scene.add(this.netGapCovered);
-    this.netDraftFootprint = this.buildHaloDisc([0.5, 0.95, 1.0]); // warm-cyan: the live draft footprint.
+    this.netDraftFootprint = this.buildSurfaceDisc([0.5, 0.95, 1.0]); // warm-cyan: the live draft footprint.
     this.netDraftFootprint.visible = false;
     this.netDraftFootprint.renderOrder = 9; // over the gap discs so the pointing reads.
     this.scene.add(this.netDraftFootprint);
@@ -856,6 +1017,117 @@ export class Orrery {
       },
     });
     return new THREE.Mesh(this.quad, mat);
+  }
+
+  /**
+   * §3 — build THE OPERATED-BODY SPHERE (a REAL {@link THREE.SphereGeometry}, NOT a billboard) + its
+   * rotating lat/lon GRATICULE, ONCE. The geometry is a UNIT sphere (radius 1) so it can be scaled
+   * per frame to ANY body's de-squashed render radius (body-agnostic — the id/radius arrive in the
+   * net body slice); a dim/dark Bayer-dithered Lambert shader keeps the 1-bit aesthetic + lets the
+   * bright surface coverage pop. The graticule (parallels + meridians) is a child {@link
+   * THREE.LineSegments} over the unit sphere, spun by θ(t) each frame so the globe visibly turns.
+   */
+  private buildNetBodySphere(): void {
+    const geo = new THREE.SphereGeometry(1, NET_SPHERE_SEGMENTS, NET_SPHERE_SEGMENTS);
+    const mat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: SPHERE_VERT,
+      fragmentShader: SPHERE_FRAG,
+      transparent: true,
+      depthWrite: true, // a SOLID globe: coverage discs sit just above the surface + read on top.
+      uniforms: {
+        uColor: { value: this._netBodyDark.clone() },
+        uSunDirView: { value: new THREE.Vector3(0, 0, 1) },
+        uCell: { value: 2.0 },
+        uDim: { value: 1.0 },
+      },
+    });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.renderOrder = 4; // under all the overlay discs/markers (they paint over the globe).
+    sphere.visible = false;
+    sphere.frustumCulled = false;
+    this.scene.add(sphere);
+    this.netBodySphere = sphere;
+
+    // The graticule: NET_GRATICULE_PARALLELS lat circles + NET_GRATICULE_MERIDIANS lon half-circles,
+    // each sampled as a dashed-ish polyline over the UNIT sphere (a child so it rides the sphere's
+    // transform; we additionally spin it by θ(t) about the body's +Z so it turns with the body).
+    const pts: number[] = [];
+    const seg = NET_GRATICULE_SAMPLES;
+    // ecliptic (x,y,z=north) → three (x, up=z, -y): the SAME axis swap renderInto uses, so the
+    // graticule's +Z spin axis matches the body-fixed θ(t) convention (spin about ecliptic north).
+    const toThree = (x: number, y: number, z: number): [number, number, number] => [x, z, -y];
+    for (let p = 1; p < NET_GRATICULE_PARALLELS; p++) {
+      const lat = -Math.PI / 2 + (Math.PI * p) / NET_GRATICULE_PARALLELS;
+      const cl = Math.cos(lat);
+      const sz = Math.sin(lat);
+      for (let i = 0; i < seg; i++) {
+        const a0 = (2 * Math.PI * i) / seg;
+        const a1 = (2 * Math.PI * (i + 1)) / seg;
+        pts.push(...toThree(cl * Math.cos(a0), cl * Math.sin(a0), sz));
+        pts.push(...toThree(cl * Math.cos(a1), cl * Math.sin(a1), sz));
+      }
+    }
+    for (let mlon = 0; mlon < NET_GRATICULE_MERIDIANS; mlon++) {
+      const lon = (2 * Math.PI * mlon) / NET_GRATICULE_MERIDIANS;
+      const cosL = Math.cos(lon);
+      const sinL = Math.sin(lon);
+      for (let i = 0; i < seg; i++) {
+        const t0 = -Math.PI / 2 + (Math.PI * i) / seg;
+        const t1 = -Math.PI / 2 + (Math.PI * (i + 1)) / seg;
+        pts.push(...toThree(Math.cos(t0) * cosL, Math.cos(t0) * sinL, Math.sin(t0)));
+        pts.push(...toThree(Math.cos(t1) * cosL, Math.cos(t1) * sinL, Math.sin(t1)));
+      }
+    }
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+    const gmat = new THREE.LineBasicMaterial({ color: 0x6f7d9a, transparent: true, opacity: 0.34 });
+    const grat = new THREE.LineSegments(gg, gmat);
+    grat.frustumCulled = false;
+    grat.renderOrder = 5; // over the sphere fill, under the coverage discs.
+    sphere.add(grat); // a child: rides the sphere position+scale; we spin it locally per frame.
+    this.netBodyGraticule = grat;
+  }
+
+  /**
+   * §3 — build a SURFACE-COVERAGE PATCH disc (a flat triangle-fan over a local unit disc in the XY
+   * plane, +Z its normal), tinted `color`. Unlike a billboard, this disc is ORIENTED per frame to lie
+   * tangent ON the operated-body sphere ({@link orientSurfaceDisc}), so the region / footprint / gap
+   * paint flat against the globe and rotate with it. The fragment shader gives a bright dithered fill.
+   */
+  private buildSurfaceDisc(color: [number, number, number]): THREE.Mesh {
+    const n = NET_SURFACE_DISC_SEGMENTS;
+    // A unit disc: a centre vertex + a rim ring, as a triangle fan. UVs map the disc into [0,1]² so
+    // the radial Bayer fill works (centre = (0.5,0.5), rim = unit circle).
+    const verts: number[] = [0, 0, 0];
+    const uvs: number[] = [0.5, 0.5];
+    const idx: number[] = [];
+    for (let i = 0; i <= n; i++) {
+      const a = (2 * Math.PI * i) / n;
+      verts.push(Math.cos(a), Math.sin(a), 0);
+      uvs.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
+      if (i > 0) idx.push(0, i, i + 1);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(verts), 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    geo.setIndex(idx);
+    const mat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: VERT,
+      fragmentShader: SURFACE_DISC_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false, // always paint over the globe (a coverage overlay, never occluded).
+      uniforms: {
+        uColor: { value: new THREE.Color(...color) },
+        uCell: { value: 2.0 },
+        uAlpha: { value: 1.0 },
+      },
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    return mesh;
   }
 
   private buildBodies(): void {
@@ -1022,40 +1294,47 @@ export class Orrery {
       return;
     }
 
-    // The region disc: lit/dim by the served verdict — the make-or-break state change. In
-    // Act 2 this is the SAWTOOTH made visible on the globe: a lone LEO lights green only while
-    // its single footprint is overhead and dips amber the instant it sets; a constellation
-    // holds green because ANOTHER footprint slides on as one slides off (the served verdict
-    // main.ts derives stays true across the hand-off).
-    if (ns.region) {
-      this.renderInto(this._rp, ns.region.centerPosM, focusAbs);
-      region.position.copy(this._rp);
-      // LIT iff SERVED and a footprint is covering (the hand-off holds green as one disc slides
-      // off + the next slides on); DIM the instant the lone footprint sets and served drops.
+    // The OPERATED BODY context (centre + scene radius) the surface discs orient against. Body-
+    // agnostic — the id/radius come from the slice. Without it (no contract yet) discs stay hidden.
+    const body = ns.body;
+    const bodySceneR = body !== null ? this.netBodySceneRadius(body, focusAbs) : 0;
+
+    // The region patch: lit/dim by the served verdict — the make-or-break state change, now an
+    // ORIENTED SURFACE DISC flat on the sphere. In Act 2 this is the SAWTOOTH made visible: a lone
+    // LEO lights green only while its single footprint is overhead and dips amber the instant it
+    // sets; a constellation holds green because ANOTHER footprint slides on as one slides off.
+    if (ns.region && body !== null) {
       const lit = Orrery.regionLit(ns.region.served, ns.footprints.length);
       const mat = region.material as THREE.ShaderMaterial;
       mat.uniforms.uColor.value.copy(lit ? this._netLit : this._netDim);
-      // A served region reads a touch wider + brighter (the lit pulse); the angular radius
-      // maps to a px size off the Earth billboard (a hemisphere ≈ the full disc).
-      const px = this.netDiscPx(ns.region.radiusRad) * (lit ? 1.25 : 1.0);
-      this.sizeBillboard(region, px, worldPerPx);
+      mat.uniforms.uAlpha.value = lit ? 0.95 : 0.7;
+      // A served region reads a touch wider (the lit pulse).
+      this.orientSurfaceDisc(
+        region,
+        ns.region.centerPosM,
+        body.centerPosM,
+        bodySceneR,
+        ns.region.radiusRad * (lit ? 1.1 : 1.0),
+        focusAbs,
+      );
       region.visible = true;
     } else {
       region.visible = false;
     }
 
-    // The footprint discs over the region (the hand-off beat): one cool-cyan wash per covering
-    // sat. Several discs sweep with the constellation so the region stays lit as one slides off
-    // + the next slides on — the sawtooth flattens into continuous SERVED (the Act-2 dopamine).
+    // The footprint patches over the region (the hand-off beat): one cool-cyan surface disc per
+    // covering sat, oriented flat on the sphere at the sat's nadir. Several sweep with a
+    // constellation so the region stays lit as one slides off + the next slides on (the sawtooth).
     let slot = 0;
-    for (const fp of ns.footprints) {
-      if (slot >= this.netFootprintMeshes.length) break;
-      const mesh = this.netFootprintMeshes[slot];
-      this.renderInto(this._rp, fp.centerPosM, focusAbs);
-      mesh.position.copy(this._rp);
-      this.sizeBillboard(mesh, this.netDiscPx(fp.radiusRad), worldPerPx);
-      mesh.visible = true;
-      slot++;
+    if (body !== null) {
+      for (const fp of ns.footprints) {
+        if (slot >= this.netFootprintMeshes.length) break;
+        const mesh = this.netFootprintMeshes[slot];
+        (mesh.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.6;
+        this.orientSurfaceDisc(mesh, fp.centerPosM, body.centerPosM, bodySceneR, fp.radiusRad, focusAbs);
+        mesh.visible = true;
+        slot++;
+      }
     }
     for (let i = slot; i < this.netFootprintMeshes.length; i++) this.netFootprintMeshes[i].visible = false;
 
@@ -1151,16 +1430,6 @@ export class Orrery {
    * function of (served, coveringCount) — no `this`, no DOM. */
   static regionLit(served: boolean, coveringCount: number): boolean {
     return served && coveringCount > 0;
-  }
-
-  /** Map a region/footprint angular radius (radians) to a billboard px size on the toy
-   * globe. The Earth billboard spans the toy globe diameter; a disc of angular radius ψ
-   * spans ≈ sin(ψ) of the globe radius, so its diameter px ≈ EARTH_PX·sin(ψ), floored so a
-   * small region still reads. fix #1 — scaled by {@link NET_GLOBE_PX_SCALE} to track the
-   * magnified toy globe, so the region / footprint / coverage-gap discs stay PROPORTIONAL to
-   * the large hero Earth and read clearly (not sub-pixel) as the player drags. Pure presentation. */
-  private netDiscPx(radiusRad: number): number {
-    return NET_GLOBE_PX_SCALE * Math.max(10, EARTH_BILLBOARD_PX * Math.sin(Math.max(0, radiusRad)));
   }
 
   /**
@@ -1368,30 +1637,35 @@ export class Orrery {
     if (!fp || !dark || !cov || !track || !beam) return;
     const ns = this.netRenderMode ? this.netState : null;
     const draft = ns?.draft ?? null;
+    // The OPERATED BODY context the surface discs orient against (body-agnostic; null ⇒ hide discs).
+    const body = ns?.body ?? null;
+    const bodySceneR = body !== null ? this.netBodySceneRadius(body, focusAbs) : 0;
 
-    // (a) THE DRAFT FOOTPRINT — a warm-cyan wash over the would-be sat's nadir, live as it drags.
-    if (draft?.footprint) {
-      this.renderInto(this._rp, draft.footprint.centerPosM, focusAbs);
-      fp.position.copy(this._rp);
-      this.sizeBillboard(fp, this.netDiscPx(draft.footprint.radiusRad), worldPerPx);
+    // (a) THE DRAFT FOOTPRINT — a warm-cyan SURFACE patch over the would-be sat's nadir, flat on the
+    // sphere, live as the player drags (altitude→LEO shrinks/moves the cap; inclination tilts it).
+    if (draft?.footprint && body !== null) {
+      (fp.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.55;
+      this.orientSurfaceDisc(fp, draft.footprint.centerPosM, body.centerPosM, bodySceneR, draft.footprint.radiusRad, focusAbs);
       fp.visible = true;
     } else {
       fp.visible = false;
     }
 
-    // (b) THE COVERAGE-GAP OVERLAY — the region disc painted RED (still dark) with a GREEN disc on
-    // top whose radius scales with previewLaunch's truthful coveredFraction: drag until green fills
-    // it. coveredFraction is a fraction of the disc AREA, so the green radius ≈ √frac of the full
-    // radius (so 25% covered reads as a half-radius green spot, the honest area mapping).
-    if (draft?.gap) {
-      this.renderInto(this._rp, draft.gap.centerPosM, focusAbs);
-      const fullPx = this.netDiscPx(draft.gap.radiusRad);
-      dark.position.copy(this._rp);
-      this.sizeBillboard(dark, fullPx, worldPerPx);
-      dark.visible = draft.gap.coveredFraction < 0.999; // hide the red entirely once fully covered.
-      cov.position.copy(this._rp);
+    // (b) THE COVERAGE-GAP OVERLAY — the region SURFACE patch painted bright RED (the still-dark
+    // slice) with a GREEN patch on top whose radius scales with previewLaunch's truthful
+    // coveredFraction: dragging the orbit VISIBLY opens/closes the RED gap on the region surface.
+    // coveredFraction is a fraction of the disc AREA, so the green radius ≈ √frac of the full radius
+    // (25% covered reads as a half-radius green spot — the honest equal-area mapping). The whole gap
+    // sits flat on the sphere, oriented at the region's surface point so it rotates with the body.
+    if (draft?.gap && body !== null) {
       const frac = Math.max(0, Math.min(1, draft.gap.coveredFraction));
-      this.sizeBillboard(cov, Math.max(2, fullPx * Math.sqrt(frac)), worldPerPx);
+      // RED: the full region patch (the worst case — all dark). Hidden once fully covered.
+      (dark.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.9;
+      this.orientSurfaceDisc(dark, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad, focusAbs);
+      dark.visible = frac < 0.999;
+      // GREEN: the covered slice — a concentric patch sized √frac of the region radius (equal-area).
+      (cov.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.95;
+      this.orientSurfaceDisc(cov, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad * Math.sqrt(frac), focusAbs);
       cov.visible = frac > 0.001;
     } else {
       dark.visible = false;
@@ -1661,6 +1935,15 @@ export class Orrery {
   // --- per-frame -----------------------------------------------------------
   update(dtWall: number): void {
     const k = 1 - Math.exp(-Math.min(dtWall, 0.05) * 9);
+
+    // §3 — fetch the live net slice UP FRONT (before the camera lerp) so the PLANNER FOCUS can
+    // re-target the camera the same frame the planner opens: when net mode is on + a body slice is
+    // live, FOCUS the operated body (set focusId to body.id ⇒ it sits at the scene origin the camera
+    // looks at) and, while the planner is active, dolly the close-up framing in. Body-agnostic — the
+    // id comes from the slice (the region's bodyId), never hardcoded. Off-mode this is a no-op.
+    this.netState = this.netRenderMode ? (this.ctx.net?.() ?? null) : null;
+    this.applyPlannerFocus(k);
+
     this.cur.az += (this.tgt.az - this.cur.az) * k;
     this.cur.el += (this.tgt.el - this.cur.el) * k;
     this.cur.dist += (this.tgt.dist - this.cur.dist) * k;
@@ -1668,7 +1951,6 @@ export class Orrery {
     this.cur.logK += (this.tgt.logK - this.cur.logK) * k;
     this.cur.logScale += (this.tgt.logScale - this.cur.logScale) * k;
     this.cur.orbitBandM += (this.tgt.orbitBandM - this.cur.orbitBandM) * k;
-    this.applyCamera();
 
     const t = this.ctx.now();
     const focusAbs = this.ctx.eph.position(this.focusId, t);
@@ -1677,17 +1959,40 @@ export class Orrery {
     // points within orbitBandM of the focus body get radially re-radii'd before the
     // log-fold, so near-Earth orbits separate from the disc + sweep. Identity when the
     // band is ~0 (system-scale presets) — see renderInto / writeRenderPoint.
+    // NOTE — refreshed BEFORE applyCamera so the planner close-up can compute its dolly distance
+    // from the operated-body SCENE radius (which depends on this de-squash fold + the focus point).
     this.refreshOrbitScale();
+    this.applyCamera(focusAbs);
 
     // bodies
     const worldPerPx = (2 * Math.tan((this.cur.fov * DEG) / 2)) / this.h;
+    // §3 — the OPERATED BODY is drawn as a real SPHERE in net mode (updateNetBodySphere), so its
+    // flat billboard is hidden to avoid double-drawing the globe (body-agnostic — the id comes from
+    // the live body slice, defaulting to the focus body / "earth" toy frame when none is live yet).
+    const operatedBodyId = this.netState?.body?.id ?? (this._netRenderMode ? "earth" : null);
     for (const spec of BODIES) {
       const mesh = this.bodyMeshes.get(spec.id)!;
-      // fix #1 — in net mode the world is the TOY EARTH only: hide the Sun / Mars / Moon / dataset
-      // sat glyphs so the framing stays a clean toy globe (the Act-4 Mars teaser draws its own
-      // dedicated netMarsNode + relay + crawler, so Mars is still felt there). Cache mode draws all.
+      // fix #1 — in net mode the world is the TOY operated body only: hide the Sun / Mars / Moon /
+      // dataset sat glyphs so the framing stays a clean toy globe (the Act-4 Mars teaser draws its
+      // own netMarsNode + relay + crawler, so Mars is still felt there). Cache mode draws all.
+      // CRITICAL: a glow body (the Sun) owns a SEPARATE additive halo mesh — hide it here too, or
+      // the SUN'S HALO keeps its last cache-mode position/size and additive-blends a giant radial
+      // disc over the whole pane (the "glow that looked like the globe"). The early continue below
+      // for the operated body already hides its halo; this branch covers every OTHER glow body.
       if (this._netRenderMode && spec.id !== "earth") {
         mesh.visible = false;
+        if (spec.glow && this.haloMesh) this.haloMesh.visible = false;
+        // The Mars freshness corona (this.marsHalo) is a SEPARATE additive mesh whose
+        // visibility is set in applyMarsFreshness — which this `continue` skips in net
+        // mode, so it would keep its stale cache-mode visible=true and wash the planner
+        // pane orange. Hide it here every frame (net Act-4 uses netMarsNode instead).
+        this.marsHalo.visible = false;
+        continue;
+      }
+      // The operated body's sphere replaces its billboard in net mode.
+      if (this._netRenderMode && spec.id === operatedBodyId) {
+        mesh.visible = false;
+        if (spec.glow && this.haloMesh) this.haloMesh.visible = false;
         continue;
       }
       mesh.visible = true;
@@ -1758,8 +2063,11 @@ export class Orrery {
     // Fix #4 — the selection reticle over the click-/F-selected target.
     this.updateSelection(t, focusAbs, worldPerPx);
 
-    // net/ Act-1 — the region (lit/dim) + footprint discs, only in net render mode.
-    this.netState = this.netRenderMode ? (this.ctx.net?.() ?? null) : null;
+    // §3 — THE OPERATED BODY as a real 3D sphere + its rotating graticule (body-agnostic), drawn
+    // first so the coverage discs paint over it. Only in net render mode with a body slice live.
+    this.updateNetBodySphere(t, focusAbs, sunAbs, worldPerPx);
+    // net/ Act-1 — the region (lit/dim) + footprint discs, only in net render mode. (netState was
+    // fetched at the top of update() to drive the planner-focus camera.)
     this.updateNetOverlay(focusAbs, worldPerPx);
     // §3 — the LIVE PLANNER DRAFT consequence (footprint + ground-track + coverage-gap overlay) +
     // the served region→sat→ground beam, drawn on the globe as the player drags the orbit.
@@ -1772,6 +2080,137 @@ export class Orrery {
     this.updateLabels(t, focusAbs);
     this.updateCorners();
     this.paintReadout();
+  }
+
+  /**
+   * §3 — THE PLANNER FOCUS (body-agnostic). When net mode is on + a body slice is live, FOCUS the
+   * OPERATED BODY: set {@link Orrery.focusId} to the slice's `body.id` so the body sits at the scene
+   * origin the camera already looks at (the region's bodyId / the click-to-focus body — NEVER
+   * hardcoded "earth"). While the LAUNCH planner is open (`body.plannerActive`), lerp {@link
+   * Orrery.netPlannerFocus} toward 1 (the close-up); when it closes, toward 0 (the normal net
+   * framing) — {@link Orrery.applyCamera} reads it to dolly in / restore smoothly. Render-only.
+   */
+  private applyPlannerFocus(k: number): void {
+    const body = this.netState?.body ?? null;
+    // While the LAUNCH planner is OPEN, FOCUS the operated body so it is centred + the camera frames
+    // it (the region fills the view when zoomed). Only force focus while planning, so a click-to-
+    // focus / preset still controls the camera when the planner is closed. Body-agnostic.
+    if (body !== null && body.plannerActive && this.ctx.eph.hasBody(body.id)) {
+      this.focusId = body.id;
+    }
+    const want = body?.plannerActive ? 1 : 0;
+    // Smooth the dolly with the same exponential lerp the camera frame uses (glides in/out).
+    this.netPlannerFocus += (want - this.netPlannerFocus) * k;
+    if (Math.abs(want - this.netPlannerFocus) < 1e-3) this.netPlannerFocus = want;
+  }
+
+  /**
+   * §3 — draw THE OPERATED BODY AS A REAL 3D SPHERE (body-agnostic) + spin its lat/lon graticule.
+   * The unit {@link THREE.SphereGeometry} is positioned at the body's rebased render point and scaled
+   * to the body's de-squashed RENDER RADIUS in scene units (the same renderInto fold the surface
+   * points use, so the sphere + the coverage discs share one frame). A dim/dark 1-bit Lambert shader
+   * keeps the bright coverage popping. The graticule child is spun by θ(t) about the body's +Z so the
+   * globe VISIBLY turns. Hidden when net mode is off or there is no body slice. No per-frame alloc.
+   */
+  private updateNetBodySphere(t: number, focusAbs: Vec3, sunAbs: Vec3, _worldPerPx: number): void {
+    const sphere = this.netBodySphere;
+    const grat = this.netBodyGraticule;
+    if (!sphere || !grat) return;
+    const body = this.netRenderMode ? this.netState?.body ?? null : null;
+    if (body === null) {
+      sphere.visible = false;
+      return;
+    }
+    // Centre at the body's rebased render point; the body sits at (or near) the scene origin when it
+    // is the focus, but rebase generally so a non-focus operated body still renders correctly.
+    this.renderInto(this._rp, body.centerPosM, focusAbs);
+    sphere.position.copy(this._rp);
+    // The body's RENDER RADIUS in scene units = |render(centre + R·x̂) − render(centre)|: push a
+    // point one render-radius along +x (ecliptic) and measure the folded scene distance. This makes
+    // the sphere exactly match the de-squashed/log-folded scale every surface point lands at.
+    const r = body.renderRadiusM;
+    this.renderInto(
+      this._rp2,
+      [body.centerPosM[0] + r, body.centerPosM[1], body.centerPosM[2]],
+      focusAbs,
+    );
+    const sceneR = this._rp2.distanceTo(this._rp) || 1e-4;
+    sphere.scale.setScalar(sceneR);
+    // Spin the graticule with the body: θ(t) about the body's +Z (= scene up after the axis swap).
+    grat.rotation.set(0, body.spinThetaRad, 0);
+    // Dim the day-side a touch more under the planner close-up so the bright coverage reads.
+    const mat = sphere.material as THREE.ShaderMaterial;
+    mat.uniforms.uDim.value = 1.0 - 0.35 * this.netPlannerFocus;
+    // Sun direction in view space (the same convention the billboard terminator uses).
+    this._sphereSunDir
+      .set(
+        sunAbs[0] - body.centerPosM[0],
+        sunAbs[2] - body.centerPosM[2],
+        -(sunAbs[1] - body.centerPosM[1]),
+      )
+      .normalize()
+      .transformDirection(this.camera.matrixWorldInverse);
+    mat.uniforms.uSunDirView.value.copy(this._sphereSunDir);
+    sphere.visible = true;
+  }
+
+  /**
+   * §3 — orient a SURFACE-COVERAGE PATCH disc to lie tangent ON the operated-body sphere at a surface
+   * point (so the region / footprint / gap paint flat on the globe, not as a billboard). Builds a
+   * tangent basis at the surface point in SCENE space (normal = centre→surface direction; two
+   * orthonormal tangents) and writes the disc's world matrix so its local +Z aligns with the normal
+   * and its unit radius scales to the patch's scene radius. `radiusRad` is the patch's ANGULAR radius
+   * on the body; the scene radius is `bodySceneR · sin(radiusRad)`. Lifts the disc a hair off the
+   * surface so it never z-fights the sphere. Render-only; reuses preallocated scratch.
+   */
+  private orientSurfaceDisc(
+    mesh: THREE.Mesh,
+    surfacePosM: Vec3,
+    bodyCenterPosM: Vec3,
+    bodySceneR: number,
+    radiusRad: number,
+    focusAbs: Vec3,
+  ): void {
+    // Rebase the surface point + the body centre to scene space.
+    this.renderInto(this._surfN, surfacePosM, focusAbs); // reuse _surfN as the surface scene point.
+    const sx = this._surfN.x, sy = this._surfN.y, sz = this._surfN.z;
+    this.renderInto(this._rp2, bodyCenterPosM, focusAbs);
+    // Normal = centre → surface (the outward surface normal in scene space).
+    this._surfN.set(sx - this._rp2.x, sy - this._rp2.y, sz - this._rp2.z);
+    if (this._surfN.lengthSq() < 1e-12) this._surfN.set(0, 1, 0);
+    this._surfN.normalize();
+    // Two tangents orthogonal to the normal (pick a reference not parallel to N).
+    const ref = Math.abs(this._surfN.y) < 0.9 ? this.tmpV.set(0, 1, 0) : this.tmpV.set(1, 0, 0);
+    this._surfT.crossVectors(ref, this._surfN).normalize();
+    this._surfB.crossVectors(this._surfN, this._surfT).normalize();
+    const rad = Math.max(1e-4, bodySceneR * Math.sin(Math.max(0, radiusRad)));
+    // Lift slightly outward so the patch sits just above the surface (no z-fight; depthTest is off
+    // anyway, but the small lift keeps stacked patches in a clean order).
+    const lift = bodySceneR * 0.004;
+    // World matrix: columns = (T·rad, B·rad, N·rad) basis, translation = surface point + N·lift.
+    this._surfM.set(
+      this._surfT.x * rad, this._surfB.x * rad, this._surfN.x * rad, sx + this._surfN.x * lift,
+      this._surfT.y * rad, this._surfB.y * rad, this._surfN.y * rad, sy + this._surfN.y * lift,
+      this._surfT.z * rad, this._surfB.z * rad, this._surfN.z * rad, sz + this._surfN.z * lift,
+      0, 0, 0, 1,
+    );
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(this._surfM);
+    mesh.matrixWorldNeedsUpdate = true; // we set the local matrix directly — refresh the world matrix.
+  }
+
+  /** §3 — the operated body's RENDER radius in scene units (the de-squashed/log-folded scale every
+   * surface point lands at): |render(centre + R·x̂) − render(centre)|. Reused by the coverage discs
+   * so they size against the SAME sphere the body renders at. Returns a small floor for degenerate
+   * inputs. Reuses _rp/_rp2 scratch (caller must not rely on them after). */
+  private netBodySceneRadius(body: NonNullable<NetRenderState["body"]>, focusAbs: Vec3): number {
+    this.renderInto(this._rp, body.centerPosM, focusAbs);
+    this.renderInto(
+      this._rp2,
+      [body.centerPosM[0] + body.renderRadiusM, body.centerPosM[1], body.centerPosM[2]],
+      focusAbs,
+    );
+    return this._rp2.distanceTo(this._rp) || 1e-4;
   }
 
   private updatePacketAndLink(t: number, focusAbs: Vec3, worldPerPx: number): void {
@@ -1997,7 +2436,9 @@ export class Orrery {
     // Redundant channel B: a freshness halo that shrinks/dims to nothing as the
     // copy decays (and vanishes when the cache is empty — f == 0).
     this.marsHalo.position.copy(mesh.position);
-    this.marsHalo.visible = f > 0.001;
+    // Net mode owns its own Mars viz (netMarsNode); this cache-mode freshness corona
+    // is additive and would wash the whole planner pane orange — keep it cache-only.
+    this.marsHalo.visible = !this._netRenderMode && f > 0.001;
     if (this.marsHalo.visible) {
       const halo = this.marsHalo.material as THREE.ShaderMaterial;
       halo.uniforms.uColor.value.copy(this._marsColor);
@@ -2091,18 +2532,41 @@ export class Orrery {
     return w;
   }
 
-  private applyCamera(): void {
+  private applyCamera(focusAbs?: Vec3): void {
     const el = Math.max(-88 * DEG, Math.min(88 * DEG, this.cur.el));
     const ce = Math.cos(el);
+    // §3 — THE PLANNER CLOSE-UP: while the planner is open ({@link Orrery.netPlannerFocus}→1) narrow
+    // the lens + dolly the camera in toward the operated-body close-up, blended by the smoothed focus
+    // so opening/closing glides. The focus body is already at the scene origin (the camera looks at
+    // 0,0,0), so this just frames it tighter. Net-mode scoped (focus is 0 off-mode).
+    const f = this.netPlannerFocus;
+    // The close-up FOV is computed first because the SPHERE-FILL distance below depends on it.
+    const fov = this.cur.fov * (1 - f * (1 - NET_PLANNER_FOV_SCALE));
+    // BUG-2 — FRAME THE OPERATED-BODY SPHERE TO FILL THE PANE. The fixed dolly left the toy sphere a
+    // ~11px speck (scene radius ~0.006 at ~2 units). Instead compute the close-up distance FROM the
+    // sphere's scene radius so its diameter fills ~NET_PLANNER_SPHERE_FILL of the pane height:
+    //   d = R / (FILL · tan(halfFov))   (see NET_PLANNER_SPHERE_FILL). Blend the normal-framing dist
+    // (f→0) toward this fill distance (f→1) so the glide in/out of the close-up stays smooth. Falls
+    // back to the old fixed dolly when no body slice / focus is available (no scene radius to read).
+    const fovDist = this.cur.dist * (1 - f * (1 - NET_PLANNER_DIST_SCALE));
+    let dist = fovDist;
+    const body = this._netRenderMode ? this.netState?.body ?? null : null;
+    if (f > 1e-3 && body !== null && focusAbs) {
+      const sceneR = this.netBodySceneRadius(body, focusAbs);
+      const halfFov = (fov * DEG) / 2;
+      const fillDist = sceneR / (NET_PLANNER_SPHERE_FILL * Math.tan(halfFov));
+      // Blend toward the fill distance by the smoothed planner focus (glides in/out of the close-up).
+      dist = fovDist * (1 - f) + fillDist * f;
+    }
     this.camera.position.set(
-      this.cur.dist * ce * Math.sin(this.cur.az),
-      this.cur.dist * Math.sin(el),
-      this.cur.dist * ce * Math.cos(this.cur.az),
+      dist * ce * Math.sin(this.cur.az),
+      dist * Math.sin(el),
+      dist * ce * Math.cos(this.cur.az),
     );
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(0, 0, 0);
-    if (Math.abs(this.camera.fov - this.cur.fov) > 1e-3) {
-      this.camera.fov = this.cur.fov;
+    if (Math.abs(this.camera.fov - fov) > 1e-3) {
+      this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
     this.camera.updateMatrixWorld();
@@ -2417,6 +2881,57 @@ export class Orrery {
   /** The currently selected asset/body id (click- or F-selected), or null. */
   selected(): string | null {
     return this.selectedId;
+  }
+
+  /**
+   * §3 — DEV-ONLY introspection for the headless planner-globe verify: confirms the operated body is
+   * a REAL {@link THREE.SphereGeometry} (NOT a billboard), reports the operated body id (body-
+   * agnostic, read from the live net slice), its visibility, and the smoothed planner-focus value
+   * (0 normal net framing → 1 close-up). BUG-1/BUG-2 verify: also reports whether the SUN HALO is
+   * hidden in net mode, and PROJECTS the live sphere to measure its ON-SCREEN radius (px + the
+   * fraction of the pane height it fills) so the close-up framing is checkable headlessly. Render-
+   * only read; called only from the DEV window hook.
+   */
+  netGlobeDebug(): {
+    sphereIsSphereGeometry: boolean;
+    sphereVisible: boolean;
+    bodyId: string | null;
+    graticuleSegments: number;
+    plannerFocus: number;
+    focusId: string;
+    sunHaloVisible: boolean;
+    spherePxRadius: number;
+    sphereHeightFraction: number;
+  } {
+    const sphere = this.netBodySphere;
+    const grat = this.netBodyGraticule;
+    // Project the sphere's CENTRE + a point one scaled-radius up onto the screen and measure the
+    // pixel distance ⇒ the on-screen sphere radius. (sphere.scale is the scene radius; +X world is a
+    // good probe since the camera looks at the origin.) NDC y∈[-1,1] maps to h px; the projected
+    // radius as a fraction of the PANE HEIGHT == pxRadius / h.
+    let spherePxRadius = 0;
+    if (sphere && sphere.visible) {
+      const c = this.tmpV.copy(sphere.position).project(this.camera);
+      const edge = this._rp2
+        .copy(sphere.position)
+        .addScaledVector(this._rp.set(1, 0, 0), sphere.scale.x)
+        .project(this.camera);
+      const dx = ((edge.x - c.x) * this.w) / 2;
+      const dy = ((edge.y - c.y) * this.h) / 2;
+      spherePxRadius = Math.hypot(dx, dy);
+    }
+    return {
+      sphereIsSphereGeometry: sphere?.geometry instanceof THREE.SphereGeometry,
+      sphereVisible: sphere?.visible ?? false,
+      bodyId: this.netState?.body?.id ?? null,
+      graticuleSegments: grat ? (grat.geometry.getAttribute("position")?.count ?? 0) / 2 : 0,
+      plannerFocus: this.netPlannerFocus,
+      focusId: this.focusId,
+      sunHaloVisible: this.haloMesh?.visible ?? false,
+      spherePxRadius,
+      // The sphere DIAMETER as a fraction of the pane height (the BUG-2 target: ~0.35–0.45).
+      sphereHeightFraction: this.h > 0 ? (2 * spherePxRadius) / this.h : 0,
+    };
   }
 }
 
