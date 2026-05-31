@@ -45,7 +45,7 @@ import {
   ACT4_MARS_CONTRACT_ID,
   type Region,
 } from "./endpoint";
-import { offerNetContract, NET_DEFAULT_PREFER, type SlaAxis } from "./contract";
+import { offerNetContract, type SlaAxis } from "./contract";
 import type { FaultScript, TraceShortfall } from "./fault-types";
 
 /**
@@ -188,6 +188,10 @@ const ACT1: Beat = {
     session.addContract(
       offerNetContract(ACT1_CONTRACT_ID, NET_ACT1_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity"]),
+        // §7.2 — the equatorial trunk is LATENCY-class (lat-only default weights = the byte-identical
+        // pre-P3 default). It routes the SHORT way; the player later OVERRIDES it to bandwidth-share-
+        // aware (the act3a net_set_prefer relief) so it yields the short corridor to REGION-2.
+        trafficClass: "latency",
       }),
     );
   },
@@ -241,6 +245,11 @@ const ACT2: Beat = {
       offerNetContract(ACT2_CONTRACT_ID, NET_ACT2_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity", "availability"]),
         slaAvail: ACT2_SLA_AVAIL,
+        // §7.2 — the polar coverage metro is AVAILABILITY-class: it leans OFF latency (a low w_lat)
+        // toward stability (w_stab present but DORMANT in M1, contributing 0). It does not chase the
+        // absolute-shortest hop; any bridging polar sat that HOLDS the region serves it (the
+        // continuous-coverage lesson). The class differs from REGION-0's latency-class by sight.
+        trafficClass: "availability",
       }),
     );
   },
@@ -316,7 +325,14 @@ const ACT3A: Beat = {
       offerNetContract(ACT3A_CONTRACT_ID, NET_ACT3A_CORRIDOR_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity", "latency"]),
         slaLatencyS: NET_ACT3A_LOW_LATENCY_S,
-        prefer: { ...NET_DEFAULT_PREFER },
+        // §7.2 — the corridor trunk is BANDWIDTH-class: w_lat KEPT 1 (so an un-congested corridor
+        // still picks the SHORT equatorial LEO to meet its low latency SLA — the GEO ceiling felt),
+        // PLUS a heavy w_bw so once the SHARED equatorial sat's congestion_term rises (the escalation
+        // tips it over capacity) the blend ROUTES REGION-2 AROUND the loaded sat onto the parallel
+        // LEO. So REGION-2 and REGION-0 — the SAME two equatorial sats — route DIFFERENTLY (REGION-0
+        // latency-class clings to the short hop; REGION-2 bandwidth-class abandons the congested one):
+        // demand-shape → topology-shape, the §7.2 thesis, now LIVE instead of inert.
+        trafficClass: "bandwidth",
       }),
     );
   },

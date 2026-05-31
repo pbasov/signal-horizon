@@ -58,6 +58,102 @@ export interface PreferWeights {
   stab: number;
 }
 
+/**
+ * THE TRAFFIC CLASS (§7.2 — "demand-shape produces topology-shape"). What the contract is
+ * carrying, which SETS its DEFAULT {@link PreferWeights} so the SAME solver over the SAME sats
+ * routes a latency contract and a trunk contract DIFFERENTLY. The mapping is {@link PREFER_FOR_CLASS}:
+ *   - "latency"      — latency-critical ⇒ high w_lat ⇒ routes the SHORT way (the LEO-mesh lesson).
+ *   - "bandwidth"    — trunk/aggregation ⇒ high w_bw ⇒ routes the FAT/less-congested way (it leaves
+ *                      a congested shared sat for a parallel path — the §4.3 oversubscription relief).
+ *   - "availability" — coverage ⇒ high w_stab ⇒ would route over links that STAY UP (the Iridium
+ *                      lesson). M1 LOCKED: w_stab is DORMANT (contributes 0), so availability-class
+ *                      differs only by LEANING OFF latency (a low w_lat) — the weight is set, the term
+ *                      stays dormant, so M1 routing/golden are unaffected by the stability term itself.
+ */
+export type TrafficClass = "latency" | "bandwidth" | "availability";
+
+/** The bandwidth-class congestion weight `w_bw` (§7.2). SMALL relative to `w_lat=1` ONLY because of
+ * the TOY frame: the latency_term is sub-millisecond (a short LEO ≈ 2.1 ms vs the GEO ≈ 3.6 ms, a
+ * ~1.5 ms span), while the congestion_term is a dimensionless 0..~1.7 (load/capacity). This value is
+ * tuned so `w_bw·congestion_term` OUTWEIGHS the ~0 latency gap between two SHORT parallel LEOs (so a
+ * congested trunk leaves a loaded LEO for a free one — the §4.3 split) yet stays UNDER the ~1.5 ms
+ * latency gap to the GEO (so it never routes the latency-critical corridor onto the latency-FAILING
+ * GEO). Pinned in cost-blend + net-replay (a clean re-tamed split lands the corridor on the parallel
+ * equatorial LEO, under capacity). Placeholder on the toy latency scale. */
+export const NET_BANDWIDTH_CLASS_W_BW = 4.0e-4;
+
+/**
+ * The §7.2 PER-CLASS DEFAULT prefer weights — `TUNABLE` placeholders on the LOCKED shape (cost is a
+ * physics-blend; the weights are per-traffic-class). Tuned for the M1 toy so two contracts over the
+ * SAME equatorial sats route DIFFERENTLY (demand-shape → topology-shape):
+ *   - latency: lat-only (= {@link NET_DEFAULT_PREFER}) ⇒ picks the SHORTEST path (the byte-identical
+ *     pre-P3 default — a latency-class contract is unchanged from the old hardcoded {1,0,0}).
+ *   - bandwidth: w_lat KEPT 1 (so an UN-congested trunk still picks the short LEO and meets any
+ *     latency SLA — it does NOT abandon a short path for a long, latency-failing one), PLUS a w_bw
+ *     that makes the congestion_term BITE: once a shared sat's congestion_term rises the blend ROUTES
+ *     the trunk AROUND it onto a PARALLEL less-loaded SHORT path (the act3a "split the shared sat",
+ *     now automatic by class). THE SCALE IS THE TOY FRAME: the latency_term is the realized one-way
+ *     light time — SUB-MILLISECOND at the 300 km toy body (a short LEO ≈ 2.1 ms, the parked GEO ≈
+ *     3.6 ms; ~1.5 ms span) — while the congestion_term is a dimensionless 0..~1.7 (load/capacity). So
+ *     w_bw must be SMALL relative to w_lat to stay COMMENSURATE: w_bw·(congestion) must outweigh the
+ *     latency gap between two SHORT parallel LEOs (≈0) so the trunk leaves a congested LEO for a free
+ *     one, yet stay UNDER the latency gap to the GEO (~1.5 ms) so it never jumps to the latency-FAILING
+ *     GEO. {@link NET_BANDWIDTH_CLASS_W_BW} sits inside that band — (in a non-toy latency frame this
+ *     would be an O(1) weight; the tiny value here is purely the toy's sub-ms latency scale).
+ *   - availability: w_lat LEANED DOWN (0.2) + w_stab 1 (DORMANT in M1) ⇒ it does NOT chase the
+ *     absolute shortest hop; it tolerates a slightly-longer-but-equally-up bridge. w_stab's effect is
+ *     0 in M1 (the cost-blend instability term is locked off), so this only differs by the low w_lat.
+ */
+export const PREFER_FOR_CLASS: Readonly<Record<TrafficClass, PreferWeights>> = {
+  latency: { lat: 1.0, bw: 0.0, stab: 0.0 },
+  bandwidth: { lat: 1.0, bw: NET_BANDWIDTH_CLASS_W_BW, stab: 0.0 },
+  availability: { lat: 0.2, bw: 0.0, stab: 1.0 },
+};
+
+/** The DEFAULT prefer for a traffic class (a fresh copy — never aliases the shared table). */
+export function preferForClass(trafficClass: TrafficClass): PreferWeights {
+  return { ...PREFER_FOR_CLASS[trafficClass] };
+}
+
+/**
+ * THE PER-CONTRACT PREFER SLIDER MAPPING (§7.3 / §10 — "the first thing the player tunes"). Maps a
+ * single normalized 0..1 slider position to the three-stop latency ↔ bandwidth ↔ stability control:
+ *   - 0.0  → LATENCY     ({@link PREFER_FOR_CLASS}.latency)     — route the SHORT way.
+ *   - 0.5  → BANDWIDTH   ({@link PREFER_FOR_CLASS}.bandwidth)   — route AROUND congestion (the fat way).
+ *   - 1.0  → STABILITY   ({@link PREFER_FOR_CLASS}.availability)— lean OFF latency (w_stab DORMANT in M1).
+ * Between stops the weights LERP, so dragging visibly + continuously re-biases the cost-blend (the
+ * router re-solves and the path moves). The mapping reuses the per-class weights so the slider, the
+ * classes, and the cost-blend are ONE design surface. Pure. The inverse {@link preferSliderPos} reads
+ * a contract's current weights back to the nearest slider position for the readout. */
+export function preferFromSliderPos(pos: number): PreferWeights {
+  const p = pos < 0 ? 0 : pos > 1 ? 1 : pos;
+  const lerp = (a: number, b: number, f: number): number => a + (b - a) * f;
+  if (p <= 0.5) {
+    const f = p / 0.5; // latency → bandwidth
+    const A = PREFER_FOR_CLASS.latency;
+    const B = PREFER_FOR_CLASS.bandwidth;
+    return { lat: lerp(A.lat, B.lat, f), bw: lerp(A.bw, B.bw, f), stab: lerp(A.stab, B.stab, f) };
+  }
+  const f = (p - 0.5) / 0.5; // bandwidth → stability
+  const A = PREFER_FOR_CLASS.bandwidth;
+  const B = PREFER_FOR_CLASS.availability;
+  return { lat: lerp(A.lat, B.lat, f), bw: lerp(A.bw, B.bw, f), stab: lerp(A.stab, B.stab, f) };
+}
+
+/** Read a contract's current prefer weights back to the nearest 0..1 slider position (the inverse of
+ * {@link preferFromSliderPos}, for the readout). A heuristic on the dominant lever: a non-zero w_bw
+ * (relative to the bandwidth-class default) reads toward the BANDWIDTH stop (0.5); a low w_lat with
+ * w_stab reads toward STABILITY (1.0); lat-only reads LATENCY (0.0). Pure. */
+export function preferSliderPos(prefer: PreferWeights): number {
+  if (prefer.stab > 0 && prefer.lat < 1) return 1.0; // stability-leaning.
+  if (prefer.bw > 0) {
+    // Between latency (bw=0) and bandwidth (bw=class default): position 0..0.5 by the bw fraction.
+    const frac = Math.min(1, prefer.bw / Math.max(NET_BANDWIDTH_CLASS_W_BW, prefer.bw));
+    return 0.5 * frac;
+  }
+  return 0.0; // lat-only ⇒ the LATENCY stop.
+}
+
 /** A region-disc demand contract. ALL THREE SLA axes are present; `activeAxes` gates which
  * the serve/breach evaluator enforces. The state-machine fields mirror m2/contracts.ts. */
 export interface Contract {
@@ -84,8 +180,14 @@ export interface Contract {
    * to decide what to SHOW; the session reads it to decide what the router must satisfy. */
   activeAxes: ReadonlySet<SlaAxis>;
 
-  // --- the router surface (§7.2/§7.3): per-contract prefer weights ---
-  /** Per-contract prefer weights; `stab` present, w_stab dormant in M1. */
+  // --- the router surface (§7.2/§7.3): traffic class + per-contract prefer weights ---
+  /** What the contract CARRIES (§7.2) — sets the DEFAULT {@link prefer} per {@link PREFER_FOR_CLASS}
+   * so demand-shape produces topology-shape (a latency contract and a trunk contract route
+   * DIFFERENTLY over the same sats). The UI shows it; the player can still OVERRIDE `prefer` by hand
+   * (the §7.3 per-contract slider) without changing the class. */
+  trafficClass: TrafficClass;
+  /** Per-contract prefer weights (defaulted from {@link trafficClass}, player-overridable via
+   * net_set_prefer); `stab` present, w_stab dormant in M1. */
   prefer: PreferWeights;
 
   /** € per sim-second at FULL service (accrues while served). */
@@ -217,9 +319,14 @@ export function offerNetContract(
     slaLatencyS?: number;
     slaBandwidth?: number;
     offeredLoad?: number;
+    trafficClass?: TrafficClass;
     prefer?: PreferWeights;
   },
 ): Contract {
+  // The traffic class SETS the default prefer (§7.2). An explicit `prefer` opt still wins (a test /
+  // a pre-set override); otherwise the class's default weights are used. Default class is "latency"
+  // (the lat-only weights = the byte-identical pre-P3 default, so a class-less caller is unchanged).
+  const trafficClass: TrafficClass = opts?.trafficClass ?? "latency";
   return {
     id,
     label: opts?.label ?? region.label,
@@ -229,7 +336,8 @@ export function offerNetContract(
     slaBandwidth: opts?.slaBandwidth ?? NET_DEFAULT_SLA_BANDWIDTH,
     offeredLoad: opts?.offeredLoad ?? 1.0,
     activeAxes: opts?.activeAxes ?? new Set<SlaAxis>(["connectivity"]),
-    prefer: opts?.prefer ? { ...opts.prefer } : { ...NET_DEFAULT_PREFER },
+    trafficClass,
+    prefer: opts?.prefer ? { ...opts.prefer } : preferForClass(trafficClass),
     payPerSecond: opts?.payPerSecond ?? NET_DEFAULT_PAY_PER_SECOND,
     penaltyPerSecond: opts?.penaltyPerSecond ?? NET_DEFAULT_PENALTY_PER_SECOND,
     state: "offered",

@@ -113,7 +113,9 @@ function eqLeoLaunch(subLonDeg: number, tick: number): SimAction {
 // the latency-tolerant trunk (REGION-0) to be bandwidth-share-aware so it YIELDS the short path.
 const TICK_EQ_LEO_1 = 19461;
 const TICK_ACCEPT_R2 = 19521;
-const TICK_RELIEF = 25800;
+// P3: REGION-2 is now BANDWIDTH-class, so the relief lands LATER (after the near-breach dip crosses
+// the 60 s threshold) — matched to the net-replay golden's re-tuned TICK_RELIEF.
+const TICK_RELIEF = 27000;
 
 /** The act1 → act2 → act3a arc through the re-tame (the SAME log the net-replay golden pins). */
 function act3aLog(m: Map<number, SimAction[]>): void {
@@ -137,8 +139,9 @@ describe("C1b — escalation tips a shared link to breach (binary), then a paral
   it("the FULL tame → outgrow → re-tame cycle fires the act3a gate deterministically", () => {
     const m = new Map<number, SimAction[]>();
     act3aLog(m);
-    // Run a touch past the relief so the re-tame latches + the gate fires.
-    const s = drive(27000, m);
+    // Run a touch past the relief so the re-tame latches + the gate fires (P3: relief at 27000; by
+    // ~27200 the bandwidth-class corridor has re-routed onto the parallel equatorial LEO + re-served).
+    const s = drive(27200, m);
 
     // Escalation engaged; the corridor was offered + accepted.
     expect(s.escalationEnabled).toBe(true);

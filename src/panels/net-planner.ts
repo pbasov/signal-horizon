@@ -17,6 +17,8 @@
  *   - the CONSTELLATION button: [data-net="constellation"]  (Act-2 phasing assist + batch launch)
  *   - a preset button:          [data-net="preset"][data-preset-id="GEO_PARK"|"LEO_SWEEP"]
  *   - a DRAFT slider (§3.1):    [data-net="draft"][data-draft="altitude"|"inclination"|"phase"|"raan"]
+ *   - the PREFER slider (§7.3): [data-net="prefer"]  (the per-contract latency↔bandwidth↔stability tune)
+ *   - the PREFER select btn:    [data-net="prefer-select"]  (cycle which active contract is tuned)
  * The selected preset button additionally carries the `.active` class.
  */
 import type { PanelHandle } from "../wm/shell";
@@ -59,6 +61,27 @@ export interface NetContractReadout {
   served: boolean;
   /** € the contract has earned so far (the wallet-rising proof). */
   earnedEur: number;
+}
+
+/**
+ * §7.3 / §10 — THE PER-CONTRACT PREFER CONTROL ("the first thing the player tunes"): the SELECTED
+ * active contract + its traffic CLASS + the latency ↔ bandwidth ↔ stability slider position. The
+ * panel paints a contract selector (cycle through active contracts) + a single range slider; dragging
+ * it appends a net_set_prefer action so the router re-solves THAT contract and its path visibly moves.
+ * Null when no active contract exists (Act 1, before any accept). */
+export interface NetPreferControl {
+  /** The contract being tuned (the net_set_prefer payload carries this id). */
+  contractId: string;
+  /** The contract's glanceable label. */
+  label: string;
+  /** Its traffic CLASS (§7.2 — what set the default weights; shown so the player reads the intent). */
+  trafficClass: "latency" | "bandwidth" | "availability";
+  /** The slider position 0..1 (0 = latency, 0.5 = bandwidth, 1 = stability) for the current prefer. */
+  pos: number;
+  /** The current prefer weights, for the numeric readout (`stab` shown but DORMANT in M1). */
+  prefer: { lat: number; bw: number; stab: number };
+  /** Whether more than one active contract exists (so the SELECT button is meaningful). */
+  canSelect: boolean;
 }
 
 /** The truthful consequence preview of the SELECTED preset draft at the current tick. */
@@ -112,6 +135,9 @@ export interface NetPlannerRenderState {
   /** Act-2 — the phasing assist (null in Act 1 / before an availability demand is live). When
    * present, the CONSTELLATION button is shown ("~N evenly-phased sats — place the set?"). */
   phasing: NetPhasingReadout | null;
+  /** §7.3 / §10 — the per-contract prefer control (null until ≥1 active contract). The §10 "first
+   * thing the player tunes": a per-contract latency ↔ bandwidth ↔ stability slider that re-routes. */
+  prefer: NetPreferControl | null;
 }
 
 /** The button callbacks main.ts wires (the launch/accept appliers + preset cursor). */
@@ -124,6 +150,12 @@ export interface NetPlannerActions {
   onAccept(): void;
   /** Act-2 — fire ONE batch launch of the suggested phased constellation (the §3.4 batch). */
   onConstellation(): void;
+  /** §7.3 / §10 — the player CYCLED which active contract the prefer slider tunes (when 2+ exist). */
+  onSelectPreferContract(): void;
+  /** §7.3 / §10 — the player DRAGGED the prefer slider to a normalized 0..1 position (0 = latency,
+   * 0.5 = bandwidth, 1 = stability); main.ts maps it to weights + appends net_set_prefer, the router
+   * re-solves that contract, and its path visibly re-routes (via the P1 link line on the globe). */
+  onSetPrefer(contractId: string, pos: number): void;
 }
 
 export class NetPlanner implements PanelHandle {
@@ -159,6 +191,16 @@ export class NetPlanner implements PanelHandle {
   private vZeroGap: HTMLElement;
   private vSuggest: HTMLElement;
   private vHeld: HTMLElement;
+
+  // --- §7.3 / §10 PER-CONTRACT PREFER control (the first thing the player tunes), built once ---
+  private preferGroup: HTMLElement;
+  private vPreferContract: HTMLElement;
+  private vPreferClass: HTMLElement;
+  private vPreferWeights: HTMLElement;
+  private preferSelectBtn: HTMLButtonElement;
+  private preferSlider: HTMLInputElement;
+  /** The contract the prefer slider currently tunes (so onSetPrefer carries its id). */
+  private preferContractId: string | null = null;
 
   private worst: "ok" | "warn" | "crit" = "warn";
   private servedNow = false;
@@ -212,6 +254,49 @@ export class NetPlanner implements PanelHandle {
     this.phasingGroup.append(phaseRow);
     this.phasingGroup.style.display = "none";
     this.content.append(this.phasingGroup);
+
+    // GROUP: ROUTING — the §7.3/§10 PER-CONTRACT PREFER control (the FIRST thing the player tunes).
+    // A contract selector (cycle through active contracts) + its traffic CLASS + a single latency ↔
+    // bandwidth ↔ stability slider. Dragging it appends net_set_prefer → the router re-solves THAT
+    // contract → its path visibly re-routes (the P1 link line on the globe moves). Hidden until ≥1
+    // active contract exists. The slider carries the stable [data-net="prefer"] selector for a
+    // headless click/drag test + screenshot.
+    this.preferGroup = group("ROUTING · PREFER (§7.3)");
+    const pRow = el("div", "row");
+    const pLab = el("span", "label");
+    pLab.textContent = "CONTRACT";
+    this.vPreferContract = el("span", "v cyan");
+    pRow.append(pLab, this.vPreferContract);
+    this.preferGroup.append(pRow);
+    this.vPreferClass = valueOf(row(this.preferGroup, "CLASS", "green"));
+    this.vPreferWeights = valueOf(row(this.preferGroup, "WEIGHTS"));
+    // The slider: a labelled lat ↔ bw ↔ stab range. Built like the orbit sliders (0..1000 → 0..1).
+    const sRow = el("div", "net-slider");
+    const sHead = el("div", "row");
+    const sLab = el("span", "label");
+    sLab.textContent = "LAT ↔ BW ↔ STAB";
+    sHead.append(sLab);
+    this.preferSlider = document.createElement("input");
+    this.preferSlider.type = "range";
+    this.preferSlider.min = "0";
+    this.preferSlider.max = "1000";
+    this.preferSlider.step = "1";
+    this.preferSlider.className = "net-range";
+    this.preferSlider.dataset.net = "prefer";
+    this.preferSlider.addEventListener("input", () => {
+      if (this.preferContractId !== null) {
+        this.actions.onSetPrefer(this.preferContractId, Number(this.preferSlider.value) / 1000);
+      }
+    });
+    sRow.append(sHead, this.preferSlider);
+    this.preferGroup.append(sRow);
+    const pBtnRow = el("div", "net-buttons");
+    this.preferSelectBtn = button("SELECT CONTRACT", "prefer-select");
+    this.preferSelectBtn.addEventListener("click", () => this.actions.onSelectPreferContract());
+    pBtnRow.append(this.preferSelectBtn);
+    this.preferGroup.append(pBtnRow);
+    this.preferGroup.style.display = "none";
+    this.content.append(this.preferGroup);
 
     // GROUP: COMMIT — LAUNCH the selected preset, then ACCEPT the contract (close the loop).
     const commit = group("COMMIT");
@@ -320,6 +405,31 @@ export class NetPlanner implements PanelHandle {
       this.constellationBtn.classList.toggle("ready", true);
     } else {
       this.phasingGroup.style.display = "none";
+    }
+
+    // ROUTING · PREFER (§7.3/§10) — the per-contract latency ↔ bandwidth ↔ stability slider. Shown
+    // once ≥1 active contract exists; the slider thumb tracks the selected contract's current prefer
+    // (skipped while the player is actively dragging it so render never fights the drag). Dragging it
+    // appends net_set_prefer → the router re-solves → the path re-routes on the globe (the P1 link).
+    const pc = state.prefer;
+    if (pc) {
+      this.preferGroup.style.display = "";
+      this.preferContractId = pc.contractId;
+      setText(this.vPreferContract, pc.label);
+      setText(this.vPreferClass, `${pc.trafficClass}-class`);
+      setText(
+        this.vPreferWeights,
+        `lat ${pc.prefer.lat.toFixed(2)} · bw ${pc.prefer.bw < 0.01 && pc.prefer.bw > 0 ? pc.prefer.bw.toExponential(0) : pc.prefer.bw.toFixed(2)} · stab ${pc.prefer.stab.toFixed(2)} (dormant)`,
+      );
+      if (document.activeElement !== this.preferSlider) {
+        const next = String(Math.round(pc.pos * 1000));
+        if (this.preferSlider.value !== next) this.preferSlider.value = next;
+      }
+      this.preferSelectBtn.disabled = !pc.canSelect;
+      this.preferSelectBtn.classList.toggle("ready", pc.canSelect);
+    } else {
+      this.preferGroup.style.display = "none";
+      this.preferContractId = null;
     }
 
     // COMMIT — the ACCEPT button is live only while the contract is OFFERED; LAUNCH always.

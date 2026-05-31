@@ -48,6 +48,7 @@ import {
   placeDC as placeDCAction,
   netLaunch as netLaunchAction,
   netAccept as netAcceptAction,
+  netSetPrefer as netSetPreferAction,
   netPlaceCache as netPlaceCacheAction,
   type SimAction,
 } from "./sim/action";
@@ -77,6 +78,9 @@ import { surfacePointRelative, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-bu
 import { earthThetaAt } from "./sim/net/frame";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
+// §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
+// slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
+import { preferFromSliderPos, preferSliderPos } from "./sim/net/contract";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
 import { ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
@@ -226,6 +230,12 @@ const netLiveDebugView = netMode && (NET_QUERY.get("netview") === "net" || NET_Q
 // preset is the FLOOR (§3.1: one-click); it SETS the editable draft below. Dragging the draft is the
 // CEILING. -1 ⇒ no preset matches the current (hand-dragged) draft, so no preset button lights.
 let netPresetCursor = 0;
+
+// §7.3/§10 — the per-contract PREFER control selection: the contract id the latency↔bandwidth↔
+// stability slider currently tunes (null ⇒ auto-pick the first active contract each frame). The
+// SELECT CONTRACT button cycles it across the active contracts; dragging the slider appends
+// net_set_prefer for THIS contract → the router re-solves it → its path re-routes on the globe.
+let netPreferContractId: string | null = null;
 
 // §3.1 — THE EDITABLE PLANNER DRAFT (the make-or-break: presets are the floor, parameters are the
 // ceiling). The player DRAGS altitude / inclination / phase / RAAN; each edit re-runs previewLaunch
@@ -807,7 +817,65 @@ function netPlannerRenderState(): NetPlannerRenderState {
     // (the act-2 beat has emitted it). The assist EMPIRICALLY derives the zero-gap minimum +
     // the viable-but-imperfect suggested set against the SAME router the live world runs.
     phasing: netPhasingReadout(t),
+    // §7.3/§10 — the per-contract prefer control (the first thing the player tunes): the selected
+    // active contract + its class + the latency↔bandwidth↔stability slider position.
+    prefer: netPreferControl(),
   };
+}
+
+/**
+ * §7.3/§10 — build the PER-CONTRACT PREFER control slice (the first thing the player tunes): the
+ * SELECTED active contract (null until ≥1 is accepted), its traffic CLASS + current prefer weights,
+ * and the slider position those weights map to. The selection is `netPreferContractId` when it still
+ * names an active contract, else the FIRST active contract (so the control auto-targets something the
+ * moment a contract goes active). A pure read of the live session. The slider drag (onSetPrefer)
+ * appends net_set_prefer → the router re-solves that contract → its path re-routes (the P1 link line).
+ */
+function netPreferControl(): import("./panels/net-planner").NetPreferControl | null {
+  const active = netSession.contracts.filter((c) => c.state === "active");
+  if (active.length === 0) return null;
+  const chosen =
+    active.find((c) => c.id === netPreferContractId) ?? active[0];
+  return {
+    contractId: chosen.id,
+    label: chosen.label,
+    trafficClass: chosen.trafficClass,
+    pos: preferSliderPos(chosen.prefer),
+    prefer: { lat: chosen.prefer.lat, bw: chosen.prefer.bw, stab: chosen.prefer.stab },
+    canSelect: active.length > 1,
+  };
+}
+
+/** §7.3/§10 — CYCLE which active contract the prefer slider tunes (the SELECT CONTRACT button). */
+function netCyclePreferContract(): void {
+  const active = netSession.contracts.filter((c) => c.state === "active");
+  if (active.length === 0) return;
+  const cur = active.findIndex((c) => c.id === netPreferContractId);
+  const next = active[(cur + 1 + active.length) % active.length] ?? active[0];
+  netPreferContractId = next.id;
+}
+
+/**
+ * §7.3/§10 — SET a contract's prefer weights from the slider position (the first tunable). Maps the
+ * normalized 0..1 position to {lat,bw,stab} via the pure {@link preferFromSliderPos} (0 = latency,
+ * 0.5 = bandwidth, 1 = stability — w_stab DORMANT in M1), records + applies a net_set_prefer action
+ * via the SHARED applier (live == replay), and pins the selection so the readout follows. The router
+ * re-solves THAT contract next step ⇒ its path visibly re-routes (the P1 link line moves on the globe).
+ */
+function netSetPrefer(contractId: string, pos: number): void {
+  netPreferContractId = contractId;
+  const w = preferFromSliderPos(pos);
+  const action = netSetPreferAction(contractId, w.lat, w.bw, w.stab, clock.tick);
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "prefer_set") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "NET-PREFER",
+      value: contractId,
+      msg: `prefer → lat ${w.lat.toFixed(2)} · bw ${w.bw < 0.01 && w.bw > 0 ? w.bw.toExponential(0) : w.bw.toFixed(2)} — the router re-solves; watch ${contractId}'s path re-route on the globe`,
+    });
+  }
 }
 
 /** §3.1 — project ONE draggable draft parameter into the panel's slider shape: its current value
@@ -1834,6 +1902,11 @@ const netPlannerPanel = new NetPlanner({
   // Act-2 — the phasing assist's batch launch (the §3.4 launch-as-a-batch): one press places
   // the suggested phased constellation into a plane. Same shared applier the keys + replay use.
   onConstellation: () => netConstellation(),
+  // §7.3/§10 — the per-contract prefer control (the FIRST thing the player tunes): CYCLE which
+  // active contract is tuned, and DRAG the latency↔bandwidth↔stability slider (→ net_set_prefer →
+  // the router re-solves that contract → its path re-routes on the globe via the P1 link line).
+  onSelectPreferContract: () => netCyclePreferContract(),
+  onSetPrefer: (contractId, pos) => netSetPrefer(contractId, pos),
 });
 
 // net/ M1 — THE ONBOARDING POPUPS (the briefing cards): one dismissible 1-bit info card per CORE
