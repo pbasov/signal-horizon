@@ -776,6 +776,79 @@ body {
 .net-avail .na-bar.good { background: var(--green); }
 .net-avail .na-bar.warn { background: var(--amber); }
 
+/* ---- net/ M1 ONBOARDING popups (the briefing cards — one per core concept) -------------- */
+/* A dismissible INFO CARD, NOT a coach-mark / persistent strip / highlight: one short card per
+   concept, fired off the scenario beat, machine/mission-control toned. The backdrop is a near-
+   transparent click-out catcher over the whole window; the card itself is the SAME 1-bit panel
+   chrome (bright border, dithered titlebar tint, hard edges) the rest of the shell uses. The
+   clock keeps running underneath — this is a transient overlay, never a modal gate on the sim. */
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* over the window-rail (45) + drag overlay (40) + tiles, so the card always reads */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 11, 18, 0.55);
+}
+.onboarding-card {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--line);
+  background-color: var(--bg);
+  background-image: var(--dither-sparse);
+  background-repeat: repeat;
+  padding: 0;
+  /* hard edges only — no radius, no shadow, 1-bit chrome */
+}
+.onboarding-legend {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  background-color: var(--bg-2);
+  background-image: var(--dither-dense);
+  background-repeat: repeat;
+  color: var(--fg-dim);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.onboarding-title {
+  padding: 9px 10px 5px;
+  color: var(--cyan);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.onboarding-body {
+  padding: 0 10px 9px;
+}
+.onboarding-line {
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+.onboarding-dismiss {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--green);
+  background: var(--bg-2);
+  border: 1px solid var(--green);
+  padding: 6px 8px;
+  cursor: pointer;
+  /* hard edges only — 1-bit chrome */
+}
+.onboarding-dismiss:hover {
+  color: var(--bg);
+  background: var(--green);
+}
+
 /* ---- net/ Act-4 MARS frontier teaser readout (the "data arrives OLD" vertigo) ---------- */
 /* A small block pinned over the orrery, lower-left (above the avail meter slot), reading the
    "as of Nm ago" staleness stamp, the desaturating freshness %, and the REAL one-way light

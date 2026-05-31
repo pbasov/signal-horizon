@@ -114,6 +114,10 @@ import { ParsePanel } from "./panels/parse";
 import { Contracts } from "./panels/contracts";
 import { FleetPanel } from "./panels/fleet";
 import { StatusStrip } from "./panels/status";
+// net/ M1 — the ONBOARDING briefing popups (the UX-cold floor): one dismissible 1-bit info card per
+// CORE CONCEPT, fired off the scenario beats (act1 at the cold open; the rest when the cursor reaches
+// them). Render/UI only — no sim math, net mode ONLY. See drainNetOnboarding below for the trigger.
+import { Onboarding, type OnboardingConcept } from "./panels/onboarding";
 import type { ContractReadout, ContractsRenderState, FrameState } from "./types";
 
 applyDither();
@@ -989,6 +993,23 @@ function drainNetAct4Log(): void {
 }
 
 /**
+ * net/ M1 — fire the ONBOARDING briefing card for the CURRENT concept off the scenario cursor
+ * (render-only; the sim owns the truth). The cursor is the index into the M1 arrival sequence
+ * (act1=0, act2=1, act3a=2, act3b=3, act4=4 — see M1_SCENARIO), so the beat that is CURRENT is the
+ * concept just INTRODUCED: act1's card fires at the cold open (cursor 0 at boot, the Act-1 contract
+ * already emitted); the others fire the frame the cursor first reaches them (the prior gate fired +
+ * the new beat emitted). Onboarding.trigger de-dupes — each card shows ONCE per session — and the
+ * card is dismissed via GOT IT / Esc / click-out (the clock never stops). Net mode only (onboarding
+ * is null in cache mode). A pure read of netSession.cursor; never mutates sim state, no golden.
+ */
+const NET_ONBOARDING_CONCEPTS: OnboardingConcept[] = ["act1", "act2", "act3a", "act3b", "act4"];
+function drainNetOnboarding(): void {
+  if (onboarding === null) return; // cache mode (or never net) — no cards.
+  const concept = NET_ONBOARDING_CONCEPTS[netSession.cursor];
+  if (concept !== undefined) onboarding.trigger(concept);
+}
+
+/**
  * net/ A4 — build the ORRERY's per-frame net slice (design §6): the highlighted REGION-0
  * (lit the instant the router reports it SERVED, dim otherwise) + the launched sat's
  * footprint over the region. World positions are the TOY-frame earth-relative surface points
@@ -1606,6 +1627,13 @@ const netPlannerPanel = new NetPlanner({
   onConstellation: () => netConstellation(),
 });
 
+// net/ M1 — THE ONBOARDING POPUPS (the briefing cards): one dismissible 1-bit info card per CORE
+// CONCEPT, mounted over the whole window (the app root) so it reads over every tile + the rail. Net
+// mode ONLY (never constructed in ?mode=cache). Render/UI only — drainNetOnboarding (below) fires
+// the card for the CURRENT concept off the scenario cursor each frame; the card is shown ONCE per
+// session + dismissed via GOT IT / Esc / click-out (the clock keeps running underneath).
+const onboarding = netMode ? new Onboarding(app) : null;
+
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
 // not only when the physical disk occults (which never happens in this eph).
@@ -2032,6 +2060,9 @@ function frame(now: number): void {
   // net/ Act-4 — surface the MARS FRONTIER beat text + the "data arrives old" + the "to be
   // continued" stop into SYSTEM.LOG (edge-triggered, render-only — the cursor stops on act4).
   drainNetAct4Log();
+  // net/ M1 — fire the ONBOARDING briefing card for the current concept off the scenario cursor
+  // (act1 at the cold open; the rest as the cursor reaches them). Shown once each; render-only.
+  drainNetOnboarding();
   // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
   // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
   // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change
