@@ -351,17 +351,29 @@ const ACT3A: Beat = {
 };
 
 /**
- * The MILD-FIRST scripted pair the act3b emit seeds into the fault roll (design §5.1): a
- * Degradation FIRST (recoverable, self-recovers, UNWARNED — teaches headroom; bites whoever cut
- * oversubscription too thin in 3a), THEN a Telegraphed failure (warning + countdown — teaches
- * watch-and-act; the redundant builder sails, the brittle one scrambles). `targetSatId: null` lets
- * the roll pick the LOWEST-orbit live sat (the LEO the low-orbit lever bites) deterministically off
- * the seeded stream; `cause: "lowOrbit"` stamps the live lever the trace names. The session feeds
- * the roll only the queue HEAD and advances it once the prior scripted fault RESOLVES, so the pair
- * is sequenced IN TIME (the Telegraphed countdown begins only after the Degradation self-recovers).
+ * The MILD-FIRST scripted TRIO the act3b emit seeds into the fault roll (design §5.1, the full
+ * spectrum mild→severe). Each fires only after the prior one's lifetime ENDS (the session feeds the
+ * roll only the queue HEAD and advances it once the prior scripted fault leaves the active map), so
+ * the trio is sequenced IN TIME — never fired together. `targetSatId: null` lets the roll pick the
+ * LOWEST-orbit live sat (a LEO the low-orbit lever bites) deterministically off the seeded stream;
+ * `cause: "lowOrbit"` stamps the live lever the trace names.
+ *
+ *   1. DEGRADATION — recoverable capacity haircut, self-recovers, UNWARNED. Teaches HEADROOM; bites
+ *      whoever cut oversubscription too thin in 3a. (Barely felt with redundancy.)
+ *   2. TRANSIENT (P2, audit §5.1) — a BRIEF full OUTAGE that SELF-HEALS (the sat drops, the router
+ *      reactively re-routes around it, then it comes back). Teaches "you need a backup PATH; the
+ *      self-healing reroute proves itself" (the §5 row-2 lesson, previously never fired — `transient`
+ *      was a type-only kind). With redundancy the reroute is invisible-but-real (a re-route flash);
+ *      without it the region blinks out for the outage.
+ *   3. TELEGRAPHED (P2 §5.1 — now with TEETH) — a WARNED failure with a live countdown; the sat
+ *      DROPS PERMANENTLY when it expires (a warned hard failure the player did NOT replace). Teaches
+ *      WATCH-AND-ACT: the redundant builder's constellation bridges around the lost sat (it weathers
+ *      the drop); a brittle single-sat contract would breach. The drop is real now (the session-
+ *      ordering bug that deleted it before the router saw it is fixed).
  */
 export const ACT3B_FAULT_SCRIPTS: FaultScript[] = [
   { kind: "degradation", targetSatId: null, cause: "lowOrbit" },
+  { kind: "transient", targetSatId: null, cause: "lowOrbit" },
   { kind: "telegraphed", targetSatId: null, cause: "lowOrbit" },
 ];
 

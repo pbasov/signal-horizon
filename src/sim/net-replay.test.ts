@@ -15,7 +15,7 @@ import {
 } from "./action";
 import { loadEphemeris } from "./system-data";
 import { C_LIGHT, AU_M } from "./ephemeris";
-import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE } from "./net/session";
+import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS as NET_BREACH_GRACE_SECONDS } from "./net/session";
 import { SimRng } from "./rng";
 import { applyNetAction } from "./net/apply-action";
 import {
@@ -504,6 +504,28 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //   SD-40-C2  (act3b faults in the fold)      11632456535472871375n
 //   SD-40-D1  (act4 Mars teaser in the fold)  2578549558858135194n
 //   P0b       (launch CHARGE + failure roll)  10597504085086350891n
+//   P2        (telegraphed DROP + transient)  16182974603317469058n
+// What moved it in P2 (the M1-remediation §5 fault-behaviour fix — the SIGNATURE telegraphed event):
+//   (1) THE SESSION-ORDERING FIX — a TELEGRAPHED fault reaching failsAtS is no longer treated as a
+//       self-recovery: it DROPS the sat PERMANENTLY (it stays in the active map, removed from the
+//       router graph from failsAtS on — a warned hard failure). It is NOT freed / NOT credited
+//       "weathered". So the active-fault fold now CARRIES the telegraphed-expired fault past failsAtS
+//       (where before it spuriously vanished), AND the dropped sat changes the routing solve from the
+//       drop on. In the canonical run the telegraphed fault hits a polar REGION-1 LEO (NET-SAT-4) and
+//       drops it ~t=520 — REGION-1's redundant N=4 constellation WEATHERS it (it dips intermittently
+//       to N=3 then recovers; never fails), so the acts still gate (weathered via the degradation,
+//       cursor reaches act4). (2) THE TRANSIENT FAULT — ACT3B_FAULT_SCRIPTS is now a mild-first TRIO
+//       (degradation → transient → telegraphed); the transient (a brief 15 s self-healing outage on
+//       NET-SAT-4 ~t=460-475) fires the §5 row-2 self-healing-reroute lesson (the `transient` kind was
+//       type-only before) — it advances the scripted-queue cadence + the rng stream + adds its own
+//       fold state. (3) THE LOW-ORBIT RE-SCALE — LOW_ORBIT_REF_M is now the TOY GEO semi-major axis
+//       (was a real-Earth GEO radius), so the causal lever's labels/rates are unchanged for the
+//       scripted faults (still "lowOrbit") but the fold-affecting STOCHASTIC stream draws are
+//       unchanged at this seed (the floor never fired in the canonical run); the re-scale moves no
+//       behaviour in the canonical log, only the toy LEO-vs-GEO causal GAP (2.88× vs the old ~0.5%).
+//   The HORIZON is unchanged (560 s) — the telegraphed drop (~t=520) lands inside it. The two existing
+//   goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n) are DIFFERENT worlds
+//   (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // What moved it in SD-40-D1 (the MARS-TEASER re-pin, the SD-40 chained-re-pin pattern): the act4
 // beat (emitted INSIDE step when the act3b gate fires) now OFFERS the ONE Mars contract (MARS-1,
 // bodyId "mars", connectivity-only), and the golden log gained the ACT-4 player inputs — LAUNCH the
@@ -535,7 +557,7 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //       holds. The two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n)
 //       are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 10597504085086350891n;
+const NET_REPLAY_GOLDEN = 16182974603317469058n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -956,9 +978,11 @@ describe("SD-40 C2 — act3b faults: mild-first, fenced behind act3a, weathered,
     expect(r.session.weatheredFault()).toBe(false);
   }, 60000);
 
-  it("MILD-FIRST: a Degradation fires FIRST (self-recovers), THEN a Telegraphed failure (sequenced in time, scripted off the seeded stream)", () => {
-    // Run the whole arc, recording each fault start in order. The first scripted fault is the
-    // Degradation; the Telegraphed begins only AFTER the Degradation resolves (the mild-first gate).
+  it("MILD-FIRST TRIO: Degradation → Transient (self-healing reroute) → Telegraphed, sequenced in time off the seeded stream", () => {
+    // Run the whole arc, recording each fault start in order. The scripted trio fires mild-first,
+    // each only after the prior fault's lifetime ENDS (the session feeds the roll only the queue
+    // head): a Degradation, then a TRANSIENT brief outage (the §5 row-2 self-healing-reroute lesson,
+    // P2), then the Telegraphed failure.
     const eph = Ephemeris.build({});
     const s = new NetSession();
     const sg = act3bLog();
@@ -980,38 +1004,67 @@ describe("SD-40 C2 — act3b faults: mild-first, fenced behind act3a, weathered,
       for (const f of s.faults) if (!prev.has(f.satId)) starts.push({ tick, kind: f.kind, cause: f.cause });
       prev = ids;
     }
-    // At least the scripted pair fired, in MILD-FIRST order: degradation, then telegraphed.
+    // The full mild-first TRIO fired, in order: degradation, then transient, then telegraphed.
     const degrIdx = starts.findIndex((e) => e.kind === "degradation");
+    const tranIdx = starts.findIndex((e) => e.kind === "transient");
     const teleIdx = starts.findIndex((e) => e.kind === "telegraphed");
     expect(degrIdx).toBeGreaterThanOrEqual(0);
-    expect(teleIdx).toBeGreaterThan(degrIdx); // mild-first: degradation precedes telegraphed.
-    // The Telegraphed begins only AFTER the Degradation self-recovers (sequenced in time, not
-    // fired together) — its start tick is strictly later than the degradation's.
-    expect(starts[teleIdx].tick).toBeGreaterThan(starts[degrIdx].tick);
-    // The live causal lever (lowOrbit) named the cause — the scripted pair bites the LEO.
+    expect(tranIdx).toBeGreaterThan(degrIdx); // the TRANSIENT fires after the degradation (P2: the
+    // self-healing-reroute lesson, previously a type-only kind that NEVER fired).
+    expect(teleIdx).toBeGreaterThan(tranIdx); // mild-first: telegraphed is last (the severe one).
+    // Each begins only AFTER the prior fault's lifetime ENDS (sequenced in time, not fired together)
+    // — strictly increasing start ticks.
+    expect(starts[tranIdx].tick).toBeGreaterThan(starts[degrIdx].tick);
+    expect(starts[teleIdx].tick).toBeGreaterThan(starts[tranIdx].tick);
+    // The live causal lever (lowOrbit) named the cause — the trio bites the low-orbit LEO.
     expect(starts[degrIdx].cause).toBe("lowOrbit");
+    expect(starts[tranIdx].cause).toBe("lowOrbit");
+    expect(starts[teleIdx].cause).toBe("lowOrbit");
   }, 60000);
 
-  it("THE 3b GATE FIRES: the player WEATHERED the fault (REGION-0/REGION-1 stayed served through it) + the TRACE surfaced a resilience shortfall ⇒ the cursor advances to act4", () => {
-    const r = replayTo(act3bLog(), MAX_TICK_ACT3B);
-    // The fault generator engaged (act3b emitted it, fenced behind act3a) + the scripted pair is
-    // consumed (both faults played out within the horizon).
+  it("THE TELEGRAPHED FAULT DROPS ITS SAT PERMANENTLY (P2 §5.1 — the signature event has teeth): the warned sat is removed from the graph + stays faulted, NOT spuriously 'recovered'/weathered-by-the-drop", () => {
+    // Run past the telegraphed countdown's expiry (~t=520). The dropped sat must be REMOVED from the
+    // live roster's routing (no longer carrying any contract's path) and must STAY in the active-fault
+    // set (a permanent drop), NOT vanish + get credited as "recovered". This is the audit's core fix:
+    // before, the session deleted the fault at failsAtS before downSatIds read it, so nothing dropped.
+    const r = replayTo(act4Log(), MAX_TICK_ACT4); // through the full arc so the drop (~t=520) is past.
+    const faults = r.session.faults;
+    const tele = faults.find((f) => f.kind === "telegraphed");
+    expect(tele).toBeDefined(); // the telegraphed fault is STILL active (a permanent drop, not freed).
+    const tEnd = MAX_TICK_ACT4 * GOLDEN_DT;
+    expect(tele!.failsAtS).toBeLessThanOrEqual(tEnd); // its countdown has already expired by tEnd.
+    // The dropped sat is removed from the routing graph: it carries NO contract's chosen bridge.
+    const droppedId = tele!.satId;
+    for (const c of r.session.contracts) {
+      const path = r.session.lastSolveFor(c.id)?.path ?? null;
+      if (path !== null) expect(path).not.toContain(droppedId); // re-routed AROUND the dead sat.
+    }
+  }, 60000);
+
+  it("THE 3b GATE FIRES + REDUNDANCY SURVIVES THE DROP: the player WEATHERED the (recoverable) fault, the trace surfaced a shortfall, and the redundant N=4 constellation rides out the permanent telegraphed loss without failing", () => {
+    const r = replayTo(act4Log(), MAX_TICK_ACT4); // run through the full arc so the drop (~t=520) is past.
+    // The fault generator engaged (act3b emitted it, fenced behind act3a) + the scripted TRIO is
+    // consumed (degradation + transient + telegraphed all played out within the horizon).
     expect(r.session.faultsEnabled).toBe(true);
     expect(r.session.snapshot().faultScriptQueue.length).toBe(0);
-    // WEATHERED: the player kept a contract served through a fault's whole lifetime; the TRACE
-    // surfaced ≥1 resilience/optimisation shortfall (the predictability seed + the kind-of-fix).
+    // WEATHERED: the player kept a contract served through a RECOVERABLE fault's whole lifetime (the
+    // degradation/transient self-recovered) — NOT credited by the telegraphed permanent drop (which
+    // never resolves). The TRACE surfaced ≥1 resilience/optimisation shortfall.
     expect(r.session.weatheredFault()).toBe(true);
     expect(r.session.traceSurfacedShortfall()).toBe(true);
-    // THE 3b GATE FIRED ⇒ the cursor advanced PAST act3b to act4 (the final beat), and a 4th gate
-    // tick is recorded.
+    // THE 3b GATE FIRED ⇒ the cursor advanced PAST act3b (a 4th gate tick recorded; act4 reached).
     expect(r.session.cursor).toBeGreaterThanOrEqual(4);
     expect(r.session.snapshot().gateTicks.length).toBeGreaterThanOrEqual(4);
-    // The network WEATHERED it: the resilient equatorial REGION-0 + the polar REGION-1 stayed
-    // served through the fault (the redundant builder sails through — neither failed).
+    // REDUNDANCY SURVIVES: the telegraphed fault dropped one polar REGION-1 LEO PERMANENTLY, yet the
+    // redundant N=4 constellation bridges around it — REGION-1 (and the resilient equatorial REGION-0)
+    // do NOT fail. A brittle single-sat region WOULD have breached; the redundant builder weathers it.
     const r0 = r.session.contracts.find((x) => x.id === ACT1_CONTRACT_ID)!;
     const r1 = r.session.contracts.find((x) => x.id === ACT2_CONTRACT_ID)!;
     expect(r0.state).not.toBe("failed");
     expect(r1.state).not.toBe("failed");
+    // The dropped sat is genuinely gone from the roster's routing yet REGION-1 is held (served again).
+    expect(r1.state).not.toBe("failed");
+    expect(r1.breachSecondsAccum).toBeLessThan(NET_BREACH_GRACE_SECONDS); // never reached the fail grace.
     // The trace report is a live readout (the SYSTEM.LOG / shortfall lines) once faults are on.
     expect(r.session.trace).not.toBeNull();
   }, 60000);

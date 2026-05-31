@@ -749,8 +749,10 @@ export class NetSession {
    *   1. roll {@link rollFaults} off the seeded {@link SimRng} (the M2 launch-failure-roll pattern,
    *      NO new seed / NO new action) with the active faults + the live roster + the scripted
    *      mild-first queue (scripted-first: the Degradation precedes the Telegraphed failure);
-   *   2. CLEAR every resolved fault (a degradation/transient self-recovered, a telegraphed
-   *      countdown expired into a drop) and ADD every newly-started fault;
+   *   2. CLEAR every SELF-RECOVERED fault (a degradation/transient that came back) and ADD every
+   *      newly-started fault. A TELEGRAPHED fault that expired is NOT in `resolved` (P2 §5.1) — it
+   *      stays in the active map as a PERMANENT drop, so {@link downSatIds} keeps removing its sat
+   *      from the router graph (a warned failure the player did not replace is a real loss);
    *   3. consume the scripted queue head when its scripted fault actually fired this step (so the
    *      pair fires in order across steps, never re-queued).
    * The active fault map folds (sorted by satId); the rng is already folded. Pure off the stream.
@@ -767,9 +769,12 @@ export class NetSession {
       this.faultScriptQueue.length > 0 && this.scriptedHeadReady() ? [this.faultScriptQueue[0]] : [];
     const prev = [...this.activeFaults.values()];
     const result = rollFaults(prev, this.satList, t, dt, this.rng, headQueue);
-    // CLEAR resolved faults (the session frees the sat — recovered, or dropped into a fail). A
-    // fault that RESOLVES on a sat the network kept SERVING THROUGH (servedThroughFault, set by the
-    // prior step's witness) was WEATHERED — the player rode through its whole lifetime. Latch it.
+    // CLEAR SELF-RECOVERED faults (the session frees the sat — a degradation/transient that came
+    // back). A fault that SELF-RECOVERS on a sat the network kept SERVING THROUGH (servedThroughFault,
+    // set by the prior step's witness) was WEATHERED — the player rode through its whole lifetime,
+    // start → recover. Latch it. P2 (§5.1): `result.resolved` now EXCLUDES a telegraphed-expired
+    // fault — its sat dropped PERMANENTLY (it stays in activeFaults, removed from the graph by
+    // downSatIds), so a telegraphed failure is NEVER credited as "weathered/recovered" (the old bug).
     for (const satId of result.resolved) {
       this.activeFaults.delete(satId);
       if (this.servedThroughFault.delete(satId)) this.faultWeathered = true;

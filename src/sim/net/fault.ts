@@ -56,7 +56,7 @@ import {
   causalFaultRatePerS,
   causalInputForSat,
   lowOrbitMultiplier,
-  faultResolvedAt,
+  faultSelfRecoveredAt,
 } from "./fault-types";
 
 /**
@@ -157,11 +157,15 @@ export function stochasticCauseForSat(sat: NetSat, t: number): FaultCause {
  * `sats` roster, the sim-time `t` (END of the step), the elapsed `dt`, and an optional scripted
  * mild-first `queue`, it returns the per-step DELTA:
  *   - `started`  — the faults that newly fired this step (SCRIPTED-FIRST, then STOCHASTIC).
- *   - `resolved` — the satIds whose ACTIVE fault RESOLVED this step (a degradation/transient
- *     self-recovered, or a telegraphed countdown expired into a drop — {@link faultResolvedAt}).
+ *   - `resolved` — the satIds whose ACTIVE fault SELF-RECOVERED this step (a degradation/transient
+ *     reached its `recoversAtS` and the sat comes BACK — {@link faultSelfRecoveredAt}). A TELEGRAPHED
+ *     fault reaching `failsAtS` is NOT here (the P2 §5.1 fix): its sat dies PERMANENTLY, so the fault
+ *     stays ACTIVE (the session keeps removing the sat from the graph) and is never "freed".
  *
  * THE ORDER (load-bearing for determinism + the mild-first guarantee):
- *   1. RESOLVE first (no rng): scan `prevFaultStates`, collect every fault resolved at `t`.
+ *   1. RESOLVE first (no rng): scan `prevFaultStates`, collect every fault that SELF-RECOVERED at
+ *      `t`. A telegraphed countdown that EXPIRED is NOT collected — it stays active as a permanent
+ *      drop (so `downSatIds` keeps seeing it), but it still keeps its sat off the new-fault passes.
  *   2. SCRIPTED faults next: for each {@link FaultScript} in `queue` (in order), pick its target
  *      (the explicit `targetSatId`, else a deterministic roster pick off the rng) and START it.
  *      Each scripted fault DRAWS exactly ONE double from the rng (advancing it deterministically)
@@ -190,14 +194,20 @@ export function rollFaults(
   const started: FaultState[] = [];
   const resolved: string[] = [];
 
-  // (1) RESOLVE — no rng. A degradation/transient that reached recoversAtS, or a telegraphed
-  // countdown that reached failsAtS, RESOLVES (the session clears it / drops the sat). A sat
-  // with a resolving fault is freed to be re-faulted in later steps, but NOT re-faulted THIS
-  // step (it stays in `faultedNow` below so the scripted/stochastic passes skip it).
+  // (1) RESOLVE — no rng. A degradation/transient that reached recoversAtS SELF-RECOVERS: the sat
+  // comes back and the session frees it (pushed to `resolved`). A sat freed by self-recovery is NOT
+  // re-faulted THIS step (it stays in `faultedNow` so the scripted/stochastic passes skip it).
+  //
+  // P2 (§5.1, the audit fix): a TELEGRAPHED countdown that reached failsAtS does NOT self-recover —
+  // its sat DROPS PERMANENTLY (a warned hard failure). It is NOT pushed to `resolved` (so the session
+  // never deletes it / never spuriously latches "weathered" / never logs "RECOVERED"); it stays in
+  // `faultedNow` so the sat — now permanently down — takes no new fault. The session keeps it in the
+  // active map, where `faultRemovesSatAt(f, t)` (t ≥ failsAtS) removes the sat from the router graph
+  // from failsAtS on. So a telegraphed failure the player did NOT replace is a real, permanent loss.
   const faultedNow = new Set<string>();
   for (const f of prevFaultStates) {
-    if (faultResolvedAt(f, t)) resolved.push(f.satId);
-    else faultedNow.add(f.satId); // still active ⇒ this sat cannot take a new fault this step.
+    if (faultSelfRecoveredAt(f, t)) resolved.push(f.satId); // self-heal ⇒ free the sat.
+    else faultedNow.add(f.satId); // still active (incl. a telegraphed-expired permanent drop) ⇒ no new fault.
   }
 
   // (2) SCRIPTED faults (the mild-first pair the act3b beat seeds). Each consumes ONE rng draw

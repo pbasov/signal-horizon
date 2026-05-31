@@ -83,6 +83,9 @@ import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
 import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
+// net/ Act-3b P2 — the LIVE telegraphed countdown + the permanent-drop predicate (the §5 watch-and-
+// act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
+import { telegraphedCountdownRemainingS, faultRemovesSatAt } from "./sim/net/fault-types";
 import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -909,6 +912,15 @@ const netShortfallSeen = new Set<string>();
 /** P1 (§7.5) — the set of predictability loss-stamps ALREADY surfaced (keyed aId|bId|cause|atS), so
  * each "link X↔Y lost: cause at T" stamp (renderLossStamp, previously dead code) is logged once. */
 const netLossSeen = new Set<string>();
+/** P2 (§5.3) — the LIVE telegraphed countdown: the last whole-`NET_COUNTDOWN_BUCKET_S`-second bucket
+ * already surfaced per faulting sat, so the countdown re-fires as it TICKS DOWN (a visibly updating
+ * "fails in Ns", not a one-shot line at appearance) without per-frame spam. */
+const netCountdownBucket = new Map<string, number>();
+/** P2 (§5.1) — the telegraphed sats whose countdown has EXPIRED (the sat DROPPED permanently), so the
+ * one-shot "FAILED — sat lost" line fires once on the drop edge (the warned hard failure). */
+const netDroppedSeen = new Set<string>();
+/** The cadence (sim-seconds) the live telegraphed countdown re-surfaces at as it ticks down. */
+const NET_COUNTDOWN_BUCKET_S = 5;
 function drainNetFaultLog(): void {
   if (!netMode || !netSession.faultsEnabled) return;
   const t = clock.seconds;
@@ -916,7 +928,7 @@ function drainNetFaultLog(): void {
   for (const f of netSession.faults) {
     live.add(f.satId);
     // NEW fault this frame ⇒ one SYSTEM.LOG line (the §5.3 fault face: the amber-pulse degradation
-    // + est. recovery, or the telegraphed watch-and-act countdown).
+    // + est. recovery, or the telegraphed watch-and-act countdown's first warning).
     if (!netFaultSeen.has(f.satId)) {
       log.append({
         tSim: t,
@@ -926,8 +938,45 @@ function drainNetFaultLog(): void {
         msg: renderFaultLine(f, t),
       });
     }
+    // P2 (§5.3) — THE LIVE TICKING COUNTDOWN for a PENDING telegraphed fault. While the countdown is
+    // still running (sat not yet dropped), re-surface "fails in Ns" each NET_COUNTDOWN_BUCKET_S as it
+    // ticks down — a visibly updating watch-and-act readout, NOT a one-shot line at appearance. The
+    // orrery also pulses the node amber (netBuildRenderState's `faulting` flag). When the countdown
+    // expires the sat DROPS permanently (the P2 §5.1 fix) — announce the loss ONCE on the drop edge.
+    if (f.kind === "telegraphed") {
+      const dropped = faultRemovesSatAt(f, t);
+      if (!dropped) {
+        const remaining = telegraphedCountdownRemainingS(f, t);
+        const bucket = Math.ceil(remaining / NET_COUNTDOWN_BUCKET_S);
+        if (netCountdownBucket.get(f.satId) !== bucket) {
+          netCountdownBucket.set(f.satId, bucket);
+          log.append({
+            tSim: t,
+            sev: "warn",
+            entity: f.satId,
+            value: `FAILS IN ${remaining.toFixed(0)}s`,
+            msg: `${f.satId} telegraphed fault (${f.cause}): fails in ${remaining.toFixed(0)}s — re-route or launch a replacement before it dies.`,
+          });
+        }
+      } else if (!netDroppedSeen.has(f.satId)) {
+        // The countdown hit zero with no replacement ⇒ the sat is PERMANENTLY DROPPED (removed from
+        // the router graph from failsAtS on). A redundant constellation bridges around it; a brittle
+        // single-sat contract breaches. The §5 watch-and-act stakes are real.
+        netDroppedSeen.add(f.satId);
+        netCountdownBucket.delete(f.satId);
+        log.append({
+          tSim: t,
+          sev: "error",
+          entity: f.satId,
+          value: "FAILED · DROPPED",
+          msg: `${f.satId} FAILED — the telegraphed fault dropped it permanently (no replacement in time). Redundant paths bridge around it; a single-sat region breaches.`,
+        });
+      }
+    }
   }
-  // RESOLVED faults this frame ⇒ a recovery line.
+  // SELF-RECOVERED faults this frame ⇒ a recovery line. P2: a telegraphed-expired sat stays ACTIVE
+  // (permanently down) so it never leaves `live` ⇒ it never spuriously prints "RECOVERED" (the old
+  // bug). Only a genuine degradation/transient self-heal leaves the set here.
   for (const id of netFaultSeen) {
     if (!live.has(id)) {
       log.append({ tSim: t, sev: "info", entity: id, value: "RECOVERED", msg: `${id} recovered — the network weathered it.` });

@@ -44,6 +44,10 @@ import type { NetSat } from "./sat";
 // TYPE-ONLY imports (erase at compile — no runtime edge to the router/link-budget impl).
 import type { SolveResult, LinkLossStamp, RouterAxis } from "./router";
 import type { LinkCause } from "./link-budget";
+// VALUE import (P2): the TOY GEO-class semi-major axis the low-orbit lever's reference TRACKS, so the
+// toy GEO sits at the neutral end + the toy LEO sits meaningfully below it (world.ts does NOT import
+// fault-types — no cycle). Pure constant (no three / DOM / rng).
+import { A1_GEO_SEMI_MAJOR_M } from "./world";
 
 // ── THE FAULT KIND (the mild-first spectrum, design §5.1) ─────────────────────────
 
@@ -253,10 +257,20 @@ export const RARE_RANDOM_FAULT_RATE_PER_S = 1e-6;
 export const CAUSAL_BASE_FAULT_RATE_PER_S = 1e-5;
 
 /** The reference semi-major axis (metres) the LOW-ORBIT lever is measured against: a sat at or
- * above this (a GEO-ish orbit) gets the neutral multiplier 1.0; a lower orbit (a LEO) scales UP
- * toward {@link LOW_ORBIT_MAX_MULTIPLIER} as `altitudeM` drops. Sized at a mid GEO-ward altitude
- * so the toy LEO sweep sits well below it. Placeholder (metres). */
-export const LOW_ORBIT_REF_M = 35_786_000 + 6_371_000; // ~GEO radius (alt + earth radius).
+ * above this (the TOY GEO-class orbit) gets the neutral multiplier 1.0; a lower orbit (the toy LEO)
+ * scales UP toward {@link LOW_ORBIT_MAX_MULTIPLIER} as `altitudeM` drops.
+ *
+ * --- TOY-SCALED (P2, audit §5.2) -------------------------------------------------
+ * This was a REAL-Earth GEO radius (~42,160 km) while the toy world orbits at ~610-834 km against
+ * a 300 km body — so the toy GEO and the toy LEO BOTH saturated near {@link LOW_ORBIT_MAX_MULTIPLIER}
+ * (7.86× vs 7.90×, a ~0.5% gap) and "a LEO faults more than a GEO" did NOT register. We re-scale the
+ * reference to the toy world's TOY GEO semi-major axis ({@link A1_GEO_SEMI_MAJOR_M} ≈ 834 km from the
+ * toy 300 km body + the 240 s GEO period) so the toy GEO sits AT the neutral end (multiplier 1.0)
+ * and the toy LEO (≈ 610 km, the 150 s period) sits MEANINGFULLY below it — a clear causal gap
+ * (the toy LEO faults a measurable multiple more than the toy GEO). TUNABLE: raise this above the
+ * toy GEO to push the GEO itself onto the ramp, or lower it to widen the LEO/GEO gap. Imported from
+ * world.ts so the reference TRACKS the toy GEO (no second hard-coded constant to drift). */
+export const LOW_ORBIT_REF_M = A1_GEO_SEMI_MAJOR_M; // the TOY GEO-class semi-major axis (P2 re-scale).
 
 /** The MAX low-orbit multiplier a deep LEO reaches (the lowest practical orbit faults this many
  * times the GEO base — "a LEO faults more than a GEO," bridges to decay, rewards redundancy).
@@ -344,10 +358,29 @@ export function causalInputForSat(sat: NetSat, t: number): CausalFaultInput {
 /**
  * True iff an active fault is RESOLVED at sim-time t (a degradation/transient reached its
  * `recoversAtS`, or a telegraphed fault reached its `failsAtS` — at which point the sat DROPS).
- * Pure time predicate the session uses to advance recoveries/countdowns each step. (A hard fault
- * never resolves — both times are Infinity.) */
+ * Pure time predicate. (A hard fault never resolves — both times are Infinity.)
+ *
+ * NOTE (P2): "resolved" here means the fault's lifetime has ENDED — but the two end-states are
+ * DIFFERENT consequences (the audit §5.1 fix): a degradation/transient SELF-RECOVERS (the sat comes
+ * back — {@link faultSelfRecoveredAt}), whereas a TELEGRAPHED fault that reaches `failsAtS` DROPS the
+ * sat PERMANENTLY (it does not come back — a warned hard failure). The session keeps the telegraphed-
+ * expired fault ACTIVE (so the sat stays removed from the graph via {@link faultRemovesSatAt}) and
+ * clears ONLY the self-recovered ones — so callers that "free the sat" must use the narrower
+ * {@link faultSelfRecoveredAt}, not this. */
 export function faultResolvedAt(fault: FaultState, t: number): boolean {
   return t >= fault.recoversAtS || t >= fault.failsAtS;
+}
+
+/**
+ * True iff an active fault has SELF-RECOVERED at sim-time t — a degradation/transient that reached
+ * its `recoversAtS` and whose sat comes BACK (the §5.1 self-healing end-state). This is NARROWER
+ * than {@link faultResolvedAt}: a TELEGRAPHED fault reaching `failsAtS` is NOT a self-recovery — its
+ * sat dies PERMANENTLY (the warned hard failure the P2 fix makes real), so it is excluded here. The
+ * roll uses THIS (not faultResolvedAt) to decide which faults to clear from the active map; a
+ * telegraphed-expired fault stays active as a permanent drop. (A hard fault never self-recovers.)
+ * Pure. */
+export function faultSelfRecoveredAt(fault: FaultState, t: number): boolean {
+  return t >= fault.recoversAtS; // degradation/transient only; telegraphed/hard have recoversAtS = Infinity.
 }
 
 /**

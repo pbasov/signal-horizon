@@ -277,18 +277,26 @@ describe("rollFaults — SELF-RECOVERY + the telegraphed drop", () => {
     expect(rollFaults([f], [sat], TRANSIENT_DURATION_S, 1, new SimRng(0n)).resolved).toEqual(["LEO-0"]);
   });
 
-  it("a telegraphed fault counts DOWN, then RESOLVES (drops the sat) at failsAtS", () => {
+  it("a telegraphed fault counts DOWN, then DROPS the sat PERMANENTLY at failsAtS (NOT a self-recovery — P2 §5.1)", () => {
     const f = makeFaultState("LEO-0", "telegraphed", "lowOrbit", 0);
     // Mid-countdown: the sat still routes (not removed yet) and is NOT resolved.
     const mid = TELEGRAPHED_COUNTDOWN_S / 2;
     expect(faultRemovesSatAt(f, mid)).toBe(false); // routes during the warning window.
     expect(telegraphedCountdownRemainingS(f, mid)).toBeCloseTo(TELEGRAPHED_COUNTDOWN_S - mid, 9);
     expect(rollFaults([f], [sat], mid, 1, new SimRng(0n)).resolved).toEqual([]);
-    // Countdown expired: the sat DROPS (removed) and the fault resolves into the drop.
+    // Countdown expired: the sat DROPS (removed from the graph). P2 (§5.1, the audit fix): a
+    // telegraphed expiry is a PERMANENT loss (a warned hard failure), NOT a self-recovery — so it is
+    // NOT in `resolved` (the session must NOT free it / NOT credit "weathered"). The fault stays
+    // ACTIVE so faultRemovesSatAt keeps removing the sat from the router graph forever.
     const expired = TELEGRAPHED_COUNTDOWN_S;
-    expect(faultRemovesSatAt(f, expired)).toBe(true);
+    expect(faultRemovesSatAt(f, expired)).toBe(true); // removed from the graph (permanent drop).
     expect(telegraphedCountdownRemainingS(f, expired)).toBe(0);
-    expect(rollFaults([f], [sat], expired, 1, new SimRng(0n)).resolved).toEqual(["LEO-0"]);
+    expect(rollFaults([f], [sat], expired, 1, new SimRng(0n)).resolved).toEqual([]); // NOT freed.
+    // And well past expiry it STILL removes the sat (permanent) and STILL is not freed — the warned
+    // failure the player did not replace is a real, lasting loss.
+    const later = TELEGRAPHED_COUNTDOWN_S + 1000;
+    expect(faultRemovesSatAt(f, later)).toBe(true);
+    expect(rollFaults([f], [sat], later, 1, new SimRng(0n)).resolved).toEqual([]);
   });
 
   it("a hard fault NEVER resolves (permanent — both times Infinity)", () => {
@@ -310,17 +318,22 @@ describe("rollFaults — SELF-RECOVERY + the telegraphed drop", () => {
 // ── the CAUSAL lever is LIVE (low-orbit + age raise the rate; cause label tracks it) ─
 
 describe("rollFaults — the CAUSAL lever (low-orbit + age live; the cause label tracks it)", () => {
-  it("a deep LEO has a HIGHER causal rate than the (also-low) toy GEO (low-orbit lever live)", () => {
-    // The toy world's scales are tiny (GEO aM ≈ 835 km, LEO aM ≈ 610 km) — both BELOW the
-    // fault-types LOW_ORBIT_REF_M (≈ 42,157 km, a real-Earth GEO radius), so both carry SOME
-    // low-orbit lift. The lever is still LIVE in the right direction: the lower LEO faults more.
+  it("the toy LEO faults MEANINGFULLY more than the toy GEO (P2 toy-scaled low-orbit lever)", () => {
+    // P2 (audit §5.2): LOW_ORBIT_REF_M is now the TOY GEO semi-major axis, so the toy GEO sits AT the
+    // neutral end (multiplier 1.0 ⇒ the bare base rate) and the lower toy LEO sits MEANINGFULLY below
+    // it on the ramp. Previously the reference was a real-Earth GEO radius (~42,157 km) so the toy GEO
+    // (~835 km) and toy LEO (~610 km) BOTH saturated near max (7.86× vs 7.90×, a ~0.5% gap) and the
+    // "a LEO faults more than a GEO" lesson did not register. Now the gap is a clear multiple.
     const geoRate = causalFaultRatePerS(causalInputForSat(makeSat("G", GEO_PARK, 0), 0));
     const leoRate = causalFaultRatePerS(causalInputForSat(makeSat("L", LEO_SWEEP, 0), 0));
+    // The toy GEO is at the neutral end ⇒ its causal rate is the bare base (no low-orbit lift).
+    expect(geoRate).toBeCloseTo(CAUSAL_BASE_FAULT_RATE_PER_S, 12);
+    // The toy LEO faults a clear MULTIPLE more — a registering gap (well past a 0.5% near-flat).
     expect(leoRate).toBeGreaterThan(geoRate);
-    // A sat AT the real-Earth GEO reference (above the toy scales) gets the NEUTRAL multiplier,
-    // so its causal rate is the bare base — pinning the low-orbit ramp's neutral end.
-    const trueGeo = makeSatAt("REF", 36_000_000 + 6_400_000, 0); // ≳ LOW_ORBIT_REF_M.
-    const refRate = causalFaultRatePerS(causalInputForSat(trueGeo, 0));
+    expect(leoRate / geoRate).toBeGreaterThan(1.3); // a meaningful causal gap, not near-flat.
+    // A sat ABOVE the toy GEO reference still gets the neutral multiplier (the ramp's neutral end).
+    const higher = makeSatAt("REF", 2 * GEO_PARK.semiMajorM, 0); // well above LOW_ORBIT_REF_M.
+    const refRate = causalFaultRatePerS(causalInputForSat(higher, 0));
     expect(refRate).toBeCloseTo(CAUSAL_BASE_FAULT_RATE_PER_S, 12);
   });
 
