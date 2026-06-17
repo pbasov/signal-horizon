@@ -39,7 +39,7 @@ const HOWTO_CARDS: HowtoCard[] = [
       "One satellite can't hold a region that needs constant coverage — it orbits away.",
       "Launch a CONSTELLATION (several phased sats) so one rises as another sets.",
     ],
-    xref: "LAUNCH desktop (key 2) → PLACE SET / key C",
+    xref: "LAUNCH desktop (key 2) → the PLACE SET button",
   },
   {
     cursor: 2,

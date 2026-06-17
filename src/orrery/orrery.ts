@@ -3011,11 +3011,17 @@ export class Orrery {
     if (this.netRenderMode) {
       // SD-44 — the CLEAN net keymap (matches the status strip + the main.ts handler): the desktop
       // (keys 1-5) sets the camera, so no E/C/O/S/T here; accept/constellation/prefer are panel
-      // buttons; the only on-globe verbs are the planner drag + L launch + R reset-cam.
+      // buttons; the only on-globe verbs are the planner drag + L launch + R reset-cam. DESKTOP-AWARE:
+      // the orbit-tuning keys only do something while the LAUNCH planner is on screen (CONNECTIVITY),
+      // so only show them there — elsewhere (OVERVIEW triage / ROUTING) point the player to the launch
+      // desktop instead of advertising keys that look inert.
+      const planning = this.netState?.body?.plannerActive ?? false;
+      const line2 = planning
+        ? `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch`
+        : `<span class="k">drag</span>/<span class="k">wheel</span> to look · open <span class="k">CONNECTIVITY (2)</span> to aim + launch`;
       set(
         "br",
-        `<span class="k">1-5</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` +
-          `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch`,
+        `<span class="k">1-5</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` + line2,
       );
     } else {
       set(

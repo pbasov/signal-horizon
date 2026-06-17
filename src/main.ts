@@ -765,11 +765,11 @@ function netPreviewWorld(): PreviewWorld {
  * concept — pure UI copy keyed off the live cursor. Never invents goals beyond the doc's intent.
  */
 const NET_OBJECTIVES: NetObjective[] = [
-  { actLabel: "ACT 1", title: "Serve a region, get paid", detail: "Aim a sat over REGION-0 until the red gap goes GREEN, LAUNCH (L), then ACCEPT (K)." },
-  { actLabel: "ACT 2", title: "Hold a region that moves", detail: "One sat drifts off and coverage drops — phase a CONSTELLATION (C) so it never gaps." },
-  { actLabel: "ACT 3", title: "Relieve the congested link", detail: "Your success is overloading a shared sat — retune PREFER or add capacity to clear it." },
-  { actLabel: "ACT 3", title: "Weather the fault", detail: "A fault is telegraphed — build redundancy so a served region survives the drop." },
-  { actLabel: "ACT 4", title: "The frontier", detail: "You've reached the edge: Mars, and the speed of light. To be continued." },
+  { actLabel: "ACT 1", title: "Serve a region, get paid", detail: "On CONNECTIVITY (2): aim the orbit until the red gap reads WILL SERVE, press L to launch. Then ACCEPT the contract on BUSINESS (4) to start earning." },
+  { actLabel: "ACT 2", title: "Hold a region that moves", detail: "A single sat drifts off and coverage gaps. On CONNECTIVITY (2), hit PLACE SET to launch an evenly-phased constellation so the region never drops." },
+  { actLabel: "ACT 3", title: "Relieve the congested link", detail: "Your own success is overloading a shared sat (watch it redden on LINK·LOAD). On ROUTING (3) retune the PREFER slider — or launch more capacity — to clear it." },
+  { actLabel: "ACT 3", title: "Weather the fault", detail: "A fault is telegraphed on the ROSTER. Launch a redundant sat on CONNECTIVITY (2) so the served region survives the outage." },
+  { actLabel: "ACT 4", title: "The frontier", detail: "You've reached the edge — Mars, and the speed of light. To be continued." },
 ];
 
 /** net/ Act-1 — the current OBJECTIVE for the planner's goal surface, indexed by the live cursor. */
