@@ -88,6 +88,16 @@ export interface NetContractRow {
   progressFraction: number;
   /** € earned so far. */
   earnedEur: number;
+  /** PRICE-THE-BET (the underwrite card): the DOWNSIDE — € per sim-hour drained while ACTIVE but
+   * wholly unserved (penaltyPerSecond × 3600). Accepting stakes this against the reward. */
+  penaltyPerHr: number;
+  /** PRICE-THE-BET: for an OFFERED contract, whether the player's CURRENT fleet would hold every
+   * enforced SLA axis right now (a pure preview solve — no sim mutation). null when not offered or
+   * not previewable. true = "click accept and it serves"; false = accepting takes a known penalty risk. */
+  previewServable: boolean | null;
+  /** PRICE-THE-BET: when {@link previewServable} is false, the binding axis that would breach
+   * ("connectivity" / "availability" / "latency" / "bandwidth") — the fix to make before accepting. */
+  previewBreachAxis: string | null;
 }
 
 /** The Act-1 contract readout (the one offered REGION-0 demand). */
@@ -704,9 +714,19 @@ export class NetPlanner implements PanelHandle {
       setText(r.terms, `${c.terms} · +€${Math.round(c.rewardPerHr)}/hr`);
       if (c.state === "active") {
         setText(r.prog, `served ${fmtPct(c.servedFraction)} · term ${fmtPct(c.progressFraction)} · earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.className = "net-contract-prog";
         r.prog.style.display = "";
       } else if (c.state === "offered") {
-        setText(r.prog, "accept to start earning");
+        // PRICE-THE-BET: the wager, not "click to earn" — reward vs the penalty DOWNSIDE, then whether
+        // the current fleet would actually hold it (a pure preview). Accepting an un-servable contract
+        // is a deliberate penalty gamble; a servable one is free money.
+        const bet = `BET +€${Math.round(c.rewardPerHr)}/hr vs −€${Math.round(c.penaltyPerHr)}/hr if it FAILs`;
+        const verdict =
+          c.previewServable === null ? ""
+          : c.previewServable ? " · fleet HOLDS this ✓ — accept"
+          : ` · fleet would BREACH ${c.previewBreachAxis} — fix first, or accept the penalty risk`;
+        setText(r.prog, bet + verdict);
+        r.prog.className = `net-contract-prog${c.previewServable === false ? " amber" : c.previewServable ? " green" : ""}`;
         r.prog.style.display = "";
       } else {
         setText(r.prog, `earned ${fmtEuro(c.earnedEur)}`);
@@ -1184,9 +1204,19 @@ export class NetContracts implements PanelHandle {
       setText(r.terms, `${c.terms} · +€${Math.round(c.rewardPerHr)}/hr`);
       if (c.state === "active") {
         setText(r.prog, `served ${fmtPct(c.servedFraction)} · term ${fmtPct(c.progressFraction)} · earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.className = "net-contract-prog";
         r.prog.style.display = "";
       } else if (c.state === "offered") {
-        setText(r.prog, "accept to start earning");
+        // PRICE-THE-BET: the wager, not "click to earn" — reward vs the penalty DOWNSIDE, then whether
+        // the current fleet would actually hold it (a pure preview). Accepting an un-servable contract
+        // is a deliberate penalty gamble; a servable one is free money.
+        const bet = `BET +€${Math.round(c.rewardPerHr)}/hr vs −€${Math.round(c.penaltyPerHr)}/hr if it FAILs`;
+        const verdict =
+          c.previewServable === null ? ""
+          : c.previewServable ? " · fleet HOLDS this ✓ — accept"
+          : ` · fleet would BREACH ${c.previewBreachAxis} — fix first, or accept the penalty risk`;
+        setText(r.prog, bet + verdict);
+        r.prog.className = `net-contract-prog${c.previewServable === false ? " amber" : c.previewServable ? " green" : ""}`;
         r.prog.style.display = "";
       } else {
         setText(r.prog, `earned ${fmtEuro(c.earnedEur)}`);

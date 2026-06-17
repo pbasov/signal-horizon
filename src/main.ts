@@ -78,7 +78,8 @@ import { surfacePointRelative, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-bu
 // §3 — the spin angle θ(t) so the operated-body graticule turns with the body (the SAME convention
 // the surface frame + the orrery render-axis swap use). Pure scalar; render-only consumer.
 import { earthThetaAt } from "./sim/net/frame";
-import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
+import { bridgeForPoint, satPositionRelative, solve as routeSolve } from "./sim/net/router";
+import { windowAvailability } from "./sim/net/availability";
 import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
@@ -795,9 +796,28 @@ function netContractTerms(c: (typeof netSession.contracts)[number]): string {
 /** net/ Act-1 — project ALL live net contracts into the planner's CONTRACTS view rows (the "clear
  * contracts view" fix). PURE reads of the session; the served flag comes from the live router solve. */
 function netContractRows(t: number): NetContractRow[] {
-  void t;
+  // PRICE-THE-BET preview reads the live roster once (pure — no sim mutation, no golden impact).
+  const live = [...netSession.sats];
+  const grounds = [...netSession.grounds];
   return netSession.contracts.map((c) => {
     const solve = netSession.lastSolveFor(c.id);
+    // For an OFFERED contract, run a PURE preview solve against the CURRENT fleet so the player can
+    // PRICE the bet: would accepting it serve right now, or take a known penalty risk on which axis?
+    let previewServable: boolean | null = null;
+    let previewBreachAxis: string | null = null;
+    if (c.state === "offered") {
+      const sv = routeSolve(eph, c, live, grounds, t);
+      previewServable = sv.served;
+      previewBreachAxis = sv.served ? null : sv.bindingConstraint;
+      // The availability axis is ROLLING (not the instantaneous path-existence solve checks), so
+      // verify it separately against the live constellation when it is an enforced axis (Act 2+).
+      if (previewServable && c.activeAxes.has("availability")) {
+        if (windowAvailability(eph, c, live, grounds, t) < c.slaAvail) {
+          previewServable = false;
+          previewBreachAxis = "availability";
+        }
+      }
+    }
     return {
       id: c.id,
       label: c.label,
@@ -808,6 +828,9 @@ function netContractRows(t: number): NetContractRow[] {
       servedFraction: c.lastServedFraction,
       progressFraction: c.termSeconds > 0 ? Math.min(1, c.servedSecondsAccum / c.termSeconds) : 0,
       earnedEur: c.earnedEur,
+      penaltyPerHr: c.penaltyPerSecond * 3600,
+      previewServable,
+      previewBreachAxis,
     };
   });
 }
