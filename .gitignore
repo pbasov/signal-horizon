@@ -10,3 +10,4 @@ dist/
 .playwright-mcp/
 /diag-*.png
 /mcp-boot.png
+/rd-*.png

@@ -697,6 +697,99 @@ body {
 .net-hint.warn { color: var(--amber); }
 .net-hint.good { color: var(--green); }
 
+/* ---- net/ M1 (SD-44 PHASE 1) MISSION-CONTROL TILES ----------------------------------------- */
+/* The DEAD-CLEAR "what / where you're launching" headline at the top of the NET·LAUNCH tile. Two
+   bold lines: WHAT (preset · count · cost) over WHERE (region · footprint · the served verdict). The
+   WHERE line toggles green (will fully serve) / amber (still a gap) — colour redundant on the
+   "WILL SERVE ✓" / "STILL A GAP" words so it reads colour-off (DD-1). 1-bit chrome housing. */
+.net-launch-head { border-color: var(--line); }
+.net-launch-what {
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  margin: 2px 0 2px;
+}
+.net-launch-where {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+  line-height: 1.3;
+}
+.net-launch-where.green { color: var(--green); }
+.net-launch-where.amber { color: var(--amber); }
+
+/* ROUTING·PREFER controls (the moved §7.3 tuner): a thin wrapper toggled with the empty-state line. */
+.net-prefer-controls { margin-top: 2px; }
+
+/* STATUS·BOARD rows: one line per demand — label · STATE word (colour-redundant) · served% · earned.
+   The state WORD carries the meaning colour-off; the .v colour modifiers reinforce it. */
+.status-rows { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px; }
+.status-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10.5px;
+  padding: 1px 0;
+}
+.status-row .status-label { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
+.status-row .v { text-align: right; }
+.status-row .status-served, .status-row .status-earned { color: var(--fg-dim); text-align: right; }
+
+/* COVERAGE·ROSTER rows: launched-sat manifest (id · orbit CLASS token · covers note) + the DARK line.
+   The orbit CLASS is the LEO/GEO token (a word, not a colour); the DARK line names dark regions. */
+.roster-rows { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px; }
+.roster-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10.5px;
+  padding: 1px 0;
+}
+.roster-row .roster-id { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
+.roster-row .v { text-align: left; }
+.roster-row .roster-covers { color: var(--fg-dim); text-align: right; }
+.roster-row .roster-covers.green { color: var(--green); }
+.roster-row .roster-covers.dim { color: var(--grey); }
+.roster-dark { font-size: 10.5px; color: var(--fg-dim); line-height: 1.35; }
+.roster-dark.amber { color: var(--amber); font-weight: 700; }
+.roster-dark.green { color: var(--green); }
+.roster-dark.dim { color: var(--grey); font-style: italic; }
+
+/* LINK·LOAD rows: per-bridging-sat utilisation. A head (id + %), a 1-bit bar whose WIDTH carries the
+   load (redundant with the % number + colour), then a meta line (sharing contracts + binding axis). */
+.linkload-rows { display: flex; flex-direction: column; gap: 5px; margin: 3px 0 1px; }
+.linkload-row { border: 1px solid var(--line-dim); padding: 3px 6px 4px; }
+.linkload-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.linkload-head .linkload-id { color: var(--fg); font-weight: 700; font-size: 10.5px; letter-spacing: 0.02em; }
+.linkload-pct { font-size: 10.5px; text-align: right; }
+.linkload-bar {
+  height: 6px;
+  margin: 3px 0 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-dim);
+  overflow: hidden;
+}
+.linkload-bar-fill { height: 100%; width: 0; background: var(--green); }
+.linkload-bar-fill.green { background: var(--green); }
+.linkload-bar-fill.amber { background: var(--amber); }
+.linkload-bar-fill.red { background: var(--red); }
+.linkload-meta { color: var(--fg-dim); font-size: 10px; }
+
+/* HOW IT WORKS cards: one bordered explainer per concept. The LIVE card (current act) gets a cyan
+   title; LOCKED (future) cards dim with a "LOCKED" tag (a word, not just dimming). 1-bit chrome. */
+.howto-card { border: 1px solid var(--line-dim); padding: 4px 7px 5px; margin: 4px 0; }
+.howto-card-title { font-weight: 700; font-size: 11px; letter-spacing: 0.02em; color: var(--fg); margin-bottom: 2px; }
+.howto-card-line { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+.howto-card.live { border-color: var(--cyan); }
+.howto-card.live .howto-card-title { color: var(--cyan); }
+.howto-card.locked { opacity: 0.5; }
+.howto-card.locked .howto-card-title::after { content: " · LOCKED"; color: var(--grey); font-weight: 400; }
+.howto-xref { color: var(--grey); font-size: 9.5px; line-height: 1.3; margin-top: 2px; }
+
 /* ---- net/ OBJECTIVE (the per-act goal made explicit) + the CONTRACTS view ------------------- */
 /* OBJECTIVE: a bright title line (the signal — what you're doing now) over a dim how-to. The group
    housing is the standard 1-bit dashed box; only the title carries colour. */

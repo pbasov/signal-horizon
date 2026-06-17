@@ -2966,10 +2966,13 @@ export class Orrery {
     // deploy / datacenter). The two games own DIFFERENT verbs, so the hint must match the mode —
     // showing "B deploy · M datacenter" in net mode is the clutter fix #2 calls out.
     if (this.netRenderMode) {
+      // SD-44 — the CLEAN net keymap (matches the status strip + the main.ts handler): the desktop
+      // (keys 1-5) sets the camera, so no E/C/O/S/T here; accept/constellation/prefer are panel
+      // buttons; the only on-globe verbs are the planner drag + L launch + R reset-cam.
       set(
         "br",
-        `<span class="k">1-3</span> presets · <span class="k">E C O S T</span> camera · <span class="k">R</span> reset · <span class="k">click</span> select\n` +
-          `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch · <span class="k">K</span> accept · <span class="k">C</span> constellation · <span class="k">P</span> cache`,
+        `<span class="k">1-5</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` +
+          `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch`,
       );
     } else {
       set(

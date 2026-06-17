@@ -674,6 +674,521 @@ export class NetPlanner implements PanelHandle {
   }
 }
 
+/**
+ * net/ M1 — NET·LAUNCH (SD-44 PHASE 1): the LAUNCH menu, split CLEANLY from CONTRACTS. The player's
+ * verbatim pain was "EXTREMELY CLEAR what you're launching and where" — so this tile opens with a
+ * two-line WHAT/WHERE headline (built once, value-updated each render), then the PRESET buttons, the
+ * four ORBIT sliders (cause→effect captions kept), the CONSEQUENCE PREVIEW, the Act-2 CONSTELLATION
+ * sub-block (only when state.phasing != null), and a COMMIT group with ONLY the LAUNCH button. The
+ * OBJECTIVE / WALLET / CONTRACTS list / ROUTING·PREFER / ACCEPT live on OTHER tiles now.
+ *
+ * Reads the SAME {@link NetPlannerRenderState} + {@link NetPlannerActions} the monolithic planner used
+ * (no new types). Keeps every stable selector ([data-net="launch"|"preset"|"draft"|"constellation"]).
+ */
+export class NetLaunch implements PanelHandle {
+  readonly title = "NET·LAUNCH";
+  readonly content: HTMLElement;
+
+  // --- WHAT / WHERE headline (the "what are you launching, and over where?" fix) ---
+  private whatLine: HTMLElement;
+  private whereLine: HTMLElement;
+
+  // --- PRESET buttons (built once) ---
+  private presetHost: HTMLElement;
+  private presetButtons = new Map<string, HTMLButtonElement>();
+
+  // --- §3.1 DRAFT sliders (altitude / inclination / phase / RAAN), built once ---
+  private draftSliders = new Map<NetDraftField, HTMLInputElement>();
+  private draftValues = new Map<NetDraftField, HTMLElement>();
+
+  // --- PREVIEW (consequence-before-commit) ---
+  private vCovered: HTMLElement;
+  private vPeriod: HTMLElement;
+  private vLatency: HTMLElement;
+  private vCost: HTMLElement;
+
+  // --- CONSTELLATION (Act-2 phasing assist) ---
+  private phasingGroup: HTMLElement;
+  private vZeroGap: HTMLElement;
+  private vSuggest: HTMLElement;
+  private vHeld: HTMLElement;
+  private constellationBtn: HTMLButtonElement;
+
+  // --- LAUNCH (the only commit button on this tile) ---
+  private launchBtn: HTMLButtonElement;
+  private hint: HTMLElement;
+
+  private worst: "ok" | "warn" | "crit" = "warn";
+  private servedNow = false;
+
+  constructor(private actions: NetPlannerActions) {
+    this.content = el("div", "telem");
+
+    // WHAT / WHERE — the dead-clear headline at the very top: WHAT preset/count/cost, then WHERE
+    // (the contract region) + the truthful served verdict. Built once; value-updated each render.
+    const head = el("div", "group net-launch-head");
+    this.whatLine = el("div", "net-launch-what");
+    this.whereLine = el("div", "net-launch-where");
+    head.append(this.whatLine, this.whereLine);
+    this.content.append(head);
+
+    // GROUP: PRESET — the floor (GEO PARK default + LEO SWEEP). Buttons.
+    const presetGroup = group("PRESET · FLOOR");
+    this.presetHost = el("div", "net-presets");
+    presetGroup.append(this.presetHost);
+    this.content.append(presetGroup);
+
+    // GROUP: ORBIT — the ceiling (§3.1): four DRAGGABLE parameters with cause→effect captions.
+    const orbitGroup = group("ORBIT · DRAG ME");
+    this.buildSlider(orbitGroup, "semiMajorM", "altitude", "ALTITUDE", "higher = wider reach, more delay · GEO parks, LEO sweeps");
+    this.buildSlider(orbitGroup, "incRad", "inclination", "INCLINATION", "tilt the orbit — reach higher latitudes");
+    this.buildSlider(orbitGroup, "subLonRad", "phase", "PHASE", "fine · where it sits along the orbit");
+    this.buildSlider(orbitGroup, "raanRad", "raan", "RAAN", "fine · rotates the orbital plane");
+    this.content.append(orbitGroup);
+
+    // GROUP: PREVIEW — the truthful consequence of the LIVE EDITABLE DRAFT before commit.
+    const preview = group("PREVIEW · BEFORE COMMIT");
+    this.vCovered = valueOf(row(preview, "FOOTPRINT", "green"));
+    this.vPeriod = valueOf(row(preview, "PERIOD"));
+    this.vLatency = valueOf(row(preview, "LATENCY"));
+    this.vCost = valueOf(row(preview, "COST", "amber"));
+    this.content.append(preview);
+
+    // GROUP: CONSTELLATION — the Act-2 phasing assist; hidden in Act 1 (state.phasing null).
+    this.phasingGroup = group("CONSTELLATION · ACT 2");
+    this.vZeroGap = valueOf(row(this.phasingGroup, "NEED", "cyan"));
+    this.vSuggest = valueOf(row(this.phasingGroup, "SUGGEST", "green"));
+    this.vHeld = valueOf(row(this.phasingGroup, "HELD", "amber"));
+    const phaseRow = el("div", "net-buttons");
+    this.constellationBtn = button("PLACE SET", "constellation");
+    this.constellationBtn.addEventListener("click", () => this.actions.onConstellation());
+    phaseRow.append(this.constellationBtn);
+    this.phasingGroup.append(phaseRow);
+    this.phasingGroup.style.display = "none";
+    this.content.append(this.phasingGroup);
+
+    // GROUP: COMMIT — ONLY the LAUNCH button (ACCEPT lives on the CONTRACTS tile now).
+    const commit = group("COMMIT");
+    const btnRow = el("div", "net-buttons");
+    this.launchBtn = button("LAUNCH", "launch");
+    this.launchBtn.addEventListener("click", () => this.actions.onLaunch());
+    btnRow.append(this.launchBtn);
+    commit.append(btnRow);
+    this.hint = el("div", "net-hint");
+    commit.append(this.hint);
+    this.content.append(commit);
+  }
+
+  private buildSlider(parent: HTMLElement, field: NetDraftField, key: string, label: string, caption?: string): void {
+    const r = el("div", "net-slider");
+    const headRow = el("div", "row");
+    const lab = el("span", "label");
+    lab.textContent = label;
+    const v = el("span", "v cyan");
+    headRow.append(lab, v);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1000";
+    input.step = "1";
+    input.className = "net-range";
+    input.dataset.net = "draft";
+    input.dataset.draft = key;
+    input.addEventListener("input", () => {
+      this.actions.onEditDraft(field, Number(input.value) / 1000);
+    });
+    r.append(headRow, input);
+    if (caption) {
+      const cap = el("div", "net-slider-cap");
+      cap.textContent = caption;
+      r.append(cap);
+    }
+    parent.append(r);
+    this.draftSliders.set(field, input);
+    this.draftValues.set(field, v);
+  }
+
+  render(state: NetPlannerRenderState): void {
+    const p = state.preview;
+    const c = state.contract;
+    this.servedNow = !!c && c.state === "active" && c.served;
+
+    // WHAT — preset label · count · cost. count = 1 (single preset launch).
+    const presetLabel = state.presets.find((pp) => pp.selected)?.label ?? "CUSTOM ORBIT";
+    setText(this.whatLine, `LAUNCHING: ${presetLabel} · 1× sat · ${fmtEuro(p.costEur)}`);
+
+    // WHERE — the contract region + the truthful served verdict. Green only when it WILL fully serve.
+    const willServe = p.served && p.coveredFraction >= 0.999;
+    setText(
+      this.whereLine,
+      `OVER: ${state.contract?.label ?? "REGION-0"} · footprint ${fmtPct(p.coveredFraction)} ${p.served ? "· WILL SERVE ✓" : "· STILL A GAP"}`,
+    );
+    this.whereLine.className = `net-launch-where ${willServe ? "green" : "amber"}`;
+    this.worst = willServe ? "ok" : "warn";
+
+    // PRESET buttons.
+    this.syncPresets(state.presets);
+
+    // DRAFT sliders.
+    this.syncSlider("semiMajorM", state.draft.altitude);
+    this.syncSlider("incRad", state.draft.inclination);
+    this.syncSlider("subLonRad", state.draft.phase);
+    this.syncSlider("raanRad", state.draft.raan);
+
+    // PREVIEW.
+    setText(this.vCovered, `${fmtPct(p.coveredFraction)} ${p.served ? "· covers" : "· gap"}`);
+    setValueClass(this.vCovered, p.served && p.coveredFraction >= 0.999 ? "green" : "amber");
+    setText(this.vPeriod, `${fmtDuration(p.periodS)}${p.served ? " · parks" : " · sweeps"}`);
+    setText(this.vLatency, Number.isFinite(p.latencyFloorS) ? `${(p.latencyFloorS * 1000).toFixed(1)} ms` : "—");
+    setText(this.vCost, fmtEuro(p.costEur));
+
+    // CONSTELLATION (Act-2).
+    const ph = state.phasing;
+    if (ph) {
+      this.phasingGroup.style.display = "";
+      setText(this.vZeroGap, `~${ph.zeroGapN} phased LEOs`);
+      setText(this.vSuggest, `${ph.count} sats · 1 launch`);
+      setText(this.vHeld, `${fmtPct(ph.estCoveredFraction)} vs bar ${fmtPct(ph.slaAvail)}`);
+      this.constellationBtn.classList.toggle("ready", true);
+    } else {
+      this.phasingGroup.style.display = "none";
+    }
+
+    // LAUNCH — reads READY before the first launch (point at the default).
+    this.launchBtn.classList.toggle("ready", !state.launched);
+
+    // HINT — gentle assist (shortfall) when stuck, else the next obvious step.
+    if (state.shortfall) {
+      setText(this.hint, state.shortfall);
+      this.hint.className = "net-hint warn";
+    } else if (ph) {
+      setText(this.hint, `coverage MOVES — press PLACE SET to launch ${ph.count} phased sats, then add one to hold it`);
+      this.hint.className = "net-hint";
+    } else if (!state.launched) {
+      if (p.served && p.coveredFraction >= 0.999) {
+        setText(this.hint, "REGION-0 is fully covered — LAUNCH now, or drag ALTITUDE down / try LEO SWEEP to feel the tradeoff");
+      } else {
+        setText(this.hint, "DRAG the ORBIT sliders — watch the footprint + ground-track move on the globe until the RED gap goes GREEN, then LAUNCH");
+      }
+      this.hint.className = "net-hint";
+    } else if (c && c.state === "offered") {
+      setText(this.hint, "sat is up — open CONTRACTS (key 4) and ACCEPT to start earning");
+      this.hint.className = "net-hint";
+    } else if (this.servedNow) {
+      setText(this.hint, "REGION-0 SERVED · revenue ticking — Act 1 complete");
+      this.hint.className = "net-hint good";
+    } else {
+      setText(this.hint, "");
+      this.hint.className = "net-hint";
+    }
+  }
+
+  private syncSlider(field: NetDraftField, p: NetDraftParam): void {
+    const input = this.draftSliders.get(field);
+    if (input && document.activeElement !== input) {
+      const next = String(Math.round(p.pos * 1000));
+      if (input.value !== next) input.value = next;
+    }
+    const v = this.draftValues.get(field);
+    if (v) setText(v, p.label);
+  }
+
+  private syncPresets(presets: NetPresetChoice[]): void {
+    for (const choice of presets) {
+      let btn = this.presetButtons.get(choice.id);
+      if (!btn) {
+        btn = button(choice.label, "preset");
+        btn.dataset.presetId = choice.id;
+        btn.addEventListener("click", () => this.actions.onSelectPreset(choice.id));
+        this.presetHost.append(btn);
+        this.presetButtons.set(choice.id, btn);
+      }
+      btn.classList.toggle("active", choice.selected);
+    }
+  }
+
+  status(): "ok" | "warn" | "crit" {
+    return this.worst;
+  }
+
+  subtitle(): string {
+    return this.servedNow ? "· SERVED" : "· what & where";
+  }
+}
+
+/**
+ * net/ M1 — CONTRACTS (SD-44 PHASE 1): the deal board, split CLEANLY out of the launch menu. Carries
+ * the OBJECTIVE banner (moved here as a header), a WALLET row, and the CONTRACTS list (one mini-card
+ * per live deal with its enforced SLA terms, reward, live served% + term progress, and an inline
+ * ACCEPT for offered ones). The accept machinery is moved VERBATIM — [data-net="accept"] (the headline
+ * ACCEPT) + [data-net="accept-row"][data-contract-id] (the per-row buttons) live here now.
+ */
+export class NetContracts implements PanelHandle {
+  readonly title = "CONTRACTS";
+  readonly content: HTMLElement;
+
+  // --- OBJECTIVE header ---
+  private objectiveGroup: HTMLElement;
+  private objectiveLegend: HTMLElement;
+  private vObjTitle: HTMLElement;
+  private vObjDetail: HTMLElement;
+
+  // --- WALLET + headline ACCEPT ---
+  private vBalance: HTMLElement;
+  private vContractState: HTMLElement;
+  private vEarned: HTMLElement;
+  private acceptBtn: HTMLButtonElement;
+
+  // --- CONTRACTS list ---
+  private contractsHost: HTMLElement;
+  private contractRows = new Map<string, { root: HTMLElement; head: HTMLElement; terms: HTMLElement; prog: HTMLElement; accept: HTMLButtonElement }>();
+  private contractsSig = "";
+
+  private worst: "ok" | "warn" | "crit" = "warn";
+  private servedNow = false;
+
+  constructor(private actions: NetPlannerActions) {
+    this.content = el("div", "telem");
+
+    // GROUP: OBJECTIVE — what the player is trying to do right now (the per-act goal, moved here).
+    this.objectiveGroup = el("div", "group net-objective");
+    this.objectiveLegend = el("div", "legend");
+    this.objectiveLegend.textContent = "OBJECTIVE";
+    this.vObjTitle = el("div", "net-obj-title");
+    this.vObjDetail = el("div", "net-obj-detail");
+    this.objectiveGroup.append(this.objectiveLegend, this.vObjTitle, this.vObjDetail);
+    this.content.append(this.objectiveGroup);
+
+    // GROUP: WALLET — the wallet (climbs as a served contract pays) + the headline REGION-0 + ACCEPT.
+    const wallet = group("WALLET");
+    this.vBalance = valueOf(row(wallet, "WALLET", "green"));
+    this.vContractState = valueOf(row(wallet, "REGION-0"));
+    this.vEarned = valueOf(row(wallet, "EARNED", "cyan"));
+    const acceptRow = el("div", "net-buttons");
+    this.acceptBtn = button("ACCEPT", "accept");
+    this.acceptBtn.addEventListener("click", () => this.actions.onAccept());
+    acceptRow.append(this.acceptBtn);
+    wallet.append(acceptRow);
+    this.content.append(wallet);
+
+    // GROUP: CONTRACTS — the legible deal board (rows rebuilt only on a state-signature change).
+    const contractsGroup = group("CONTRACTS");
+    this.contractsHost = el("div", "net-contracts");
+    contractsGroup.append(this.contractsHost);
+    this.content.append(contractsGroup);
+  }
+
+  render(state: NetPlannerRenderState): void {
+    // OBJECTIVE.
+    const obj = state.objective;
+    if (obj) {
+      this.objectiveGroup.style.display = "";
+      setText(this.objectiveLegend, `OBJECTIVE · ${obj.actLabel}`);
+      setText(this.vObjTitle, obj.title);
+      setText(this.vObjDetail, obj.detail);
+    } else {
+      this.objectiveGroup.style.display = "none";
+    }
+
+    // CONTRACTS list.
+    this.syncContracts(state.contracts);
+
+    // WALLET.
+    setText(this.vBalance, fmtEuro(state.balanceEur));
+    setValueClass(this.vBalance, state.balanceEur < 0 ? "red" : "green");
+
+    // REGION-0 STATE.
+    const c = state.contract;
+    this.servedNow = !!c && c.state === "active" && c.served;
+    if (c === null) {
+      setText(this.vContractState, "— awaiting demand");
+      setValueClass(this.vContractState, "");
+      this.worst = "warn";
+    } else if (c.state === "offered") {
+      setText(this.vContractState, "OFFERED · accept to earn");
+      setValueClass(this.vContractState, "cyan");
+      this.worst = "warn";
+    } else if (c.state === "active") {
+      setText(this.vContractState, this.servedNow ? "SERVED ✓" : "UNSERVED · launch over it");
+      setValueClass(this.vContractState, this.servedNow ? "green" : "amber");
+      this.worst = this.servedNow ? "ok" : "warn";
+    } else {
+      setText(this.vContractState, c.state === "completed" ? "✓ DONE" : "✕ ENDED");
+      setValueClass(this.vContractState, c.state === "completed" ? "green" : "red");
+      this.worst = "ok";
+    }
+    setText(this.vEarned, fmtEuro(c?.earnedEur ?? 0));
+
+    // The headline ACCEPT is live only while the contract is OFFERED.
+    const canAccept = !!c && c.state === "offered";
+    this.acceptBtn.disabled = !canAccept;
+    this.acceptBtn.classList.toggle("ready", canAccept);
+  }
+
+  private syncContracts(contracts: NetContractRow[]): void {
+    const sig = contracts.map((c) => `${c.id}:${c.state}`).join("|");
+    if (sig !== this.contractsSig) {
+      this.contractsSig = sig;
+      this.contractsHost.replaceChildren();
+      this.contractRows.clear();
+      if (contracts.length === 0) {
+        const empty = el("div", "net-contract-empty");
+        empty.textContent = "— no contracts yet —";
+        this.contractsHost.append(empty);
+      }
+      for (const c of contracts) {
+        const root = el("div", "net-contract");
+        const head = el("div", "net-contract-head");
+        const terms = el("div", "net-contract-terms");
+        const prog = el("div", "net-contract-prog");
+        const accept = button("ACCEPT", "accept-row");
+        accept.dataset.contractId = c.id;
+        accept.addEventListener("click", () => this.actions.onAccept(c.id));
+        root.append(head, terms, prog, accept);
+        this.contractsHost.append(root);
+        this.contractRows.set(c.id, { root, head, terms, prog, accept });
+      }
+    }
+    for (const c of contracts) {
+      const r = this.contractRows.get(c.id);
+      if (!r) continue;
+      const stateWord =
+        c.state === "offered" ? "OFFERED"
+        : c.state === "active" ? (c.served ? "SERVED ✓" : "UNSERVED")
+        : c.state === "completed" ? "✓ DONE"
+        : "✕ ENDED";
+      const tone =
+        c.state === "offered" ? "cyan"
+        : c.state === "active" ? (c.served ? "green" : "amber")
+        : c.state === "completed" ? "green"
+        : "red";
+      r.head.className = `net-contract-head ${tone}`;
+      setText(r.head, `${c.label} · ${stateWord}`);
+      setText(r.terms, `${c.terms} · +€${Math.round(c.rewardPerHr)}/hr`);
+      if (c.state === "active") {
+        setText(r.prog, `served ${fmtPct(c.servedFraction)} · term ${fmtPct(c.progressFraction)} · earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.style.display = "";
+      } else if (c.state === "offered") {
+        setText(r.prog, "accept to start earning");
+        r.prog.style.display = "";
+      } else {
+        setText(r.prog, `earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.style.display = "";
+      }
+      r.accept.style.display = c.state === "offered" ? "" : "none";
+      r.accept.classList.toggle("ready", c.state === "offered");
+    }
+  }
+
+  status(): "ok" | "warn" | "crit" {
+    return this.worst;
+  }
+
+  subtitle(): string {
+    return this.servedNow ? "· SERVED" : "· the deals";
+  }
+}
+
+/**
+ * net/ M1 — ROUTING·PREFER (SD-44 PHASE 1): the §7.3/§10 per-contract latency ↔ bandwidth ↔ stability
+ * tuner, split onto its own tile. The selector + slider machinery is moved VERBATIM — [data-net="prefer"]
+ * + [data-net="prefer-select"] live here now. When state.prefer == null the tile shows a dim "no traffic
+ * to route yet" line instead of the controls.
+ */
+export class NetPrefer implements PanelHandle {
+  readonly title = "ROUTING·PREFER";
+  readonly content: HTMLElement;
+
+  private preferGroup: HTMLElement;
+  private emptyLine: HTMLElement;
+  private vPreferContract: HTMLElement;
+  private vPreferClass: HTMLElement;
+  private vPreferWeights: HTMLElement;
+  private preferSelectBtn: HTMLButtonElement;
+  private preferSlider: HTMLInputElement;
+  private preferContractId: string | null = null;
+  private controls: HTMLElement;
+
+  constructor(private actions: NetPlannerActions) {
+    this.content = el("div", "telem");
+
+    this.preferGroup = group("ROUTING · PREFER (§7.3)");
+
+    // The dim empty-state line (shown until ≥1 active contract exists).
+    this.emptyLine = el("div", "net-hint");
+    this.emptyLine.textContent = "no traffic to route yet — accept a contract and launch";
+    this.preferGroup.append(this.emptyLine);
+
+    // The controls (hidden until there is something to tune).
+    this.controls = el("div", "net-prefer-controls");
+    const pRow = el("div", "row");
+    const pLab = el("span", "label");
+    pLab.textContent = "CONTRACT";
+    this.vPreferContract = el("span", "v cyan");
+    pRow.append(pLab, this.vPreferContract);
+    this.controls.append(pRow);
+    this.vPreferClass = valueOf(row(this.controls, "CLASS", "green"));
+    this.vPreferWeights = valueOf(row(this.controls, "WEIGHTS"));
+    const sRow = el("div", "net-slider");
+    const sHead = el("div", "row");
+    const sLab = el("span", "label");
+    sLab.textContent = "LAT ↔ BW ↔ STAB";
+    sHead.append(sLab);
+    this.preferSlider = document.createElement("input");
+    this.preferSlider.type = "range";
+    this.preferSlider.min = "0";
+    this.preferSlider.max = "1000";
+    this.preferSlider.step = "1";
+    this.preferSlider.className = "net-range";
+    this.preferSlider.dataset.net = "prefer";
+    this.preferSlider.addEventListener("input", () => {
+      if (this.preferContractId !== null) {
+        this.actions.onSetPrefer(this.preferContractId, Number(this.preferSlider.value) / 1000);
+      }
+    });
+    sRow.append(sHead, this.preferSlider);
+    this.controls.append(sRow);
+    const pBtnRow = el("div", "net-buttons");
+    this.preferSelectBtn = button("SELECT CONTRACT", "prefer-select");
+    this.preferSelectBtn.addEventListener("click", () => this.actions.onSelectPreferContract());
+    pBtnRow.append(this.preferSelectBtn);
+    this.controls.append(pBtnRow);
+    this.controls.style.display = "none";
+    this.preferGroup.append(this.controls);
+
+    this.content.append(this.preferGroup);
+  }
+
+  render(state: NetPlannerRenderState): void {
+    const pc = state.prefer;
+    if (pc) {
+      this.emptyLine.style.display = "none";
+      this.controls.style.display = "";
+      this.preferContractId = pc.contractId;
+      setText(this.vPreferContract, pc.label);
+      setText(this.vPreferClass, `${pc.trafficClass}-class`);
+      setText(
+        this.vPreferWeights,
+        `lat ${pc.prefer.lat.toFixed(2)} · bw ${pc.prefer.bw < 0.01 && pc.prefer.bw > 0 ? pc.prefer.bw.toExponential(0) : pc.prefer.bw.toFixed(2)} · stab ${pc.prefer.stab.toFixed(2)} (dormant)`,
+      );
+      if (document.activeElement !== this.preferSlider) {
+        const next = String(Math.round(pc.pos * 1000));
+        if (this.preferSlider.value !== next) this.preferSlider.value = next;
+      }
+      this.preferSelectBtn.disabled = !pc.canSelect;
+      this.preferSelectBtn.classList.toggle("ready", pc.canSelect);
+    } else {
+      this.emptyLine.style.display = "";
+      this.controls.style.display = "none";
+      this.preferContractId = null;
+    }
+  }
+
+  subtitle(): string {
+    return this.preferContractId ? "· tuning" : "· idle";
+  }
+}
+
 // --- tiny DOM helpers (mirror finance.ts / contracts.ts) --------------------
 
 function el(tag: string, className: string): HTMLElement {

@@ -90,7 +90,11 @@ import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
 // net/ Act-3b P2 — the LIVE telegraphed countdown + the permanent-drop predicate (the §5 watch-and-
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
 import { telegraphedCountdownRemainingS, faultRemovesSatAt } from "./sim/net/fault-types";
-import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
+import { NetPlanner, NetLaunch, NetContracts, NetPrefer, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
+import { StatusBoard } from "./panels/status-board";
+import { CoverageRoster, type CoverageRosterState } from "./panels/coverage-roster";
+import { LinkLoad, type LinkLoadState } from "./panels/link-load";
+import { Howto } from "./panels/howto";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
@@ -1254,8 +1258,9 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
   const c = currentNetContract();
-  // §3 — whether the LAUNCH planner is open (drives the orrery's planner-focus close-up).
-  const plannerActive = shell.visibleHosts().includes("net-planner");
+  // §3 — whether the LAUNCH planner is open (drives the orrery's planner-focus close-up). SD-44
+  // PHASE 1: the LAUNCH tile is now the split "net-launch" host (shown on the CONNECTIVITY desktop).
+  const plannerActive = shell.visibleHosts().includes("net-launch");
   if (c === null) {
     return {
       // §3 — the operated body even with no contract: the camera focus body, so the orrery still
@@ -1351,8 +1356,9 @@ function netDraftSlice(
   c: ReturnType<NetSession["contractById"]>,
 ): import("./orrery/orrery").NetRenderState["draft"] {
   // Only draw the draft while the LAUNCH PLANNER is on screen (it IS the planner's consequence view);
-  // off-planner the globe stays the clean monument view. Cheap visibleHosts read.
-  if (!shell.visibleHosts().includes("net-planner")) return null;
+  // off-planner the globe stays the clean monument view. Cheap visibleHosts read. SD-44 PHASE 1: the
+  // LAUNCH tile is the split "net-launch" host (the CONNECTIVITY desktop).
+  if (!shell.visibleHosts().includes("net-launch")) return null;
   // The truthful preview of the live editable draft (the SAME call the panel makes).
   const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t);
   // The draft sat's NADIR footprint (the would-be sat built the SAME way the applier builds it).
@@ -1479,6 +1485,70 @@ function netServedLinksSlice(
   // Drop trackers for contracts no longer served (so a re-acquire flashes as a fresh re-route).
   for (const id of [...netLinkLastSat.keys()]) if (!live.has(id)) { netLinkLastSat.delete(id); netLinkReroute.delete(id); }
   return out;
+}
+
+/**
+ * net/ M1 (SD-44 PHASE 1) — project the live net session into the COVERAGE·ROSTER tile state: one row
+ * per launched sat (id + orbit CLASS LEO/GEO derived from its semi-major axis + a "covers REGION-x / —"
+ * note from the router's per-contract solve), plus the DARK list of active contracts NOT served right
+ * now. A PURE read of netSession (sats + contracts + lastSolveFor) — no sim mutation, no golden impact.
+ */
+function netCoverageRosterState(): CoverageRosterState {
+  // Which active contract each sat is bridging right now: read the router's served path (path[1] = sat).
+  const satCovers = new Map<string, string[]>();
+  const dark: string[] = [];
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") continue;
+    const solve = netSession.lastSolveFor(c.id);
+    if (solve !== null && solve.served && solve.path !== null && solve.path.length >= 2) {
+      const satId = solve.path[1];
+      const list = satCovers.get(satId) ?? [];
+      list.push(c.region.id);
+      satCovers.set(satId, list);
+    } else {
+      dark.push(c.region.id);
+    }
+  }
+  const geoBoundaryM = (A1_LEO_SEMI_MAJOR_M + A1_GEO_SEMI_MAJOR_M) / 2;
+  const sats = netSession.sats.map((s) => {
+    const covered = satCovers.get(s.id) ?? [];
+    return {
+      id: s.id,
+      orbitClass: s.orbit.aM >= geoBoundaryM ? "GEO" : "LEO",
+      covers: covered.length > 0 ? `covers ${covered.join(", ")}` : "—",
+      active: covered.length > 0,
+    };
+  });
+  return { sats, dark };
+}
+
+/**
+ * net/ M1 (SD-44 PHASE 1) — project the live net session into the LINK·LOAD tile state: one row per
+ * BRIDGING sat (a sat carrying ≥1 served contract), its utilisation (loadOnSat / capacity, the §4.3
+ * oversubscription read), the contract ids sharing it, and the binding constraint from the router's
+ * last solve. A PURE read of netSession (loadOnSat + lastSolveFor). Empty (→ "no traffic yet") in Act 1
+ * before any served contract.
+ */
+function netLinkLoadState(): LinkLoadState {
+  // Group active served contracts by their bridging sat (path[1]); collect the binding constraint.
+  const bySat = new Map<string, { contracts: string[]; binding: string }>();
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") continue;
+    const solve = netSession.lastSolveFor(c.id);
+    if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
+    const satId = solve.path[1];
+    const entry = bySat.get(satId) ?? { contracts: [], binding: "—" };
+    entry.contracts.push(c.id);
+    if (solve.bindingConstraint !== null) entry.binding = solve.bindingConstraint;
+    bySat.set(satId, entry);
+  }
+  const rows = [...bySat.entries()].map(([satId, e]) => ({
+    satId,
+    util: netSession.loadOnSat(satId) / NET_LINK_CAPACITY_UNITS,
+    contracts: e.contracts,
+    binding: e.binding,
+  }));
+  return { rows };
 }
 
 /**
@@ -1995,12 +2065,15 @@ const fleetPanel = new FleetPanel();
 // presets + the truthful consequence preview + the LAUNCH/ACCEPT buttons. Holds no sim state;
 // main.ts hands it a per-frame NetPlannerRenderState and wires the buttons to the net loop
 // (the launch/accept appliers + the preset cursor). Summonable via the LAUNCH rail button.
-const netPlannerPanel = new NetPlanner({
+// net/ M1 (SD-44 PHASE 1) — the SHARED launch/accept/prefer actions object (the appliers + the preset
+// cursor). The monolithic NetPlanner used it; the THREE split tiles (NET·LAUNCH / CONTRACTS / ROUTING·
+// PREFER) all take the SAME object so the loop wiring is identical no matter which tile fires the verb.
+const netPlannerActions = {
   // A preset click SETS the draft (the floor, §3.1); the player drags from there (the ceiling).
-  onSelectPreset: (id) => netSelectPreset(id),
+  onSelectPreset: (id: string) => netSelectPreset(id),
   // §3.1 — a slider drag EDITS one draft parameter to a normalized 0..1 position; each edit re-runs
   // previewLaunch so the on-globe consequence (footprint + ground-track + coverage gap) moves live.
-  onEditDraft: (field, pos) => {
+  onEditDraft: (field: import("./panels/net-planner").NetDraftField, pos: number) => {
     const b = NET_DRAFT_BOUNDS[field];
     netEditDraft(field, b.min + pos * (b.max - b.min));
   },
@@ -2013,8 +2086,22 @@ const netPlannerPanel = new NetPlanner({
   // active contract is tuned, and DRAG the latency↔bandwidth↔stability slider (→ net_set_prefer →
   // the router re-solves that contract → its path re-routes on the globe via the P1 link line).
   onSelectPreferContract: () => netCyclePreferContract(),
-  onSetPrefer: (contractId, pos) => netSetPrefer(contractId, pos),
-});
+  onSetPrefer: (contractId: string, pos: number) => netSetPrefer(contractId, pos),
+};
+// The cache-mode monolithic planner (kept for ?mode=cache; net mode mounts the split tiles instead).
+const netPlannerPanel = new NetPlanner(netPlannerActions);
+// net/ M1 (SD-44 PHASE 1) — THE THREE SPLIT MISSION-CONTROL TILES: NET·LAUNCH (the verb + the dead-clear
+// WHAT/WHERE headline), CONTRACTS (the deal board + ACCEPT), ROUTING·PREFER (the per-contract tuner).
+// All take the SAME actions object + the SAME per-frame NetPlannerRenderState.
+const netLaunchPanel = new NetLaunch(netPlannerActions);
+const netContractsPanel = new NetContracts(netPlannerActions);
+const netPreferPanel = new NetPrefer(netPlannerActions);
+// net/ M1 (SD-44 PHASE 1) — THE NEW MISSION-CONTROL DASHBOARDS: the OVERVIEW triage board, the
+// CONNECTIVITY coverage roster, the ROUTING link-load board, and the REFERENCE how-it-works page.
+const statusBoardPanel = new StatusBoard();
+const coverageRosterPanel = new CoverageRoster();
+const linkLoadPanel = new LinkLoad();
+const howtoPanel = new Howto();
 
 // net/ M1 — THE ONBOARDING POPUPS (the briefing cards): one dismissible 1-bit info card per CORE
 // CONCEPT, mounted over the whole window (the app root) so it reads over every tile + the rail. Net
@@ -2056,16 +2143,30 @@ const orreryHandle: PanelHandle = {
   onResize: (w, h) => orrery.resize(w, h),
 };
 
+// net/ M1 (SD-44 PHASE 1) — the host registry the Shell mounts presets from. In NET mode it carries the
+// FIVE mission-control desktops' hosts (the three split net tiles + the four dashboards + telemetry,
+// which net presets now use) and does NOT register the monolithic "net-planner" (the cache-only tile).
+// In CACHE mode it is byte-identical to before — the M2 CONTRACTS / FLEET / net-planner set.
 const registry = new Map<string, PanelHandle>([
   ["orrery", orreryHandle],
   ["system-log", log],
   ["telemetry", telemetry],
   ["finance", finance],
   ["parse", parse],
-  ["contracts", contractsPanel],
-  ["fleet", fleetPanel],
-  ["net-planner", netPlannerPanel],
 ]);
+if (netMode) {
+  registry.set("net-launch", netLaunchPanel);
+  registry.set("net-contracts", netContractsPanel);
+  registry.set("net-prefer", netPreferPanel);
+  registry.set("status-board", statusBoardPanel);
+  registry.set("coverage-roster", coverageRosterPanel);
+  registry.set("link-load", linkLoadPanel);
+  registry.set("howto", howtoPanel);
+} else {
+  registry.set("contracts", contractsPanel);
+  registry.set("fleet", fleetPanel);
+  registry.set("net-planner", netPlannerPanel);
+}
 
 const shell = new Shell(wmCanvas, registry);
 
@@ -2096,10 +2197,18 @@ function setWmPreset(i: number): void {
   if (i < 0 || i >= presets.length) return;
   wmPresetName = presets[i].name;
   shell.setPreset(presets[i].name, presets[i].grid);
-  // REVIEW carries THE PARSE (the §4.12 reviewable-at-rest record). Force-fold the run
-  // summary on entry so it reflects the live log even on a paused run (the per-frame
-  // caller is dirty-checked). Summoning PARSE via the rail does the same (above).
-  if (wmPresetName === "REVIEW") refreshParse(true);
+  // net/ M1 (SD-44 PHASE 1) — set the orrery CAMERA by the desktop NAME so each operating desktop opens
+  // at the right framing: OVERVIEW + CONNECTIVITY → EARTH (near-body, where sats + footprints read
+  // large); ROUTING → ORBITS (pulled back so the live links read across the constellation). BUSINESS +
+  // REFERENCE don't mount the orrery, so the camera is left as-is.
+  if (netMode) {
+    if (wmPresetName === "OVERVIEW" || wmPresetName === "CONNECTIVITY") orrery.setPreset(0); // EARTH
+    else if (wmPresetName === "ROUTING") orrery.setPreset(2); // ORBITS
+  }
+  // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run
+  // summary on entry so it reflects the live log even on a paused run (the per-frame caller is dirty-
+  // checked). In cache mode PARSE still lives on REVIEW. Summoning PARSE via the rail does the same.
+  if (wmPresetName === "REFERENCE" || wmPresetName === "REVIEW") refreshParse(true);
 }
 
 /**
@@ -2132,12 +2241,13 @@ function refreshParse(force = false): void {
 }
 
 status.setPresetTabs(presets.map((p) => p.name));
-setWmPreset(0); // PLAY (the default working layout)
-// net/ Act-1 — BOOT INTO NET MODE: the net PLAY preset already mounts the net-relevant set
-// (orrery hero + NET·LAUNCH planner + SYSTEM.LOG + FINANCE) — no cache/M2/M3 panels — so we just
-// focus the orrery so the cold player starts on the large central toy globe. The cache-mode boot
-// is unchanged (its PRESET_SPECS PLAY layout keeps the M2 CONTRACTS board).
-if (netMode) {
+// net/ M1 (SD-44 PHASE 1) — BOOT INTO THE OVERVIEW TRIAGE WALL (index 0): the orrery hero + the
+// STATUS·BOARD + FINANCE, so the cold player starts on "is anything wrong now?" rather than the crammed
+// launch panel. The cache-mode boot is unchanged (PRESET_SPECS index 0 is its PLAY layout).
+setWmPreset(0);
+// Focus the orrery so the cold player starts on the large central toy globe (the OVERVIEW desktop
+// mounts it). Guarded to when the orrery is actually visible (it is on OVERVIEW).
+if (netMode && shell.visibleHosts().includes("orrery")) {
   shell.setFocus("orrery");
 }
 
@@ -2201,15 +2311,45 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  if (k >= "1" && k <= "3") setWmPreset(Number(k) - 1);
+  // net/ M1 (SD-44) — THE NET CONTROL SCHEME: a clean, fresh pass. The old pile of cache-era keys is
+  // CUT in net mode entirely — net mode handles ONLY this minimal, collision-free set and RETURNS, so
+  // no shortcut "does nothing here" and there is no C camera/constellation clash:
+  //   1–5 switch desktop · 0 reset layout · Space pause · ,/. speed · ↑↓ alt · ←→ inc · [ ] phase
+  //   (handled above by netDraftNudgeKey) · L launch · R reset camera.
+  // ACCEPT, CONSTELLATION (PLACE SET), and the PREFER tune are PANEL BUTTONS now (on BUSINESS /
+  // CONNECTIVITY / ROUTING), never global keys. The desktop sets the camera, so E/C/O/S/T are gone;
+  // and F/P/H/D/B/M/'/N/J/A/; (all cache-mode verbs) never fire in net mode.
+  if (netMode) {
+    if (k >= "1" && k <= "5") setWmPreset(Number(k) - 1);
+    else if (k === "0") shell.reset();
+    else if (k === " ") {
+      e.preventDefault();
+      clock.togglePause();
+      recordScale();
+    } else if (k === ",") {
+      clock.slower();
+      recordScale();
+    } else if (k === ".") {
+      clock.faster();
+      recordScale();
+    } else if (k === "l" || k === "L") {
+      netLaunch();
+    } else if (k === "r" || k === "R") {
+      orrery.resetCamera();
+    }
+    return; // net mode: nothing else is a key (the rest are panel buttons / cache-only verbs).
+  }
+  // --- cache mode (?mode=cache) keymap below — unchanged ---
+  if (k >= "1" && k <= "5") setWmPreset(Number(k) - 1);
   else if (k === "0") shell.reset();
   else if (k === "g" || k === "G") {
-    // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record). PARSE is no longer its own
-    // preset (the 7→3 cut); it is a panel summoned via the right rail. G is the keyboard
-    // parity for that: SUMMON it into the focused tile if it is off-screen, else jump to
-    // the REVIEW layout (its at-rest home). Summoning folds the run summary (rail hook).
-    if (shell.visibleHosts().includes("parse")) setWmPreset(presets.findIndex((p) => p.name === "REVIEW"));
-    else windowRail.summonParse();
+    // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record). PARSE is a panel summoned via the right
+    // rail. G is the keyboard parity: SUMMON it into the focused tile if it is off-screen, else jump to
+    // its at-rest home desktop (REFERENCE in net mode, REVIEW in cache mode). Summoning folds the run.
+    if (shell.visibleHosts().includes("parse")) {
+      const home = netMode ? "REFERENCE" : "REVIEW";
+      setWmPreset(presets.findIndex((p) => p.name === home));
+    } else windowRail.summonParse();
   }
   // Camera presets, by name. EARTH (the near-body framing where sats visibly orbit) is
   // the boot default; E re-frames it. C/O/S/T keep their named presets (now shifted by
@@ -2456,13 +2596,32 @@ function frame(now: number): void {
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);
-  // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
-  // the live build session each frame; the panel rebuilds its rows only on a change.
-  contractsPanel.render(contractsRenderState());
-  // net/ Act-1 — paint the LAUNCH PLANNER (the offered REGION-0 + presets + the truthful
-  // consequence preview + the LAUNCH/ACCEPT face). Projected each frame from the live net
-  // session; the panel rebuilds its DOM only on change.
-  netPlannerPanel.render(netPlannerRenderState());
+  if (netMode) {
+    // net/ M1 (SD-44 PHASE 1) — paint the FIVE mission-control desktops' net tiles. The three split
+    // tiles (NET·LAUNCH / CONTRACTS / ROUTING·PREFER) take ONE shared per-frame NetPlannerRenderState;
+    // the four dashboards take their own pure projections. Each panel rebuilds DOM only on change, so
+    // painting an off-screen tile is cheap (the Shell only mounts the visible ones, but a detached
+    // panel's render is a no-op churn-wise). The orrery planner overlay keys on the net-launch tile.
+    const ns = netPlannerRenderState();
+    netLaunchPanel.render(ns);
+    netContractsPanel.render(ns);
+    netPreferPanel.render(ns);
+    statusBoardPanel.render(ns);
+    coverageRosterPanel.render(netCoverageRosterState());
+    linkLoadPanel.render(netLinkLoadState());
+    howtoPanel.render(netSession.cursor);
+  } else {
+    // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
+    // the live build session each frame; the panel rebuilds its rows only on a change.
+    contractsPanel.render(contractsRenderState());
+    // net/ Act-1 — paint the cache-mode LAUNCH PLANNER (kept for ?mode=cache).
+    netPlannerPanel.render(netPlannerRenderState());
+    // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
+    // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
+    // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change
+    // (X-02). Render/read-only — a pure SELECT over existing truth, no sim mutation.
+    fleetPanel.render(fleetRenderState());
+  }
   // net/ Act-3b — surface the live fault + trace state into SYSTEM.LOG (edge-triggered, render-only:
   // the amber-pulse degradation / telegraphed countdown + the first resilience shortfall).
   drainNetFaultLog();
@@ -2472,11 +2631,6 @@ function frame(now: number): void {
   // net/ M1 — fire the ONBOARDING briefing card for the current concept off the scenario cursor
   // (act1 at the cold open; the rest as the cursor reaches them). Shown once each; render-only.
   drainNetOnboarding();
-  // M-fleet — paint the FLEET tile: the satellites around the orrery's focused body
-  // (SD-35 click-to-focus). Projected each frame from the focused body + the live roster
-  // + the dataset sats; the panel rebuilds its rows only on a glanceable signature change
-  // (X-02). Render/read-only — a pure SELECT over existing truth, no sim mutation.
-  fleetPanel.render(fleetRenderState());
   // E10c — while THE PARSE panel is VISIBLE (the REVIEW preset, or summoned into any tile
   // via the rail), keep the reviewable record live (a read-only re-fold of the truthful
   // log; it never mutates sim state). Dirty-checked, so it costs nothing when not shown.

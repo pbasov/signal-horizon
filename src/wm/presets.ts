@@ -167,15 +167,18 @@ export const NET_PRESET_SPECS: PresetSpec[] = [
   },
   {
     // REFERENCE (key 5) — the help / at-rest desktop. HOW-IT-WORKS explainer wide on the left, with the
-    // TELEMETRY readout over THE PARSE (§4.12 reviewable record) on the right. No orrery here.
+    // HOW-IT-WORKS explainer hero, with the live SYSTEM.LOG (the net "raw truth" event stream) over
+    // the net FINANCE readout. No orrery here. NOTE: telemetry + the PARSE are NOT mounted in net mode
+    // — both still read the CACHE session (Earth↔Mars distance / packet / freshness / mars_* feeds) and
+    // would leak the deferred caching game onto this wall; their net-aware versions are later-phase work.
     name: "REFERENCE",
     columns: [
       { weight: 0.5, rows: [{ weight: 1, host: "howto" }] },
       {
         weight: 0.5,
         rows: [
-          { weight: 1.4, host: "telemetry" },
-          { weight: 1.0, host: "parse" },
+          { weight: 1.4, host: "system-log" },
+          { weight: 1.0, host: "finance" },
         ],
       },
     ],

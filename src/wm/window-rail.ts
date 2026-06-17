@@ -46,18 +46,26 @@ export const RAIL_PANELS: RailPanel[] = [
 ];
 
 /**
- * net/ Act-1 — THE NET-MODE RAIL SET (design §3/§9). Net mode is the connectivity game, NOT the
- * cache/M2/M3 economy — so the summon rail offers ONLY net-relevant panels: the toy globe, the
- * truthful SYSTEM.LOG, the FINANCE/wallet readout, the NET·LAUNCH planner (the verb), and THE
- * PARSE (at-rest record). The MARS-CACHE TELEMETRY feeds, the M2 CONTRACTS board, and the FLEET
- * tile are NOT summonable here — they belong to ?mode=cache (where {@link RAIL_PANELS} is used).
+ * net/ M1 — THE NET-MODE RAIL SET (SD-44 PHASE 1; design §3/§9). The mission-control SUPER-SET: every
+ * net desktop's tile is summonable into the focused tile so the player can recompose any of the FIVE
+ * presets by hand. ORDER is the mission-control reading order (the verb chain first, then the readouts,
+ * then the at-rest record). The MARS-CACHE feeds / M2 CONTRACTS board / FLEET tile belong to ?mode=cache
+ * (where {@link RAIL_PANELS} is used) — they are NOT summonable here.
  */
 export const NET_RAIL_PANELS: RailPanel[] = [
   { host: "orrery", label: "ORRERY" },
-  { host: "net-planner", label: "LAUNCH" },
-  { host: "system-log", label: "SYSTEM.LOG" },
+  { host: "net-launch", label: "LAUNCH" },
+  { host: "net-contracts", label: "CONTRACTS" },
+  { host: "link-load", label: "LINK·LOAD" },
+  { host: "net-prefer", label: "PREFER" },
+  { host: "coverage-roster", label: "ROSTER" },
+  { host: "status-board", label: "STATUS" },
   { host: "finance", label: "FINANCE" },
-  { host: "parse", label: "PARSE" },
+  { host: "howto", label: "HOW-IT-WORKS" },
+  { host: "system-log", label: "SYSTEM.LOG" },
+  // telemetry + parse are intentionally OMITTED from the net rail: both still read the CACHE session
+  // (Earth↔Mars distance / packet / freshness / mars_* feeds) and would leak the deferred caching
+  // game. Their net-aware versions are later-phase work; until then they are cache-mode only.
 ];
 
 export class WindowRail {

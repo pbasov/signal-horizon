@@ -100,21 +100,18 @@ export class StatusStrip {
     // --- key-hint legend ---
     const keys = document.createElement("div");
     keys.className = "cell keys";
-    appendKeys(keys, "1-3");
-    keys.append(" presets ");
-    appendKeys(keys, "0");
-    keys.append(" reset ");
-    appendKeys(keys, "E", "C", "O", "S", "T");
-    keys.append(" cam ");
-    appendKeys(keys, "R");
-    keys.append(" reset ");
-    appendKeys(keys, "Space");
-    keys.append(" pause ");
-    appendKeys(keys, ",", ".");
-    keys.append(" speed ");
     if (netMode) {
-      // net/ Act-1 — the CONNECTIVITY-game verbs: drag the orbit (the planner ceiling), then
-      // launch / accept / phase a constellation / place the Act-4 cache breadcrumb.
+      // net/ M1 (SD-44) — THE CLEAN NET KEYMAP (the legend shows ONLY keys that work in net mode;
+      // accept / constellation / prefer are panel BUTTONS now, the camera is set by the desktop, and
+      // every cache-era key is cut — see the main.ts net key handler). Reads as one short row.
+      appendKeys(keys, "1-5");
+      keys.append(" desktops ");
+      appendKeys(keys, "0");
+      keys.append(" reset ");
+      appendKeys(keys, "Space");
+      keys.append(" pause ");
+      appendKeys(keys, ",", ".");
+      keys.append(" speed ");
       appendKeys(keys, "↑", "↓");
       keys.append(" alt ");
       appendKeys(keys, "←", "→");
@@ -123,14 +120,22 @@ export class StatusStrip {
       keys.append(" phase ");
       appendKeys(keys, "L");
       keys.append(" launch ");
-      appendKeys(keys, "K");
-      keys.append(" accept ");
-      appendKeys(keys, "C");
-      keys.append(" constln");
-      // (P · the Act-4 Mars breadcrumb is intentionally NOT in the opening legend — it would
-      // surface the word "cache" before the connectivity game has even been learned.)
+      appendKeys(keys, "R");
+      keys.append(" cam");
     } else {
       // M1-cache verbs (unchanged).
+      appendKeys(keys, "1-3");
+      keys.append(" presets ");
+      appendKeys(keys, "0");
+      keys.append(" reset ");
+      appendKeys(keys, "E", "C", "O", "S", "T");
+      keys.append(" cam ");
+      appendKeys(keys, "R");
+      keys.append(" reset ");
+      appendKeys(keys, "Space");
+      keys.append(" pause ");
+      appendKeys(keys, ",", ".");
+      keys.append(" speed ");
       appendKeys(keys, "F");
       keys.append(" focus ");
       appendKeys(keys, "P");
