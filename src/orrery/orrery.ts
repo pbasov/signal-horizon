@@ -302,6 +302,15 @@ export interface NetRenderState {
      * until a region is live. `coveredFraction` ∈ [0,1] is previewLaunch's truthful per-contract
      * coverage of THIS draft. */
     gap: { centerPosM: Vec3; radiusRad: number; coveredFraction: number } | null;
+    /** THE DRAFT ORBIT RING (§3.1 — "see the orbit before you launch"): the would-be orbit sampled
+     * over one period as earth-relative world points, so the player SEES the path they're about to
+     * launch — and the knobs visibly move it (altitude resizes, inclination tilts, RAAN rotates the
+     * plane). Drawn through the SAME de-squash/log-fold the launched-sat rings use, so the preview
+     * ring lands exactly where the committed sat's ring will. Empty until a draft exists. */
+    orbitRing: Vec3[];
+    /** The draft sat's CURRENT position on that ring (the phase marker — moves as PHASE changes), an
+     * earth-relative world point. Null until a draft exists. */
+    satPosM: Vec3 | null;
   } | null;
   /**
    * §3 / Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam, drawn when a
@@ -466,6 +475,9 @@ const MAX_NET_LINK_HOPS = 4;
 /** §3 — the DRAFT ground-track dashed-line vertex cap (the previewLaunch ground-track is sampled
  * at NET_GROUND_TRACK_SAMPLES=64 over one period; the line draws a dash per adjacent pair). */
 const NET_DRAFT_TRACK_SAMPLES = 64;
+/** Segments in the DRAFT ORBIT RING (the would-be orbit drawn in space). Must match the sample count
+ * main.ts puts in the draft slice's `orbitRing` (NET_DRAFT_RING_SAMPLES there). */
+const NET_DRAFT_RING_SAMPLES = 96;
 /** Launched-sat orbit rings: samples per ring (matches the dataset ring density). */
 const SAT_RING_SAMPLES = 96;
 /** Max launched-sat orbit rings drawn at once (a pool; the roster sat count is small). */
@@ -828,6 +840,12 @@ export class Orrery {
    * (a GEO parks ⇒ a tight knot; a LEO walks ⇒ a long arc). Render-only; positions rewritten each
    * frame from the draft slice. Built once with a fixed sample cap. */
   private netGroundTrack?: THREE.LineSegments;
+  /** THE DRAFT ORBIT RING + sat marker — the would-be orbit drawn IN SPACE (not on the surface), so
+   * the player sees the path before launch + the knobs visibly move it (altitude resizes it,
+   * inclination tilts it, RAAN rotates the plane, phase slides the marker). Built once + hidden;
+   * positions rewritten each frame from the draft slice (same de-squash/fold the launched rings use). */
+  private netDraftRing?: THREE.LineSegments;
+  private netDraftSat?: THREE.Mesh;
   /** Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam (a bright green dashed
    * segment set through the three world points), drawn when a launched sat bridges the region. */
   private netServedLink?: THREE.LineSegments;
@@ -1045,6 +1063,19 @@ export class Orrery {
     this.netGroundTrack.visible = false;
     this.netGroundTrack.renderOrder = 9; // over the coverage discs (≤8), under the markers (10+) — reads on top, no z-fight.
     this.scene.add(this.netGroundTrack);
+    // THE DRAFT ORBIT RING (in space) + its phase marker — see the orbit BEFORE launch; the knobs move it.
+    this.netDraftRing = this.buildPolyline(NET_DRAFT_RING_SAMPLES, 0x6fe0ff, 0.85); // bright cyan orbit ring.
+    this.netDraftRing.visible = false;
+    this.netDraftRing.renderOrder = 9.6; // over the surface discs, alongside the ground-track.
+    this.scene.add(this.netDraftRing);
+    this.netDraftSat = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 18),
+      new THREE.MeshBasicMaterial({ color: 0xc7f6ff, transparent: true, depthTest: false, depthWrite: false }),
+    );
+    this.netDraftSat.visible = false;
+    this.netDraftSat.frustumCulled = false;
+    this.netDraftSat.renderOrder = 12; // the draft sat dot, above the ring + discs.
+    this.scene.add(this.netDraftSat);
     this.netServedLink = this.buildPolyline(2, 0x8dffc6, 0.85); // green served beam (region→sat→ground).
     this.netServedLink.visible = false;
     this.netServedLink.renderOrder = 14; // above the discs so the beam reads on the globe.
@@ -1885,6 +1916,37 @@ export class Orrery {
       track.visible = true;
     } else {
       track.visible = false;
+    }
+
+    // (c2) THE DRAFT ORBIT RING — the would-be orbit drawn IN SPACE, sampled over one period and run
+    // through the SAME de-squash/log-fold (writeRenderPoint) the launched-sat rings use, so the preview
+    // ring lands exactly where the committed sat will ride. The knobs move it live: altitude resizes,
+    // inclination tilts, RAAN rotates the plane. The marker rides it at the current PHASE.
+    const ring = this.netDraftRing;
+    const dsat = this.netDraftSat;
+    const rp = draft?.orbitRing ?? [];
+    if (ring && rp.length >= 2) {
+      const posAttr = ring.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      const segCap = arr.length / 6;
+      const n = Math.min(rp.length - 1, segCap);
+      let w = 0;
+      for (let i = 0; i < n; i++) {
+        w = this.writeRenderPoint(arr, w, rp[i][0], rp[i][1], rp[i][2], focusAbs);
+        w = this.writeRenderPoint(arr, w, rp[i + 1][0], rp[i + 1][1], rp[i + 1][2], focusAbs);
+      }
+      while (w < arr.length) arr[w++] = arr[w - 4] ?? 0;
+      posAttr.needsUpdate = true;
+      ring.visible = true;
+    } else if (ring) {
+      ring.visible = false;
+    }
+    if (dsat && draft?.satPosM) {
+      this.renderInto(dsat.position, draft.satPosM, focusAbs);
+      this.sizeBillboard(dsat, 5, worldPerPx);
+      dsat.visible = true;
+    } else if (dsat) {
+      dsat.visible = false;
     }
 
     // (d) THE SERVED LINK BEAM — region→sat→ground, drawn when a LAUNCHED sat bridges the region

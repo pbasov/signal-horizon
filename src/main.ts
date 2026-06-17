@@ -1451,6 +1451,17 @@ function netDraftSlice(
   const sat = draftToSat(netDraft, t);
   const satRel = solveOrbit(sat.orbit, t);
   const r = Math.hypot(satRel[0], satRel[1], satRel[2]);
+  // THE DRAFT ORBIT RING — sample the would-be orbit over one full period into earth-relative world
+  // points, so the player SEES the orbit before launch and the knobs visibly move it (altitude
+  // resizes the ring, inclination tilts it, RAAN rotates the plane, phase slides the sat marker).
+  // Same solveOrbit the committed sat uses ⇒ the preview ring == where the launched sat will ride.
+  const periodS = preview.periodS > 0 ? preview.periodS : orbitPeriodSeconds(sat.orbit);
+  const NET_DRAFT_RING_SAMPLES = 96;
+  const orbitRing: Vec3[] = [];
+  for (let k = 0; k <= NET_DRAFT_RING_SAMPLES; k++) {
+    orbitRing.push(add(solveOrbit(sat.orbit, t + (periodS * k) / NET_DRAFT_RING_SAMPLES)));
+  }
+  const satPosM = r > 0 ? add(satRel) : null;
   const footprint =
     r > 0
       ? {
@@ -1478,7 +1489,7 @@ function netDraftSlice(
             preview.contracts.find((pc) => pc.contractId === c.id)?.coveredFraction ?? 0,
         }
       : null;
-  return { footprint, groundTrack, gap };
+  return { footprint, groundTrack, gap, orbitRing, satPosM };
 }
 
 /**
