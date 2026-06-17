@@ -86,49 +86,96 @@ export const PRESET_SPECS: PresetSpec[] = [
 ];
 
 /**
- * net/ Act-1 — THE NET-MODE PRESET SET (the connectivity game's own layouts; design §3/§9). Net
- * mode is a DIFFERENT game from the M1-cache / M2 / M3 economy, so it mounts ONLY net-relevant
- * panels: the NET·LAUNCH planner (the verb), the FINANCE readout (the contract/wallet face), and
- * SYSTEM.LOG (the truthful event stream + the Act-2/3/4 beat text). The MARS-CACHE TELEMETRY feeds,
- * the M2 CONTRACTS board, and the FLEET tile DO NOT mount here — those belong to ?mode=cache. Keys
- * 1–3 swap these three layouts exactly like the cache set; the toy globe is the hero throughout.
+ * net/ M1 — THE NET-MODE MISSION-CONTROL DESKTOPS (SD-44 PHASE 1; design §3/§9). Net mode is a
+ * DIFFERENT game from the M1-cache / M2 / M3 economy: instead of one crammed NET·LAUNCH panel it now
+ * presents FIVE virtual-desktop layouts (keys 1–5), each a focused mission-control wall. The LAUNCH
+ * menu is split CLEANLY from CONTRACTS, the orrery stays the hero on the operating desktops, and boot
+ * lands on the OVERVIEW triage wall ("is anything wrong now?"). The MARS-CACHE TELEMETRY feeds and the
+ * M2 CONTRACTS board / FLEET tile do NOT mount here — those belong to ?mode=cache.
+ *
+ * Each grid keeps the ≤3col × ≤3row invariant and hosts are UNIQUE WITHIN EACH GRID (validate runs
+ * per-preset, so a host appearing in two different desktops — e.g. finance on OVERVIEW + BUSINESS —
+ * is fine). Keys:
+ *   1 OVERVIEW     — triage wall: orrery hero + the STATUS·BOARD + FINANCE. "Is anything wrong now?"
+ *   2 CONNECTIVITY — the LAUNCH desktop: orrery hero + NET·LAUNCH + the COVERAGE·ROSTER.
+ *   3 ROUTING      — the traffic desktop: orrery (ORBITS cam) + LINK·LOAD + ROUTING·PREFER.
+ *   4 BUSINESS     — the deals desktop: CONTRACTS hero + FINANCE + SYSTEM.LOG (no orrery).
+ *   5 REFERENCE    — the help/at-rest desktop: HOW-IT-WORKS + TELEMETRY + PARSE (no orrery).
  */
 export const NET_PRESET_SPECS: PresetSpec[] = [
   {
-    // PLAY (key 1) — the net working screen + the default boot layout. The toy globe is the HERO
-    // (large + central — the make-or-break drag→consequence read), with the LAUNCH planner over
-    // SYSTEM.LOG on the right and the FINANCE/wallet readout beneath. ONLY net-relevant panels.
-    name: "PLAY",
+    // OVERVIEW (key 1) — the BOOT triage wall. The toy globe is the hero on the left; the STATUS·BOARD
+    // (objective banner + per-contract state) sits over the FINANCE/wallet readout on the right. The
+    // first thing the player should read: "is anything wrong right now?" — not the launch controls.
+    name: "OVERVIEW",
     columns: [
-      { weight: 0.66, rows: [{ weight: 1, host: "orrery" }] },
+      { weight: 0.64, rows: [{ weight: 1, host: "orrery" }] },
       {
-        weight: 0.34,
+        weight: 0.36,
         rows: [
-          { weight: 1.7, host: "net-planner" },
-          { weight: 1.0, host: "system-log" },
-          { weight: 0.7, host: "finance" },
+          { weight: 1.4, host: "status-board" },
+          { weight: 1.0, host: "finance" },
         ],
       },
     ],
   },
   {
-    // MAP (key 2) — the MONUMENT, near-full-bleed: the toy globe alone so the footprint /
-    // ground-track / coverage-gap fill the frame as the player drags. Summon a side panel via
-    // the (net-scoped) rail to grow a second column.
-    name: "MAP",
-    columns: [{ weight: 1, rows: [{ weight: 1, host: "orrery" }] }],
+    // CONNECTIVITY (key 2) — the LAUNCH desktop. The globe is the hero (the make-or-break drag→
+    // consequence read), with the NET·LAUNCH planner over the COVERAGE·ROSTER on the right. The
+    // planner overlay + camera dolly fire because the net-launch tile is visible here (see main.ts).
+    name: "CONNECTIVITY",
+    columns: [
+      { weight: 0.62, rows: [{ weight: 1, host: "orrery" }] },
+      {
+        weight: 0.38,
+        rows: [
+          { weight: 1.7, host: "net-launch" },
+          { weight: 1.0, host: "coverage-roster" },
+        ],
+      },
+    ],
   },
   {
-    // REVIEW (key 3) — at-rest analysis: THE PARSE wide on the left, with SYSTEM.LOG + FINANCE
-    // beside it (the same at-rest face as the cache set, minus the cache-only panels).
-    name: "REVIEW",
+    // ROUTING (key 3) — the traffic desktop. The globe (framed ORBITS) on the left so the live links
+    // read large, with the LINK·LOAD utilisation board over the ROUTING·PREFER tuner on the right.
+    name: "ROUTING",
     columns: [
-      { weight: 0.6, rows: [{ weight: 1, host: "parse" }] },
+      { weight: 0.58, rows: [{ weight: 1, host: "orrery" }] },
       {
-        weight: 0.4,
+        weight: 0.42,
         rows: [
-          { weight: 1.4, host: "system-log" },
+          { weight: 1.4, host: "link-load" },
+          { weight: 1.0, host: "net-prefer" },
+        ],
+      },
+    ],
+  },
+  {
+    // BUSINESS (key 4) — the deals desktop. The CONTRACTS board is the hero on the left (accept / read
+    // every deal), with FINANCE over SYSTEM.LOG on the right. No orrery here (not mounted).
+    name: "BUSINESS",
+    columns: [
+      { weight: 0.56, rows: [{ weight: 1, host: "net-contracts" }] },
+      {
+        weight: 0.44,
+        rows: [
           { weight: 1.0, host: "finance" },
+          { weight: 1.2, host: "system-log" },
+        ],
+      },
+    ],
+  },
+  {
+    // REFERENCE (key 5) — the help / at-rest desktop. HOW-IT-WORKS explainer wide on the left, with the
+    // TELEMETRY readout over THE PARSE (§4.12 reviewable record) on the right. No orrery here.
+    name: "REFERENCE",
+    columns: [
+      { weight: 0.5, rows: [{ weight: 1, host: "howto" }] },
+      {
+        weight: 0.5,
+        rows: [
+          { weight: 1.4, host: "telemetry" },
+          { weight: 1.0, host: "parse" },
         ],
       },
     ],

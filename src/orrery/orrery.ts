@@ -3226,11 +3226,6 @@ export class Orrery {
       // P1 — the live network drawn this frame (the count from the slice + the mesh visibility).
       servedLinkCount: this.netState?.servedLinks?.length ?? 0,
       servedLinkVisible: this.netServedLinks?.visible ?? false,
-      // FLICKER probe — the live draft preview values that drive the coverage discs + ground-track.
-      draftCovered: this.netState?.draft?.gap?.coveredFraction ?? null,
-      gtLen: this.netState?.draft?.groundTrack?.length ?? 0,
-      gtVisible: this.netGroundTrack?.visible ?? false,
-      footVisible: this.netDraftFootprint?.visible ?? false,
       ...(() => {
         const moon = this.bodyMeshes.get("moon");
         if (!moon) return { moonVisible: false, moonOnScreen: false, moonNdc: [0, 0, 0] as [number, number, number] };
