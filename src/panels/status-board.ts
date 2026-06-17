@@ -27,7 +27,7 @@ export class StatusBoard implements PanelHandle {
   private vSummary!: HTMLElement;
   // --- per-contract status rows (rebuilt on a state-signature change) ---
   private rowsHost: HTMLElement;
-  private rows = new Map<string, { root: HTMLElement; label: HTMLElement; state: HTMLElement; served: HTMLElement; earned: HTMLElement }>();
+  private rows = new Map<string, { root: HTMLElement; label: HTMLElement; state: HTMLElement; served: HTMLElement; earned: HTMLElement; reason: HTMLElement }>();
   private sig = "";
 
   private worst: "ok" | "warn" | "crit" = "ok";
@@ -109,13 +109,17 @@ export class StatusBoard implements PanelHandle {
       }
       for (const c of contracts) {
         const root = el("div", "status-row");
+        const top = el("div", "status-row-top");
         const label = el("span", "status-label");
         const stateWord = el("span", "v");
         const served = el("span", "status-served");
         const earned = el("span", "status-earned");
-        root.append(label, stateWord, served, earned);
+        top.append(label, stateWord, served, earned);
+        // The full-width at-risk REASON line (the fix-hint), shown only when an active demand is unserved.
+        const reason = el("div", "status-reason");
+        root.append(top, reason);
         this.rowsHost.append(root);
-        this.rows.set(c.id, { root, label, state: stateWord, served, earned });
+        this.rows.set(c.id, { root, label, state: stateWord, served, earned, reason });
       }
     }
 
@@ -137,16 +141,18 @@ export class StatusBoard implements PanelHandle {
       setText(r.label, c.label);
       r.state.className = `v ${tone}`;
       setText(r.state, stateWord);
-      // The served slot: served% when serving; the WHY-at-risk phrase when an active demand is unserved.
-      setText(
-        r.served,
-        c.state !== "active" ? "—"
-        : c.served ? fmtPct(c.servedFraction)
-        : this.riskWord(c.bindingReason),
-      );
-      r.served.className = c.state === "active" && !c.served ? "status-served amber" : "status-served";
+      // The served slot stays a tight number; the WHY-at-risk phrase goes on its own full-width line.
+      const atRisk = c.state === "active" && !c.served;
+      setText(r.served, c.state !== "active" ? "—" : c.served ? fmtPct(c.servedFraction) : "0%");
+      r.served.className = atRisk ? "status-served amber" : "status-served";
       setText(r.earned, fmtEuro(c.earnedEur));
-      if (c.state === "active" && !c.served) worst = worst === "crit" ? "crit" : "warn";
+      if (atRisk) {
+        setText(r.reason, `↳ ${this.riskWord(c.bindingReason)}`);
+        r.reason.style.display = "";
+      } else {
+        r.reason.style.display = "none";
+      }
+      if (atRisk) worst = worst === "crit" ? "crit" : "warn";
       if (c.state === "failed") worst = "crit";
     }
     this.worst = worst;

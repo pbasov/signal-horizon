@@ -726,17 +726,42 @@ body {
 /* STATUS·BOARD rows: one line per demand — label · STATE word (colour-redundant) · served% · earned.
    The state WORD carries the meaning colour-off; the .v colour modifiers reinforce it. */
 .status-rows { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px; }
-.status-row {
+.status-row { display: flex; flex-direction: column; gap: 0; padding: 1px 0; }
+.status-row-top {
   display: grid;
   grid-template-columns: 1fr auto auto auto;
   gap: 8px;
   align-items: baseline;
   font-size: 10.5px;
-  padding: 1px 0;
 }
-.status-row .status-label { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
-.status-row .v { text-align: right; }
-.status-row .status-served, .status-row .status-earned { color: var(--fg-dim); text-align: right; }
+.status-row-top .status-label { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
+.status-row-top .v { text-align: right; }
+.status-row-top .status-served, .status-row-top .status-earned { color: var(--fg-dim); text-align: right; }
+.status-row-top .status-served.amber { color: var(--amber); }
+/* The full-width at-risk REASON line (the fix-hint under an UNSERVED demand). */
+.status-reason { color: var(--amber); font-size: 9.5px; letter-spacing: 0.01em; padding-left: 2px; }
+/* The triage SUMMARY header — the at-a-glance network health, set off from the rows. */
+.status-summary {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  padding: 1px 0 4px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--line-dim);
+}
+.status-summary.amber { color: var(--amber); }
+.status-summary.green { color: var(--green); }
+/* CONSTELLATION SIZE stepper (Act-2): compact −/+ around the chosen N, right-aligned in the row. */
+.net-stepper { display: inline-flex; gap: 5px; align-items: center; justify-content: flex-end; }
+.net-stepper .net-btn { padding: 0 7px; min-width: 0; line-height: 1.7; }
+.net-stepper-n { min-width: 1.4em; text-align: center; color: var(--cyan); font-weight: 700; }
+/* LINK·LOAD allocation ledger — the per-contract served-vs-floor split under a shared sat. */
+.linkload-ledger { color: var(--fg-dim); font-size: 9.5px; letter-spacing: 0.01em; margin-top: 2px; }
+.linkload-ledger.red { color: var(--red); }
+/* Price-the-bet verdict tones on the offered-contract underwrite line. */
+.net-contract-prog.amber { color: var(--amber); }
+.net-contract-prog.green { color: var(--green); }
 
 /* COVERAGE·ROSTER rows: launched-sat manifest (id · orbit CLASS token · covers note) + the DARK line.
    The orbit CLASS is the LEO/GEO token (a word, not a colour); the DARK line names dark regions. */
