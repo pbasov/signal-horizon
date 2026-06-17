@@ -831,6 +831,8 @@ function netContractRows(t: number): NetContractRow[] {
       penaltyPerHr: c.penaltyPerSecond * 3600,
       previewServable,
       previewBreachAxis,
+      bindingReason:
+        c.state === "active" && !(solve?.served ?? false) ? (solve?.bindingConstraint ?? "connectivity") : null,
     };
   });
 }
@@ -933,6 +935,14 @@ function netPlannerRenderState(): NetPlannerRenderState {
     // §7.3/§10 — the per-contract prefer control (the first thing the player tunes): the selected
     // active contract + its class + the latency↔bandwidth↔stability slider position.
     prefer: netPreferControl(t),
+    // TRIAGE SUMMARY (OVERVIEW): fleet size + the live serve revenue rate (€/hr). A pure read.
+    fleet: {
+      satCount: netSession.sats.length,
+      revenuePerHr:
+        netSession.contracts
+          .filter((cc) => cc.state === "active")
+          .reduce((sum, cc) => sum + netRevenueRatePerSecond(cc, cc.lastServedFraction), 0) * 3600,
+    },
   };
 }
 

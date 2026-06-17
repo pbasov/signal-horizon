@@ -98,6 +98,9 @@ export interface NetContractRow {
   /** PRICE-THE-BET: when {@link previewServable} is false, the binding axis that would breach
    * ("connectivity" / "availability" / "latency" / "bandwidth") — the fix to make before accepting. */
   previewBreachAxis: string | null;
+  /** TRIAGE: for an ACTIVE but UNSERVED contract, the binding axis the router says is failing right now
+   * — so the OVERVIEW board can say WHY it's at risk ("no path" / "over-cap" / …). null when served/offered. */
+  bindingReason: string | null;
 }
 
 /** The Act-1 contract readout (the one offered REGION-0 demand). */
@@ -208,6 +211,9 @@ export interface NetPlannerRenderState {
   /** §7.3 / §10 — the per-contract prefer control (null until ≥1 active contract). The §10 "first
    * thing the player tunes": a per-contract latency ↔ bandwidth ↔ stability slider that re-routes. */
   prefer: NetPreferControl | null;
+  /** TRIAGE SUMMARY (OVERVIEW status-board): the at-a-glance network health — fleet size + the live
+   * serve REVENUE rate (the rest of the glance, served/at-risk counts, is derived from `contracts`). */
+  fleet: { satCount: number; revenuePerHr: number };
 }
 
 /** The button callbacks main.ts wires (the launch/accept appliers + preset cursor). */

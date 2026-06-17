@@ -23,6 +23,8 @@ export class StatusBoard implements PanelHandle {
   private vObjTitle: HTMLElement;
   private vObjDetail: HTMLElement;
 
+  // --- the network-health SUMMARY line (the at-a-glance triage header) ---
+  private vSummary!: HTMLElement;
   // --- per-contract status rows (rebuilt on a state-signature change) ---
   private rowsHost: HTMLElement;
   private rows = new Map<string, { root: HTMLElement; label: HTMLElement; state: HTMLElement; served: HTMLElement; earned: HTMLElement }>();
@@ -42,8 +44,10 @@ export class StatusBoard implements PanelHandle {
     this.objectiveGroup.append(this.objectiveLegend, this.vObjTitle, this.vObjDetail);
     this.content.append(this.objectiveGroup);
 
-    // GROUP: STATUS — one row per live contract; the triage glance.
+    // GROUP: STATUS — the network health SUMMARY (the mission-control glance) + one row per demand.
     const statusGroup = group("STATUS · ALL DEMANDS");
+    this.vSummary = el("div", "status-summary v");
+    statusGroup.append(this.vSummary);
     this.rowsHost = el("div", "status-rows");
     statusGroup.append(this.rowsHost);
     this.content.append(statusGroup);
@@ -61,7 +65,35 @@ export class StatusBoard implements PanelHandle {
       this.objectiveGroup.style.display = "none";
     }
 
+    // SUMMARY — the at-a-glance network health (the mission-control "is anything wrong?" line).
+    const active = state.contracts.filter((c) => c.state === "active");
+    const servedCount = active.filter((c) => c.served).length;
+    const atRisk = active.length - servedCount;
+    const offered = state.contracts.filter((c) => c.state === "offered").length;
+    const rev = Math.round(state.fleet.revenuePerHr);
+    const parts = [
+      `FLEET ${state.fleet.satCount} sat${state.fleet.satCount === 1 ? "" : "s"}`,
+      active.length > 0 ? `SERVED ${servedCount}/${active.length}` : "no active demand",
+      `+${fmtEuro(rev)}/hr`,
+      fmtEuro(state.balanceEur),
+    ];
+    if (atRisk > 0) parts.splice(2, 0, `${atRisk} AT RISK`);
+    if (offered > 0) parts.push(`${offered} offered`);
+    setText(this.vSummary, parts.join(" · "));
+    this.vSummary.className = `status-summary v ${atRisk > 0 ? "amber" : active.length > 0 && servedCount === active.length ? "green" : ""}`;
+
     this.syncRows(state.contracts);
+  }
+
+  /** Map a router binding axis to a short triage phrase (WHY a demand is at risk). */
+  private riskWord(reason: string | null): string {
+    switch (reason) {
+      case "connectivity": return "no path — launch over it";
+      case "availability": return "coverage gaps — add a phased sat";
+      case "latency": return "too slow — lower the orbit";
+      case "bandwidth": return "over-cap — reroute or add capacity";
+      default: return "at risk";
+    }
   }
 
   private syncRows(contracts: NetContractRow[]): void {
@@ -105,7 +137,14 @@ export class StatusBoard implements PanelHandle {
       setText(r.label, c.label);
       r.state.className = `v ${tone}`;
       setText(r.state, stateWord);
-      setText(r.served, c.state === "active" ? fmtPct(c.servedFraction) : "—");
+      // The served slot: served% when serving; the WHY-at-risk phrase when an active demand is unserved.
+      setText(
+        r.served,
+        c.state !== "active" ? "—"
+        : c.served ? fmtPct(c.servedFraction)
+        : this.riskWord(c.bindingReason),
+      );
+      r.served.className = c.state === "active" && !c.served ? "status-served amber" : "status-served";
       setText(r.earned, fmtEuro(c.earnedEur));
       if (c.state === "active" && !c.served) worst = worst === "crit" ? "crit" : "warn";
       if (c.state === "failed") worst = "crit";
