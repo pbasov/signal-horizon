@@ -103,6 +103,8 @@
 >
 > **PHASE 1c — gameplay legibility (SD-44, 2026-06-17).** A live play-through proved the loop is mechanically sound + rewarding (accept→earn→new contract→next objective all fire); the "gameplay sucks" friction was **broken guidance**. Killed the dead-key objective copy that survived the controls redesign ("ACCEPT (K)", "CONSTELLATION (C)" — both keys cut; they're buttons now), rewrote all five objectives **desktop-anchored** to live controls, fixed the howto xref, and made the orrery on-canvas hint **desktop-aware** (tuning keys only on the LAUNCH view; OVERVIEW/ROUTING point to CONNECTIVITY instead). UI copy only; goldens + cache mode untouched.
 
+> **PHASE 2 — DEPTH: Act-2 constellation decision (SD-44, 2026-06-17).** User: "the gameplay needs to be deeper than some inclination sliders." A GDD-grounded design workflow found the sim already models real strategy (oversubscription allocation, SLA penalties, reroute, fault redundancy, phasing/over-build) but every lever hides it. First thread shipped: the one-press PLACE SET → a **held-vs-capex LADDER + SIZE stepper** — the player dials the constellation size, watches worst-phase HELD cross the bar at the measured minimum (`zeroGapN`), and sees over-build sats read as idle capex (trim to the minimum). New pure `phasingLadder()` (+4 tests); launches the chosen size via the existing batch action; **3 goldens byte-identical** (chosen-N is UI-only). Deferred threads: ACCEPT price-the-bet card; PREFER reroute-preview + per-sat allocation ledger.
+
 ### Reused from existing code (the determinism + render backbone carries over wholesale)
 
 The new M1 reclassifies the codebase more than it invalidates it. Directly reused as-is:

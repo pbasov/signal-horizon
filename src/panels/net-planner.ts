@@ -152,6 +152,14 @@ export interface NetPhasingReadout {
   estCoveredFraction: number;
   /** The SLA bar the constellation must hold (so the preview reads "X% vs bar Y%"). */
   slaAvail: number;
+  /** The held-vs-size LADDER (one rung per candidate N): the coverage-vs-capex curve the player
+   * reads to dial the constellation size — below the knee it sawtooths (gaps), at the knee
+   * (= zeroGapN) it just holds, above it the extra sats are idle over-build. */
+  ladder: { n: number; held: number; holds: boolean }[];
+  /** The size the player has dialed (what PLACE SET will launch). Defaults to zeroGapN. */
+  chosenN: number;
+  /** Per-LEO launch cost — drives the chosen-size capex + the over-build line. */
+  perSatCostEur: number;
 }
 
 /** Everything the planner panel paints — projected per-frame from the live NetSession. */
@@ -193,8 +201,11 @@ export interface NetPlannerActions {
   /** Accept an OFFERED contract. With no id, accepts the first offered (the headline ACCEPT button);
    * the CONTRACTS-view inline buttons pass the row's id so any offered contract can be taken. */
   onAccept(contractId?: string): void;
-  /** Act-2 — fire ONE batch launch of the suggested phased constellation (the §3.4 batch). */
+  /** Act-2 — fire ONE batch launch of the CHOSEN-size phased constellation (the §3.4 batch). */
   onConstellation(): void;
+  /** Act-2 — the player dialed the constellation SIZE up/down (delta ±1) on the held-vs-capex
+   * ladder before committing. UI-only: clamps the chosen N within the ladder's range. */
+  onConstellationStep(delta: number): void;
   /** §7.3 / §10 — the player CYCLED which active contract the prefer slider tunes (when 2+ exist). */
   onSelectPreferContract(): void;
   /** §7.3 / §10 — the player DRAGGED the prefer slider to a normalized 0..1 position (0 = latency,
@@ -247,8 +258,12 @@ export class NetPlanner implements PanelHandle {
   /** Act-2 — the phasing assist group (shown only when a phasing suggestion is present). */
   private phasingGroup: HTMLElement;
   private vZeroGap: HTMLElement;
-  private vSuggest: HTMLElement;
+  private vLadder: HTMLElement;
+  private vChosen: HTMLElement;
   private vHeld: HTMLElement;
+  private vOverbuild: HTMLElement;
+  private lessBtn: HTMLButtonElement;
+  private moreBtn: HTMLButtonElement;
 
   // --- §7.3 / §10 PER-CONTRACT PREFER control (the first thing the player tunes), built once ---
   private preferGroup: HTMLElement;
@@ -324,8 +339,23 @@ export class NetPlanner implements PanelHandle {
     // Hidden in Act 1 (no availability demand); shown the moment REGION-1 needs continuous cover.
     this.phasingGroup = group("CONSTELLATION · ACT 2");
     this.vZeroGap = valueOf(row(this.phasingGroup, "NEED", "cyan"));
-    this.vSuggest = valueOf(row(this.phasingGroup, "SUGGEST", "green"));
+    // The held-vs-size LADDER — the coverage-vs-capex curve the player reads to choose the size.
+    this.vLadder = valueOf(row(this.phasingGroup, "LADDER", ""));
+    // SIZE stepper: − chosenN + — the constellation PLACE SET will launch (dial it on the ladder).
+    const sizeRow = el("div", "row");
+    const sizeLab = el("span", "label");
+    sizeLab.textContent = "SIZE";
+    const sizeCtl = el("span", "v net-stepper");
+    this.lessBtn = button("−", "constellation-less");
+    this.lessBtn.addEventListener("click", () => this.actions.onConstellationStep(-1));
+    this.vChosen = el("span", "net-stepper-n");
+    this.moreBtn = button("+", "constellation-more");
+    this.moreBtn.addEventListener("click", () => this.actions.onConstellationStep(1));
+    sizeCtl.append(this.lessBtn, this.vChosen, this.moreBtn);
+    sizeRow.append(sizeLab, sizeCtl);
+    this.phasingGroup.append(sizeRow);
     this.vHeld = valueOf(row(this.phasingGroup, "HELD", "amber"));
+    this.vOverbuild = valueOf(row(this.phasingGroup, "CAPEX", ""));
     const phaseRow = el("div", "net-buttons");
     this.constellationBtn = button("PLACE SET", "constellation");
     this.constellationBtn.addEventListener("click", () => this.actions.onConstellation());
@@ -497,11 +527,40 @@ export class NetPlanner implements PanelHandle {
     const ph = state.phasing;
     if (ph) {
       this.phasingGroup.style.display = "";
-      setText(this.vZeroGap, `~${ph.zeroGapN} phased LEOs`);
-      setText(this.vSuggest, `${ph.count} sats · 1 launch`);
-      // The suggested set HELDS below the bar (the closable gap) — the honest preview.
-      setText(this.vHeld, `${fmtPct(ph.estCoveredFraction)} vs bar ${fmtPct(ph.slaAvail)}`);
-      this.constellationBtn.classList.toggle("ready", true);
+      setText(this.vZeroGap, `~${ph.zeroGapN} phased LEOs hold the bar`);
+      // LADDER — the coverage-vs-capex curve: each size's worst-phase held %, the chosen one
+      // bracketed, the ones that clear the bar marked ✓. Reading it IS the decision (trim to the
+      // knee, or pay for margin), not a blind count.
+      const ladderTxt = ph.ladder
+        .map((r) => {
+          const tag = `${r.n}:${Math.round(r.held * 100)}%${r.holds ? "✓" : ""}`;
+          return r.n === ph.chosenN ? `[${tag}]` : tag;
+        })
+        .join("  ");
+      setText(this.vLadder, ladderTxt);
+      setText(this.vChosen, String(ph.chosenN));
+      const chosen = ph.ladder.find((r) => r.n === ph.chosenN);
+      const chosenHolds = chosen?.holds ?? false;
+      const chosenHeld = chosen?.held ?? ph.estCoveredFraction;
+      setText(this.vHeld, `${fmtPct(chosenHeld)} vs bar ${fmtPct(ph.slaAvail)}${chosenHolds ? " ✓ holds" : " · gaps"}`);
+      setValueClass(this.vHeld, chosenHolds ? "green" : "amber");
+      // CAPEX — total launch spend for the chosen size + the over-build penalty (sats beyond the
+      // measured minimum are idle capex), so trimming to zeroGapN is a VISIBLE optimisation.
+      const total = ph.chosenN * ph.perSatCostEur;
+      const over = Math.max(0, ph.chosenN - ph.zeroGapN);
+      setText(
+        this.vOverbuild,
+        over > 0
+          ? `${fmtEuro(total)} · ${over} over min = ${fmtEuro(over * ph.perSatCostEur)} idle`
+          : `${fmtEuro(total)} · ${ph.chosenN < ph.zeroGapN ? "under min — will gap" : "at minimum ✓"}`,
+      );
+      setValueClass(this.vOverbuild, over > 0 ? "amber" : ph.chosenN < ph.zeroGapN ? "amber" : "");
+      // The stepper bounds (the ladder's measured range).
+      const lo = ph.ladder[0]?.n ?? ph.chosenN;
+      const hi = ph.ladder[ph.ladder.length - 1]?.n ?? ph.chosenN;
+      this.lessBtn.disabled = ph.chosenN <= lo;
+      this.moreBtn.disabled = ph.chosenN >= hi;
+      this.constellationBtn.classList.toggle("ready", chosenHolds);
     } else {
       this.phasingGroup.style.display = "none";
     }
@@ -545,7 +604,15 @@ export class NetPlanner implements PanelHandle {
       setText(this.hint, state.shortfall);
       this.hint.className = "net-hint warn";
     } else if (ph) {
-      setText(this.hint, `coverage MOVES — press PLACE SET to launch ${ph.count} phased sats, then add one to hold it`);
+      {
+        const chosen = ph.ladder.find((r) => r.n === ph.chosenN);
+        setText(
+          this.hint,
+          chosen?.holds
+            ? `SIZE ${ph.chosenN} HOLDS the bar — PLACE SET to launch, or trim toward the ${ph.zeroGapN} minimum to cut idle capex`
+            : `coverage GAPS at SIZE ${ph.chosenN} — step it up (+) until HELD clears the bar (min ${ph.zeroGapN}), then PLACE SET`,
+        );
+      }
       this.hint.className = "net-hint";
     } else if (!state.launched) {
       // Coverage-aware: when the pre-aimed default already COVERS (the gentle "place one thing works"
@@ -710,8 +777,12 @@ export class NetLaunch implements PanelHandle {
   // --- CONSTELLATION (Act-2 phasing assist) ---
   private phasingGroup: HTMLElement;
   private vZeroGap: HTMLElement;
-  private vSuggest: HTMLElement;
+  private vLadder: HTMLElement;
+  private vChosen: HTMLElement;
   private vHeld: HTMLElement;
+  private vOverbuild: HTMLElement;
+  private lessBtn: HTMLButtonElement;
+  private moreBtn: HTMLButtonElement;
   private constellationBtn: HTMLButtonElement;
 
   // --- LAUNCH (the only commit button on this tile) ---
@@ -754,11 +825,27 @@ export class NetLaunch implements PanelHandle {
     this.vCost = valueOf(row(preview, "COST", "amber"));
     this.content.append(preview);
 
-    // GROUP: CONSTELLATION — the Act-2 phasing assist; hidden in Act 1 (state.phasing null).
+    // GROUP: CONSTELLATION — the Act-2 phasing DECISION; hidden in Act 1 (state.phasing null). The
+    // player reads the held-vs-capex LADDER and DIALS the constellation size (trim to the minimum
+    // that holds, or pay for over-build margin) — a real trade-off, not a one-press button.
     this.phasingGroup = group("CONSTELLATION · ACT 2");
     this.vZeroGap = valueOf(row(this.phasingGroup, "NEED", "cyan"));
-    this.vSuggest = valueOf(row(this.phasingGroup, "SUGGEST", "green"));
+    this.vLadder = valueOf(row(this.phasingGroup, "LADDER", ""));
+    // SIZE stepper: − chosenN + — the constellation PLACE SET will launch (dial it on the ladder).
+    const sizeRow = el("div", "row");
+    const sizeLab = el("span", "label");
+    sizeLab.textContent = "SIZE";
+    const sizeCtl = el("span", "v net-stepper");
+    this.lessBtn = button("−", "constellation-less");
+    this.lessBtn.addEventListener("click", () => this.actions.onConstellationStep(-1));
+    this.vChosen = el("span", "net-stepper-n");
+    this.moreBtn = button("+", "constellation-more");
+    this.moreBtn.addEventListener("click", () => this.actions.onConstellationStep(1));
+    sizeCtl.append(this.lessBtn, this.vChosen, this.moreBtn);
+    sizeRow.append(sizeLab, sizeCtl);
+    this.phasingGroup.append(sizeRow);
     this.vHeld = valueOf(row(this.phasingGroup, "HELD", "amber"));
+    this.vOverbuild = valueOf(row(this.phasingGroup, "CAPEX", ""));
     const phaseRow = el("div", "net-buttons");
     this.constellationBtn = button("PLACE SET", "constellation");
     this.constellationBtn.addEventListener("click", () => this.actions.onConstellation());
@@ -842,14 +929,38 @@ export class NetLaunch implements PanelHandle {
     setText(this.vLatency, Number.isFinite(p.latencyFloorS) ? `${(p.latencyFloorS * 1000).toFixed(1)} ms` : "—");
     setText(this.vCost, fmtEuro(p.costEur));
 
-    // CONSTELLATION (Act-2).
+    // CONSTELLATION (Act-2) — the held-vs-capex LADDER + the SIZE the player has dialed.
     const ph = state.phasing;
     if (ph) {
       this.phasingGroup.style.display = "";
-      setText(this.vZeroGap, `~${ph.zeroGapN} phased LEOs`);
-      setText(this.vSuggest, `${ph.count} sats · 1 launch`);
-      setText(this.vHeld, `${fmtPct(ph.estCoveredFraction)} vs bar ${fmtPct(ph.slaAvail)}`);
-      this.constellationBtn.classList.toggle("ready", true);
+      setText(this.vZeroGap, `~${ph.zeroGapN} phased LEOs hold the bar`);
+      const ladderTxt = ph.ladder
+        .map((r) => {
+          const tag = `${r.n}:${Math.round(r.held * 100)}%${r.holds ? "✓" : ""}`;
+          return r.n === ph.chosenN ? `[${tag}]` : tag;
+        })
+        .join("  ");
+      setText(this.vLadder, ladderTxt);
+      setText(this.vChosen, String(ph.chosenN));
+      const chosen = ph.ladder.find((r) => r.n === ph.chosenN);
+      const chosenHolds = chosen?.holds ?? false;
+      const chosenHeld = chosen?.held ?? ph.estCoveredFraction;
+      setText(this.vHeld, `${fmtPct(chosenHeld)} vs bar ${fmtPct(ph.slaAvail)}${chosenHolds ? " ✓ holds" : " · gaps"}`);
+      setValueClass(this.vHeld, chosenHolds ? "green" : "amber");
+      const total = ph.chosenN * ph.perSatCostEur;
+      const over = Math.max(0, ph.chosenN - ph.zeroGapN);
+      setText(
+        this.vOverbuild,
+        over > 0
+          ? `${fmtEuro(total)} · ${over} over min = ${fmtEuro(over * ph.perSatCostEur)} idle`
+          : `${fmtEuro(total)} · ${ph.chosenN < ph.zeroGapN ? "under min — will gap" : "at minimum ✓"}`,
+      );
+      setValueClass(this.vOverbuild, over > 0 || ph.chosenN < ph.zeroGapN ? "amber" : "");
+      const lo = ph.ladder[0]?.n ?? ph.chosenN;
+      const hi = ph.ladder[ph.ladder.length - 1]?.n ?? ph.chosenN;
+      this.lessBtn.disabled = ph.chosenN <= lo;
+      this.moreBtn.disabled = ph.chosenN >= hi;
+      this.constellationBtn.classList.toggle("ready", chosenHolds);
     } else {
       this.phasingGroup.style.display = "none";
     }
@@ -862,7 +973,13 @@ export class NetLaunch implements PanelHandle {
       setText(this.hint, state.shortfall);
       this.hint.className = "net-hint warn";
     } else if (ph) {
-      setText(this.hint, `coverage MOVES — press PLACE SET to launch ${ph.count} phased sats, then add one to hold it`);
+      const chosen = ph.ladder.find((r) => r.n === ph.chosenN);
+      setText(
+        this.hint,
+        chosen?.holds
+          ? `SIZE ${ph.chosenN} HOLDS the bar — PLACE SET to launch, or trim toward the ${ph.zeroGapN} minimum to cut idle capex`
+          : `coverage GAPS at SIZE ${ph.chosenN} — step it up (+) until HELD clears the bar (min ${ph.zeroGapN}), then PLACE SET`,
+      );
       this.hint.className = "net-hint";
     } else if (!state.launched) {
       if (p.served && p.coveredFraction >= 0.999) {

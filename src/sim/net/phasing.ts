@@ -198,3 +198,49 @@ export function suggestPhasing(
 
   return { count, phaseSpreadRad, drafts, basePresetId: preset.id, estCoveredFraction, zeroGapN };
 }
+
+/** One rung of the {@link phasingLadder}: an even N-sat constellation, its worst-phase held
+ * fraction, and whether that clears the bar. The planner shows the ladder so the player reads
+ * the coverage-vs-capex curve and CHOOSES the size (trim to the minimum that holds, or pay for
+ * over-build margin) — the §3.3 decision, not a blind count. */
+export interface PhasingLadderRung {
+  n: number;
+  /** Worst-phase rolling availability of an even `n`-sat train over the region (the honest
+   * "does it hold across the whole hand-off cycle" measure — the same one suggestPhasing pins). */
+  held: number;
+  /** held ≥ slaAvail (this size holds the bar). */
+  holds: boolean;
+}
+
+/**
+ * THE PHASING LADDER (§3.3, Act 2) — the held-fraction of an even constellation at each candidate
+ * size in `[nMin, nMax]`, so the planner can show the player the coverage-vs-capex CURVE and let
+ * them dial the size: below the knee coverage sawtooths (gaps), at the knee it just holds (the
+ * measured minimum), above it the extra sats are idle over-build. Pure: reuses the SAME
+ * {@link phasedTrain} + worst-phase {@link windowAvailability} probe suggestPhasing pins zeroGapN
+ * with, so a rung's `holds` is byte-truthful to what a batch launch of that size would deliver.
+ */
+export function phasingLadder(
+  eph: Ephemeris,
+  region: Region,
+  preset: NetPreset,
+  slaAvail: number,
+  t: number,
+  grounds: GroundNet[],
+  nMin: number,
+  nMax: number,
+): PhasingLadderRung[] {
+  const contract: RoutableContract = {
+    id: region.id,
+    region,
+    activeAxes: new Set<RouterAxis>(["connectivity", "availability"]),
+  };
+  const lo = Math.max(NET_PHASING_MIN_CONSTELLATION, Math.trunc(nMin));
+  const hi = Math.max(lo, Math.trunc(nMax));
+  const rungs: PhasingLadderRung[] = [];
+  for (let n = lo; n <= hi; n++) {
+    const held = worstPhaseAvailability(eph, contract, phasedTrain(preset, n, t), grounds, t);
+    rungs.push({ n, held, holds: held >= slaAvail });
+  }
+  return rungs;
+}

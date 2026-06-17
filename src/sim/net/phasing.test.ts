@@ -16,6 +16,7 @@ import {
 } from "./world";
 import {
   suggestPhasing,
+  phasingLadder,
   NET_PHASING_ASSIST_SHORTFALL,
   NET_PHASING_MIN_CONSTELLATION,
 } from "./phasing";
@@ -151,6 +152,38 @@ describe("B2 the assist set is near-continuous-but-imperfect; ONE more sat reach
     for (let i = 0; i < 200 * 2; i++) {
       expect(isPointServed(eph, centre, grounds, closed, i * dt)).toBe(true);
     }
+  });
+});
+
+describe("B2 phasingLadder — the coverage-vs-capex curve the player dials the constellation size on", () => {
+  it("returns one rung per N across the requested range, each held byte-truthful to an even N-train", () => {
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 6);
+    expect(ladder.map((r) => r.n)).toEqual([2, 3, 4, 5, 6]);
+    for (const rung of ladder) {
+      expect(rung.held).toBeCloseTo(worstPhaseAvail(leoTrain(rung.n)), 12);
+      expect(rung.holds).toBe(rung.held >= SLA_AVAIL);
+    }
+  });
+
+  it("the FIRST holding rung is exactly zeroGapN (the ladder + suggestPhasing agree on the knee)", () => {
+    const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 8);
+    const firstHold = ladder.find((r) => r.holds);
+    expect(firstHold?.n).toBe(s.zeroGapN);
+    // Below the knee every rung is a real gap; at/above the knee every rung holds (monotone bar-cross).
+    for (const r of ladder) expect(r.holds).toBe(r.n >= s.zeroGapN);
+  });
+
+  it("held is non-decreasing in N (more evenly-phased sats never lower the worst-phase floor)", () => {
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 7);
+    for (let i = 1; i < ladder.length; i++) {
+      expect(ladder[i].held).toBeGreaterThanOrEqual(ladder[i - 1].held - 1e-9);
+    }
+  });
+
+  it("clamps the lower bound to a real constellation (≥ NET_PHASING_MIN_CONSTELLATION)", () => {
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 1, 3);
+    expect(ladder[0].n).toBe(NET_PHASING_MIN_CONSTELLATION);
   });
 });
 

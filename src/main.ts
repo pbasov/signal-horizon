@@ -69,6 +69,8 @@ import {
   A1_GEO_SEMI_MAJOR_M,
   NET_PRESETS,
   MARS_RELAY_PRESET,
+  launchCost,
+  launchCostBaseForPreset,
   type LaunchDraft,
   type PreviewWorld,
 } from "./sim/net/world";
@@ -77,7 +79,7 @@ import { surfacePointRelative, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-bu
 // the surface frame + the orrery render-axis swap use). Pure scalar; render-only consumer.
 import { earthThetaAt } from "./sim/net/frame";
 import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
-import { suggestPhasing } from "./sim/net/phasing";
+import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
 import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond } from "./sim/net/contract";
@@ -993,13 +995,42 @@ function netPhasingReadout(t: number): import("./panels/net-planner").NetPhasing
   // The LEO orbit family the assist phases (the canon Act-2 fix: a phased LEO constellation).
   const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
   if (leo === undefined) return null;
-  const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, [...netSession.grounds]);
+  const grounds = [...netSession.grounds];
+  const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, grounds);
+  // The held-vs-size LADDER around the measured minimum: a small window the player dials within
+  // (≥ 2 sats; up to two past zero-gap so the over-build cost is visible). A pure read.
+  const loN = Math.max(2, sugg.zeroGapN - 2);
+  const hiN = sugg.zeroGapN + 2;
+  const ladder = phasingLadder(eph, c.region, leo, ACT2_SLA_AVAIL, t, grounds, loN, hiN);
+  // The player's dialed size, defaulted to the measured minimum-that-holds + clamped to the ladder.
+  if (netChosenConstellationN === null) netChosenConstellationN = sugg.zeroGapN;
+  netChosenConstellationN = Math.max(loN, Math.min(hiN, netChosenConstellationN));
+  const perSatCostEur = launchCost({ semiMajorM: leo.semiMajorM, costBaseEur: launchCostBaseForPreset(leo.id) });
   return {
     count: sugg.count,
     zeroGapN: sugg.zeroGapN,
     estCoveredFraction: sugg.estCoveredFraction,
     slaAvail: ACT2_SLA_AVAIL,
+    ladder,
+    chosenN: netChosenConstellationN,
+    perSatCostEur,
   };
+}
+
+/** Act-2 — the player's DIALED constellation size on the {@link netPhasingReadout} ladder (UI-only,
+ * never sim/golden state; the recorded launch action carries the concrete count). Null = not yet
+ * dialed (defaults to the measured zero-gap minimum the first frame the assist shows). */
+let netChosenConstellationN: number | null = null;
+
+/** Act-2 — step the chosen constellation size up/down on the ladder (the −/+ stepper). UI-only:
+ * clamps to the live ladder's [min, max]; the next render reflects the new held %/capex. */
+function netConstellationStep(delta: number): void {
+  const t = clock.seconds;
+  const ph = netPhasingReadout(t);
+  if (ph === null) return;
+  const lo = ph.ladder[0]?.n ?? ph.chosenN;
+  const hi = ph.ladder[ph.ladder.length - 1]?.n ?? ph.chosenN;
+  netChosenConstellationN = Math.max(lo, Math.min(hi, ph.chosenN + Math.sign(delta)));
 }
 
 /**
@@ -1016,14 +1047,19 @@ function netConstellation(): void {
   const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
   if (leo === undefined) return;
   const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, [...netSession.grounds]);
+  // Launch the size the player DIALED on the ladder (defaults to the measured zero-gap minimum),
+  // not the fixed viable-but-imperfect suggestion — the player owns the coverage-vs-capex call.
+  const loN = Math.max(2, sugg.zeroGapN - 2);
+  const hiN = sugg.zeroGapN + 2;
+  const n = Math.max(loN, Math.min(hiN, netChosenConstellationN ?? sugg.zeroGapN));
   const action = netLaunchAction(
     {
       presetId: leo.id,
       semiMajorM: leo.semiMajorM,
       incRad: leo.incRad,
       subLonRad: leo.subLonRad,
-      count: sugg.count,
-      phaseSpreadRad: sugg.phaseSpreadRad,
+      count: n,
+      phaseSpreadRad: (2 * Math.PI) / n,
     },
     clock.tick,
   );
@@ -2082,6 +2118,8 @@ const netPlannerActions = {
   // Act-2 — the phasing assist's batch launch (the §3.4 launch-as-a-batch): one press places
   // the suggested phased constellation into a plane. Same shared applier the keys + replay use.
   onConstellation: () => netConstellation(),
+  // Act-2 — dial the constellation SIZE on the held-vs-capex ladder before committing (UI-only).
+  onConstellationStep: (delta: number) => netConstellationStep(delta),
   // §7.3/§10 — the per-contract prefer control (the FIRST thing the player tunes): CYCLE which
   // active contract is tuned, and DRAG the latency↔bandwidth↔stability slider (→ net_set_prefer →
   // the router re-solves that contract → its path re-routes on the globe via the P1 link line).
