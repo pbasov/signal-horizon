@@ -769,19 +769,21 @@ body {
 /* COVERAGE·ROSTER rows: launched-sat manifest (id · orbit CLASS token · covers note) + the DARK line.
    The orbit CLASS is the LEO/GEO token (a word, not a colour); the DARK line names dark regions. */
 .roster-rows { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px; }
-.roster-row {
+.roster-row { display: flex; flex-direction: column; gap: 0; padding: 1px 0; }
+.roster-row-top {
   display: grid;
   grid-template-columns: auto auto 1fr;
   gap: 8px;
   align-items: baseline;
   font-size: 10.5px;
-  padding: 1px 0;
 }
-.roster-row .roster-id { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
-.roster-row .v { text-align: left; }
-.roster-row .roster-covers { color: var(--fg-dim); text-align: right; }
-.roster-row .roster-covers.green { color: var(--green); }
-.roster-row .roster-covers.dim { color: var(--grey); }
+.roster-row-top .roster-id { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
+.roster-row-top .v { text-align: left; }
+.roster-row-top .roster-covers { color: var(--fg-dim); text-align: right; }
+.roster-row-top .roster-covers.green { color: var(--green); }
+.roster-row-top .roster-covers.dim { color: var(--grey); }
+/* The orbit-detail sub-line (alt · incl) under each launched sat. */
+.roster-meta { color: var(--fg-dim); font-size: 9.5px; letter-spacing: 0.01em; padding-left: 1px; }
 .roster-dark { font-size: 10.5px; color: var(--fg-dim); line-height: 1.35; }
 .roster-dark.amber { color: var(--amber); font-weight: 700; }
 .roster-dark.green { color: var(--green); }

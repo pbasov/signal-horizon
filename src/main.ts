@@ -1603,6 +1603,8 @@ function netCoverageRosterState(): CoverageRosterState {
       orbitClass: s.orbit.aM >= geoBoundaryM ? "GEO" : "LEO",
       covers: covered.length > 0 ? `covers ${covered.join(", ")}` : "—",
       active: covered.length > 0,
+      altKm: (s.orbit.aM - A1_BODY_RADIUS_M) / 1000,
+      incDeg: (s.orbit.incRad * 180) / Math.PI,
     };
   });
   return { sats, dark };

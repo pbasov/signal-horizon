@@ -20,6 +20,10 @@ export interface CoverageRosterSat {
   covers: string;
   /** True when this sat currently bridges at least one active contract (the lit/dim cue). */
   active: boolean;
+  /** Orbit altitude above the surface (km) — the fleet-management detail (which shell it's in). */
+  altKm: number;
+  /** Orbit inclination (degrees) — how far off the equator it reaches. */
+  incDeg: number;
 }
 
 /** The COVERAGE·ROSTER render state (a pure projection of the live net session). */
@@ -36,7 +40,7 @@ export class CoverageRoster implements PanelHandle {
 
   // --- sat roster rows (rebuilt on an id-signature change) ---
   private rowsHost: HTMLElement;
-  private rows = new Map<string, { root: HTMLElement; id: HTMLElement; cls: HTMLElement; covers: HTMLElement }>();
+  private rows = new Map<string, { root: HTMLElement; id: HTMLElement; cls: HTMLElement; covers: HTMLElement; meta: HTMLElement }>();
   private sig = "";
 
   // --- DARK line (active-but-unserved regions) ---
@@ -71,12 +75,16 @@ export class CoverageRoster implements PanelHandle {
       }
       for (const s of state.sats) {
         const root = el("div", "roster-row");
+        const top = el("div", "roster-row-top");
         const id = el("span", "roster-id");
         const cls = el("span", "v cyan");
         const covers = el("span", "roster-covers");
-        root.append(id, cls, covers);
+        top.append(id, cls, covers);
+        // The orbit detail sub-line — which shell + how far off the equator (the fleet-management read).
+        const meta = el("div", "roster-meta");
+        root.append(top, meta);
         this.rowsHost.append(root);
-        this.rows.set(s.id, { root, id, cls, covers });
+        this.rows.set(s.id, { root, id, cls, covers, meta });
       }
     }
 
@@ -87,6 +95,7 @@ export class CoverageRoster implements PanelHandle {
       setText(r.cls, s.orbitClass);
       setText(r.covers, s.covers);
       r.covers.className = `roster-covers ${s.active ? "green" : "dim"}`;
+      setText(r.meta, `${Math.round(s.altKm).toLocaleString()} km · ${Math.round(s.incDeg)}° incl${s.active ? "" : " · idle"}`);
     }
 
     // DARK line — name the active-but-unserved regions in WORDS (the colour-off channel).
