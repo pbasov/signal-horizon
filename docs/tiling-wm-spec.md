@@ -35,7 +35,7 @@ The owner's v3 mockups fully realize the five preset loops — superseding my ea
 | 4 | **LAUNCH** | "Which window, payload, risk?" | LAUNCH·PAD OPS (manifest/window/cost) | `▲ COMMIT LAUNCH` | M2/M4 |
 | 5 | **COVERAGE** | "Where are my gaps, in which dimension?" | COVERAGE·NEARSIDE hex heatmap, full-bleed, CONN/BW/LAT/OBS/FRESH tabs | switch-dimension, inspect-cell | M2 |
 
-The v3 mockups also resolve most of `ui-critique-punchlist.md` **in design** (honest log-axis light-delay, → one-way/rtt, freshness-premium explained, system.log timestamps + severity glyphs, Earth terminator, margin thresholds). The engineering still must *implement* these in the C# build, but the design is settled — judge captures against `docs/mockups/v3-*.png`.
+The v3 mockups also resolve most of the prior UI critique punchlist **in design** (honest log-axis light-delay, → one-way/rtt, freshness-premium explained, system.log timestamps + severity glyphs, Earth terminator, margin thresholds). The engineering still must *implement* these in the C# build, but the design is settled — judge captures against `docs/mockups/v3-*.png`.
 
 ### Real-now preset set (what we build with today's content — M1)
 Only two genuinely distinct workspaces exist with real content:

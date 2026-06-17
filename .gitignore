@@ -5,3 +5,8 @@ dist/
 # logs & os cruft
 *.log
 .DS_Store
+
+# Playwright MCP scratch (snapshot dumps) + in-session diagnostic screenshots
+.playwright-mcp/
+/diag-*.png
+/mcp-boot.png

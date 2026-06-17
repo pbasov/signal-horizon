@@ -23,6 +23,7 @@ import { type CellCoverage, coverageDimsAt } from "../sim/coverage/field";
 import { DemandField } from "../sim/coverage/demand";
 import { scoreCoverageAt } from "../sim/coverage/score";
 import { CoverageOverlay } from "./coverage-overlay";
+import { COASTLINES } from "./coastlines";
 import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
 import { orbitRenderRadius, type OrbitRenderScale } from "./orbit-render-scale";
 import { pickNearest, type PickCandidate } from "./pick";
@@ -69,6 +70,15 @@ export interface CameraPreset {
    * so near-body orbits/sats separate from the parent disc and sweep visibly. Identity
    * (no de-squash) when undefined — system-scale presets keep the honest log-fold only. */
   orbitBandM?: number;
+  /**
+   * net/ Act-1 — NET-RENDER-MODE framing override. The SYSTEM/TOP-DOWN presets are heliocentric
+   * in cache mode (focus the Sun, system-scale log-fold) — but the connectivity game has NO
+   * heliocentric scene, so net mode would frame a sun-focused void and render BLACK. When net
+   * render mode is on, {@link Orrery.netFrame} substitutes these fields (Earth-orbit-scale fold +
+   * sane distance) so the preset frames the operated Earth + its constellation instead. Each field
+   * falls back to the cache value when absent. Cache mode ignores this entirely (byte-identical).
+   */
+  net?: Partial<Pick<CameraPreset, "az" | "el" | "dist" | "fov" | "logK" | "logScale" | "orbitBandM">>;
 }
 
 export const CAMERA_PRESETS: CameraPreset[] = [
@@ -80,8 +90,23 @@ export const CAMERA_PRESETS: CameraPreset[] = [
   { name: "EARTH", focus: "earth", az: 20 * DEG, el: 24 * DEG, dist: 3.0, fov: 48, logK: 6.0e7, logScale: 1.25, orbitBandM: 2.0e8 },
   { name: "CISLUNAR", focus: "earth", az: 0 * DEG, el: 22 * DEG, dist: 3.2, fov: 50, logK: 2.0e8, logScale: 1.4, orbitBandM: 1.2e8 },
   { name: "ORBITS", focus: "earth", az: 35 * DEG, el: 30 * DEG, dist: 5.0, fov: 46, logK: 9.0e6, logScale: 1.15, orbitBandM: 8.0e7 },
-  { name: "SYSTEM", focus: "sun", az: 0 * DEG, el: 24 * DEG, dist: 11, fov: 50, logK: 9.0e10, logScale: 3.6 },
-  { name: "TOP-DOWN", focus: "sun", az: 0 * DEG, el: 88 * DEG, dist: 13, fov: 46, logK: 9.0e10, logScale: 3.6 },
+  // SYSTEM — cache mode: the heliocentric Earth→Mars money shot. NET mode: a pulled-back CISLUNAR
+  // overview (the `net` override re-frames it Earth-centric at a cislunar fold so Earth + the Moon
+  // + the constellation all read, instead of a black sun-focused void).
+  {
+    name: "SYSTEM", focus: "sun", az: 0 * DEG, el: 24 * DEG, dist: 11, fov: 50, logK: 9.0e10, logScale: 3.6,
+    // NET cislunar overview: the SAME readable Earth fold as the EARTH preset (logK 6e7 keeps the
+    // toy globe a clear disc — the cislunar fold logK 2e8 collapsed it to sub-pixel), pulled back
+    // far enough that the real-distance Moon (on the honest log-fold past the 2e8 de-squash band)
+    // lands in frame. Earth ~110px + Moon to one side = the Earth+Moon "system" shot.
+    net: { az: 28 * DEG, el: 26 * DEG, dist: 6.6, fov: 50, logK: 6.0e7, logScale: 1.25, orbitBandM: 2.0e8 },
+  },
+  // TOP-DOWN — cache mode: looking down the ecliptic. NET mode: a north-pole-down view of the
+  // operated Earth so the orbital PLANES of the launched constellation read from above.
+  {
+    name: "TOP-DOWN", focus: "sun", az: 0 * DEG, el: 88 * DEG, dist: 13, fov: 46, logK: 9.0e10, logScale: 3.6,
+    net: { az: 0 * DEG, el: 86 * DEG, dist: 3.4, fov: 48, logK: 9.0e6, logScale: 1.15, orbitBandM: 8.0e7 },
+  },
 ];
 
 export interface PacketRenderState {
@@ -388,6 +413,13 @@ const NET_ORBIT_DESQUASH_ALT_EXPONENT = 0.32;
 const NET_CAMERA_DIST_SCALE = 1.6;
 const NET_CAMERA_FOV_SCALE = 0.7;
 const NET_GLOBE_PX_SCALE = 4.4;
+/** net/ Act-1 — Moon billboard magnification in net mode so the cislunar scale reference reads
+ * (its raw 16px terminator disc is otherwise a sub-pixel speck at the toy globe fold). */
+const NET_MOON_PX_SCALE = 2.6;
+/** net/ Act-1 — STYLIZED Moon distance, in operated-Earth scene radii. The honest toy-Earth↔real-
+ * Moon scale gap (~1280×) can't frame both; the Moon is non-interactive ambiance, so it rides a
+ * fixed pleasing offset (in its real direction) instead — a companion body, always near Earth. */
+const NET_MOON_DISTANCE_R = 1.9;
 /** §3 — THE PLANNER CLOSE-UP framing. When the LAUNCH planner is open/active, the camera FOCUSES
  * the operated body and ZOOMS IN CLOSE so the region + the coverage gap read IN DETAIL (the region
  * fills a good part of the view, not a sub-pixel dot). On top of the net dolly-in we pull the
@@ -945,14 +977,17 @@ export class Orrery {
     // shows + positions + orients + tints them only in net render mode (off-mode they never draw).
     this.netRegionMesh = this.buildSurfaceDisc([0.95, 0.6, 0.2]); // seeded amber (UNSERVED).
     this.netRegionMesh.visible = false;
-    this.netRegionMesh.renderOrder = 8; // on the globe, under the markers.
+    // FLICKER FIX — the co-located surface discs now form a fixed ASCENDING renderOrder stack that
+    // matches their ascending depth-lift (region < footprints < draft-fp < gap-dark < gap-covered),
+    // all in (coastline 6 .. markers 10), so back-to-front draw order is deterministic every frame.
+    this.netRegionMesh.renderOrder = 6.2; // base: the demand region, under all coverage patches.
     this.scene.add(this.netRegionMesh);
     // Act-2 — a POOL of cool-cyan footprint SURFACE discs (one per covering sat). The hand-off render:
     // with a constellation several sweep so the region stays lit as one slides off + the next on.
     for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
       const m = this.buildSurfaceDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
       m.visible = false;
-      m.renderOrder = 7;
+      m.renderOrder = 6.5; // committed sat coverage, over the region; per-slot depth-lift separates overlaps.
       this.netFootprintMeshes.push(m);
       this.scene.add(m);
     }
@@ -990,15 +1025,15 @@ export class Orrery {
     // coveredFraction — so dragging the orbit VISIBLY opens/closes the red gap on the region surface.
     this.netGapDark = this.buildSurfaceDisc([1.0, 0.28, 0.26]); // RED: the still-dark region slice.
     this.netGapDark.visible = false;
-    this.netGapDark.renderOrder = 6; // under the green covered disc + the footprint.
+    this.netGapDark.renderOrder = 7.5; // the still-dark slice, over the draft footprint.
     this.scene.add(this.netGapDark);
     this.netGapCovered = this.buildSurfaceDisc([0.4, 1.0, 0.55]); // GREEN: the covered slice.
     this.netGapCovered.visible = false;
-    this.netGapCovered.renderOrder = 7;
+    this.netGapCovered.renderOrder = 8; // the covered slice reads on TOP — "it's served".
     this.scene.add(this.netGapCovered);
     this.netDraftFootprint = this.buildSurfaceDisc([0.5, 0.95, 1.0]); // warm-cyan: the live draft footprint.
     this.netDraftFootprint.visible = false;
-    this.netDraftFootprint.renderOrder = 9; // over the gap discs so the pointing reads.
+    this.netDraftFootprint.renderOrder = 7; // the live planner preview, over committed coverage, under the gap state.
     this.scene.add(this.netDraftFootprint);
     this.netGroundTrack = this.buildPolyline(NET_DRAFT_TRACK_SAMPLES, 0x7df2ff, 0.7); // warm-cyan dashed arc.
     this.netGroundTrack.visible = false;
@@ -1138,6 +1173,43 @@ export class Orrery {
     grat.renderOrder = 5; // over the sphere fill, under the coverage discs.
     sphere.add(grat); // a child: rides the sphere position+scale; we spin it locally per frame.
     this.netBodyGraticule = grat;
+
+    this.buildNetCoastlines(grat);
+  }
+
+  /**
+   * net/ Act-1 — build the world COASTLINE outlines ONCE as a {@link THREE.LineSegments} over the
+   * UNIT sphere, in the SAME body-fixed basis as the graticule (latLon → [cos·lat·cos·lon,
+   * cos·lat·sin·lon, sin·lat] with the renderInto axis swap [x, z, −y]), so continents land where
+   * the surface-frame regions/footprints do (which use surfacePointRelative's identical basis + the
+   * θ(t) spin). Added as a CHILD of the graticule, so it rides the sphere position/scale AND the per-
+   * frame body spin — the continents turn with the globe. depthTest keeps the FAR-side coast hidden
+   * behind the globe (only the near hemisphere shows, as it should). A dim land tone (DD-1: reference
+   * geography, low-saturation — it must not compete with the bright coverage signal). No per-frame
+   * alloc (built once); ~5k segment vertices in one draw call.
+   */
+  private buildNetCoastlines(grat: THREE.LineSegments): void {
+    const D2R = Math.PI / 180;
+    const R = 1.004; // a hair above the unit sphere fill + the graticule, so it never z-fights.
+    const pts: number[] = [];
+    for (const poly of COASTLINES) {
+      for (let i = 0; i + 1 < poly.length; i++) {
+        for (const [lonDeg, latDeg] of [poly[i], poly[i + 1]]) {
+          const lat = latDeg * D2R;
+          const lon = lonDeg * D2R;
+          const cl = Math.cos(lat);
+          // ecliptic body-fixed unit vector, then the renderInto axis swap (x, z, −y).
+          pts.push(R * cl * Math.cos(lon), R * Math.sin(lat), -R * cl * Math.sin(lon));
+        }
+      }
+    }
+    const cg = new THREE.BufferGeometry();
+    cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+    const cmat = new THREE.LineBasicMaterial({ color: 0x6fae93, transparent: true, opacity: 0.6 });
+    const coast = new THREE.LineSegments(cg, cmat);
+    coast.frustumCulled = false;
+    coast.renderOrder = 6; // over the sphere fill + graticule, under the coverage discs.
+    grat.add(coast); // child of the graticule ⇒ inherits the θ(t) spin + the sphere transform.
   }
 
   /**
@@ -1168,8 +1240,19 @@ export class Orrery {
       vertexShader: VERT,
       fragmentShader: SURFACE_DISC_FRAG,
       transparent: true,
-      depthWrite: false,
-      depthTest: false, // always paint over the globe (a coverage overlay, never occluded).
+      // FLICKER FIX (net coverage): the discs used depthTest:false + a shared renderOrder, so the
+      // co-located region/footprint/gap patches sorted only by the transparent z-tiebreaker — and
+      // the per-frame floating-origin rebase JITTERED their near-equal view-space z, flipping which
+      // painted on top every frame (the visible flicker). Now they depth-test + depth-WRITE against
+      // the globe AND each other, with a per-CLASS ascending outward LIFT (orientSurfaceDisc) so each
+      // patch sits at a strictly distinct depth — a deterministic, flip-free stack. depthTest also
+      // makes far-side patches correctly occluded by the globe (no more back-side bleed-through).
+      // polygonOffset keeps the lifted patch winning cleanly against the sphere/coastline surface.
+      depthWrite: true,
+      depthTest: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
       uniforms: {
         uColor: { value: new THREE.Color(...color) },
         uCell: { value: 2.0 },
@@ -1382,7 +1465,8 @@ export class Orrery {
         if (slot >= this.netFootprintMeshes.length) break;
         const mesh = this.netFootprintMeshes[slot];
         (mesh.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.6;
-        this.orientSurfaceDisc(mesh, fp.centerPosM, body.centerPosM, bodySceneR, fp.radiusRad, focusAbs);
+        // liftMul 2 + a per-slot step so overlapping footprints (a hand-off) sit at distinct depths.
+        this.orientSurfaceDisc(mesh, fp.centerPosM, body.centerPosM, bodySceneR, fp.radiusRad, focusAbs, 2 + slot * 0.15);
         mesh.visible = true;
         slot++;
       }
@@ -1733,7 +1817,7 @@ export class Orrery {
     // sphere, live as the player drags (altitude→LEO shrinks/moves the cap; inclination tilts it).
     if (draft?.footprint && body !== null) {
       (fp.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.55;
-      this.orientSurfaceDisc(fp, draft.footprint.centerPosM, body.centerPosM, bodySceneR, draft.footprint.radiusRad, focusAbs);
+      this.orientSurfaceDisc(fp, draft.footprint.centerPosM, body.centerPosM, bodySceneR, draft.footprint.radiusRad, focusAbs, 3.5);
       fp.visible = true;
     } else {
       fp.visible = false;
@@ -1749,11 +1833,11 @@ export class Orrery {
       const frac = Math.max(0, Math.min(1, draft.gap.coveredFraction));
       // RED: the full region patch (the worst case — all dark). Hidden once fully covered.
       (dark.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.9;
-      this.orientSurfaceDisc(dark, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad, focusAbs);
+      this.orientSurfaceDisc(dark, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad, focusAbs, 4);
       dark.visible = frac < 0.999;
       // GREEN: the covered slice — a concentric patch sized √frac of the region radius (equal-area).
       (cov.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.95;
-      this.orientSurfaceDisc(cov, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad * Math.sqrt(frac), focusAbs);
+      this.orientSurfaceDisc(cov, draft.gap.centerPosM, body.centerPosM, bodySceneR, draft.gap.radiusRad * Math.sqrt(frac), focusAbs, 5);
       cov.visible = frac > 0.001;
     } else {
       dark.visible = false;
@@ -2008,7 +2092,12 @@ export class Orrery {
     if (i < 0 || i >= CAMERA_PRESETS.length) return;
     this.activePreset = i;
     const p = CAMERA_PRESETS[i];
-    this.focusId = p.focus;
+    // net/ Act-1 — the connectivity game is an EARTH-ORBIT puzzle: the camera must NEVER focus a
+    // body net mode hides. The SYSTEM/TOP-DOWN presets focus the Sun (blanked in net mode) → a
+    // black frame. Override focus to the OPERATED body so every preset frames Earth + its
+    // constellation; the preset's `net` override (applied in netFrame) supplies the Earth-orbit
+    // fold + distance. Cache mode keeps the preset's own focus (byte-identical).
+    this.focusId = this._netRenderMode ? (this.netState?.body?.id ?? "earth") : p.focus;
     this.tgt = this.netFrame(p);
     this.paintCameraButtons(); // keep the on-canvas active highlight in sync (click + hotkey).
   }
@@ -2023,14 +2112,17 @@ export class Orrery {
   private netFrame(p: CameraPreset): typeof this.tgt {
     const distScale = this._netRenderMode ? NET_CAMERA_DIST_SCALE : 1;
     const fovScale = this._netRenderMode ? NET_CAMERA_FOV_SCALE : 1;
+    // net/ Act-1 — apply the preset's NET override (Earth-orbit framing for the otherwise
+    // heliocentric SYSTEM/TOP-DOWN presets) only while net render mode is on. Empty in cache mode.
+    const o = this._netRenderMode ? (p.net ?? {}) : {};
     return {
-      az: p.az,
-      el: p.el,
-      dist: p.dist * distScale,
-      fov: p.fov * fovScale,
-      logK: p.logK,
-      logScale: p.logScale,
-      orbitBandM: p.orbitBandM ?? 0,
+      az: o.az ?? p.az,
+      el: o.el ?? p.el,
+      dist: (o.dist ?? p.dist) * distScale,
+      fov: (o.fov ?? p.fov) * fovScale,
+      logK: o.logK ?? p.logK,
+      logScale: o.logScale ?? p.logScale,
+      orbitBandM: o.orbitBandM ?? p.orbitBandM ?? 0,
     };
   }
 
@@ -2125,14 +2217,17 @@ export class Orrery {
     const operatedBodyId = this.netState?.body?.id ?? (this._netRenderMode ? "earth" : null);
     for (const spec of BODIES) {
       const mesh = this.bodyMeshes.get(spec.id)!;
-      // fix #1 — in net mode the world is the TOY operated body only: hide the Sun / Mars / Moon /
-      // dataset sat glyphs so the framing stays a clean toy globe (the Act-4 Mars teaser draws its
-      // own netMarsNode + relay + crawler, so Mars is still felt there). Cache mode draws all.
+      // net/ Act-1 — net mode is the EARTH-ORBIT world: the operated Earth is the hero, and we now
+      // also draw the MOON (a cislunar scale reference + "life"; it has no glow halo, so it is safe)
+      // and keep the real Sun DIRECTION driving Earth's terminator (the day/night line answers
+      // "where's the Sun" without a 1-AU-away disc washing the pane). We still hide Mars + the
+      // dataset sat glyphs + the Sun's giant additive halo. Cache mode draws all.
       // CRITICAL: a glow body (the Sun) owns a SEPARATE additive halo mesh — hide it here too, or
       // the SUN'S HALO keeps its last cache-mode position/size and additive-blends a giant radial
       // disc over the whole pane (the "glow that looked like the globe"). The early continue below
       // for the operated body already hides its halo; this branch covers every OTHER glow body.
-      if (this._netRenderMode && spec.id !== "earth") {
+      const netVisibleBody = spec.id === "earth" || spec.id === "moon";
+      if (this._netRenderMode && !netVisibleBody) {
         mesh.visible = false;
         if (spec.glow && this.haloMesh) this.haloMesh.visible = false;
         // The Mars freshness corona (this.marsHalo) is a SEPARATE additive mesh whose
@@ -2151,11 +2246,38 @@ export class Orrery {
       mesh.visible = true;
       const absBody = this.ctx.eph.position(spec.id, t);
       this.renderInto(this._rp, absBody, focusAbs);
+      // net/ Act-1 — STYLIZE the Moon's distance. The toy Earth is a 300km-radius globe but the
+      // Moon sits at its real ~384,000km: a ~1280× gap that makes a combined Earth+Moon frame
+      // impossible on the honest fold (the Moon is off-screen, or the Earth collapses to sub-pixel).
+      // The Moon is non-interactive ambiance/scale here, so pull it to a pleasing fixed multiple of
+      // the operated-Earth SCENE radius, along its REAL direction (so it still moves naturally) —
+      // it reads as a companion body in every net view. Cache mode keeps the honest position.
+      if (this._netRenderMode && spec.id === "moon" && this.netState?.body) {
+        const earthR = this.netBodySceneRadius(this.netState.body, focusAbs);
+        this.renderInto(this._rp2, this.netState.body.centerPosM, focusAbs); // operated-Earth scene centre
+        this._rp.sub(this._rp2); // folded Moon direction from Earth (the radial fold preserves direction)
+        // Project OUT the camera-forward component so the Moon always sits BESIDE Earth on the
+        // SCREEN PLANE — never along the view axis (where it would overlap the globe at frame centre,
+        // as the raw real direction happened to). The remaining (right/up) component still tracks the
+        // real Moon's screen-projected motion, so it drifts naturally.
+        this.camera.getWorldDirection(this.tmpV);
+        this._rp.addScaledVector(this.tmpV, -this._rp.dot(this.tmpV));
+        if (this._rp.lengthSq() < 1e-9) this._rp.set(1, 0.45, 0); // degenerate: pin a default offset
+        const len = this._rp.length() || 1;
+        this._rp.multiplyScalar((NET_MOON_DISTANCE_R * earthR) / len).add(this._rp2);
+      }
       mesh.position.copy(this._rp);
       // fix #1 — MAGNIFY the toy Earth in net mode so it is the LARGE central hero the overlay
       // discs read against (matched by the same NET_GLOBE_PX_SCALE on every overlay disc below).
-      // Render-only + scoped to the earth glyph in net mode; cache-mode sizing is unchanged.
-      const px = this._netRenderMode && spec.id === "earth" ? spec.px * NET_GLOBE_PX_SCALE : spec.px;
+      // net/ Act-1 — also enlarge the Moon in net mode so the cislunar scale reference actually
+      // READS (its raw 16px disc is sub-pixel at the toy fold). Render-only + scoped to net mode;
+      // cache-mode sizing is unchanged.
+      const px =
+        this._netRenderMode && spec.id === "earth"
+          ? spec.px * NET_GLOBE_PX_SCALE
+          : this._netRenderMode && spec.id === "moon"
+            ? spec.px * NET_MOON_PX_SCALE
+            : spec.px;
       this.sizeBillboard(mesh, px, worldPerPx);
       if (spec.id === "mars") this.applyMarsFreshness(mesh, worldPerPx);
       if (spec.terminator) {
@@ -2175,6 +2297,14 @@ export class Orrery {
 
     // rings — write straight into the Float32Array, zero Vector3 per point
     for (const [id, ring] of this.rings) {
+      // net/ Act-1 — no dataset rings in the Earth-orbit frame: the heliocentric earth/mars rings +
+      // the cache dataset sat_leo/sat_geo rings are clutter, and the Moon now rides a STYLIZED
+      // offset (so its real-distance orbit ring would no longer pass through it). The player's own
+      // launched constellation draws its own rings via updateSatRings. Cache mode draws all.
+      if (this._netRenderMode) {
+        ring.line.visible = false;
+        continue;
+      }
       const parent = this.ctx.eph.parentOf(id);
       const parentAbs = this.ctx.eph.position(parent, t);
       const pos = ring.line.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -2326,6 +2456,7 @@ export class Orrery {
     bodySceneR: number,
     radiusRad: number,
     focusAbs: Vec3,
+    liftMul = 1,
   ): void {
     // Rebase the surface point + the body centre to scene space.
     this.renderInto(this._surfN, surfacePosM, focusAbs); // reuse _surfN as the surface scene point.
@@ -2340,9 +2471,12 @@ export class Orrery {
     this._surfT.crossVectors(ref, this._surfN).normalize();
     this._surfB.crossVectors(this._surfN, this._surfT).normalize();
     const rad = Math.max(1e-4, bodySceneR * Math.sin(Math.max(0, radiusRad)));
-    // Lift slightly outward so the patch sits just above the surface (no z-fight; depthTest is off
-    // anyway, but the small lift keeps stacked patches in a clean order).
-    const lift = bodySceneR * 0.004;
+    // Lift outward so the patch sits just above the surface. `liftMul` gives each disc CLASS a
+    // strictly distinct lift (region < footprint < gap < draft), so co-located patches land at
+    // distinct depths and the depth-test produces a deterministic, flip-free stack (the FLICKER
+    // FIX — see buildSurfaceDisc). A tangent plane lifted outward stays entirely outside the sphere,
+    // so even at the rim there is no clipping into the globe.
+    const lift = bodySceneR * 0.004 * liftMul;
     // World matrix: columns = (T·rad, B·rad, N·rad) basis, translation = surface point + N·lift.
     this._surfM.set(
       this._surfT.x * rad, this._surfB.x * rad, this._surfN.x * rad, sx + this._surfN.x * lift,
@@ -2754,9 +2888,10 @@ export class Orrery {
         el.style.display = "none";
         continue;
       }
-      // fix #1 — net mode is the TOY EARTH world: hide the Sun / Mars / Moon / dataset-sat labels
-      // (their glyphs are hidden too) so only the toy globe is labelled. Cache mode labels all.
-      if (this._netRenderMode && spec.id !== "earth") {
+      // net/ Act-1 — net mode is the EARTH-ORBIT world: label only the operated Earth + the Moon
+      // (their glyphs are the only bodies drawn); hide the Sun / Mars / dataset-sat labels. Cache
+      // mode labels all.
+      if (this._netRenderMode && !(spec.id === "earth" || spec.id === "moon")) {
         el.style.display = "none";
         continue;
       }
@@ -3062,6 +3197,10 @@ export class Orrery {
     servedLinkCount: number;
     /** P1 — whether the live-network LineSegments is currently visible (≥1 link drawn). */
     servedLinkVisible: boolean;
+    /** net/ Act-1 — Moon glyph debug: visibility + on-screen NDC + pixel position (for framing). */
+    moonVisible: boolean;
+    moonOnScreen: boolean;
+    moonNdc: [number, number, number];
   } {
     const sphere = this.netBodySphere;
     const grat = this.netBodyGraticule;
@@ -3094,6 +3233,17 @@ export class Orrery {
       // P1 — the live network drawn this frame (the count from the slice + the mesh visibility).
       servedLinkCount: this.netState?.servedLinks?.length ?? 0,
       servedLinkVisible: this.netServedLinks?.visible ?? false,
+      ...(() => {
+        const moon = this.bodyMeshes.get("moon");
+        if (!moon) return { moonVisible: false, moonOnScreen: false, moonNdc: [0, 0, 0] as [number, number, number] };
+        const n = this.tmpV.copy(moon.position).project(this.camera);
+        const onScreen = moon.visible && n.x >= -1 && n.x <= 1 && n.y >= -1 && n.y <= 1 && n.z >= -1 && n.z <= 1;
+        return {
+          moonVisible: moon.visible,
+          moonOnScreen: onScreen,
+          moonNdc: [Math.round(n.x * 1000) / 1000, Math.round(n.y * 1000) / 1000, Math.round(n.z * 1000) / 1000] as [number, number, number],
+        };
+      })(),
     };
   }
 }

@@ -30,7 +30,7 @@
  * (faults will draw from it in Act 3b; absent here). The wallet is a plain number (net/
  * imports NEITHER m1/ NOR m2/session.ts — only the axis-agnostic m2/contracts helpers).
  *
- * @see docs/signal-horizon-m1-design.md §2.2 (session + reuse), §4 (determinism/fold), §5.
+ * @see docs/signal-horizon-m1.md Part II §2.2 (session + reuse), §4 (determinism/fold), §5.
  */
 
 import type { Ephemeris } from "../ephemeris";
@@ -445,7 +445,15 @@ export class NetSession {
     // (the build-vs-budget tension); the planner shows the cost before commit.
     this.walletBalance -= costEur;
     const roll = rollNetLaunch(this.rng);
-    if (!roll.ok) {
+    // ACT 1 IS THE DELIBERATELY-GENTLE "place one thing and it WORKS" opener (m1.md §IV act1: no
+    // failure). Suppress the §3.5 launch-failure roll while the scenario is on the FIRST beat
+    // (scenarioCursor 0); from Act 2 on the flat failure chance applies. DETERMINISM: the roll is
+    // STILL DRAWN above (so the seeded-RNG draw count — and every downstream roll — stays byte-
+    // identical to before); only the OUTCOME is overridden to success here. scenarioCursor advances
+    // identically in live + replay (gate-driven sim state), so this is replay-stable — the golden
+    // moves ONLY if the canonical run had ever rolled an Act-1 failure (now forced to succeed).
+    const failuresArmed = this.scenarioCursor > 0;
+    if (!roll.ok && failuresArmed) {
       // The launch FAILED: the sat is lost (no roster add, no id consumed, no topology change).
       return { ok: false, satId: null, roll: roll.roll };
     }

@@ -22,7 +22,7 @@
  * function of (centre, radius, sampleCount, index) — same inputs → byte-identical
  * sample set, so the coverage check is reproducible.
  *
- * @see docs/signal-horizon-m1-design.md §1 (endpoint), §2.2 (demand geometry), §5.
+ * @see docs/signal-horizon-m1.md Part II §1 (endpoint), §2.2 (demand geometry), §5.
  */
 
 import { MIN_ELEVATION_RAD } from "../coverage/field";

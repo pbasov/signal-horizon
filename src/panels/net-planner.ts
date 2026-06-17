@@ -51,6 +51,45 @@ export interface NetDraftReadout {
 /** The four draft slider fields, in the order the panel lays them out (altitude first — §3.1). */
 export type NetDraftField = "semiMajorM" | "incRad" | "subLonRad" | "raanRad";
 
+/**
+ * net/ Act-1 — THE CURRENT OBJECTIVE (the per-act goal made explicit). Render-only text mirroring
+ * the m1 doc's per-act curriculum, driven by the scenario cursor — answers "what am I trying to do
+ * right now?", the gap the player hit ("no clear goals"). NOT a sim concept (no new mechanics).
+ */
+export interface NetObjective {
+  /** "ACT 1" … "ACT 4" — the act label for the group legend. */
+  actLabel: string;
+  /** The one-line goal ("Serve a region and get paid"). */
+  title: string;
+  /** The concrete how-to ("Aim a sat over REGION-0, LAUNCH, then ACCEPT"). */
+  detail: string;
+}
+
+/**
+ * net/ Act-1 — ONE row of THE CONTRACTS VIEW (the "clear contracts view" the player asked for). A
+ * pure projection of a net Contract: its state, the ENFORCED SLA terms (gated by activeAxes so Act 1
+ * shows just "connectivity" and later acts reveal avail/latency/bandwidth), the reward rate, the live
+ * served fraction + term progress, and the € earned. Offered rows expose an inline ACCEPT.
+ */
+export interface NetContractRow {
+  id: string;
+  label: string;
+  state: "offered" | "active" | "completed" | "failed";
+  /** The enforced SLA terms, human-readable + colour-redundant on the words (e.g. "connectivity",
+   * "avail ≥ 99%", "≤ 40 ms · 50 Mbps") — only the axes in activeAxes are shown. */
+  terms: string;
+  /** Reward at full service, € per sim-hour (payPerSecond × 3600). */
+  rewardPerHr: number;
+  /** Whether a path serves it RIGHT NOW (active only). */
+  served: boolean;
+  /** Live served fraction ∈ [0,1] (active only). */
+  servedFraction: number;
+  /** Term progress ∈ [0,1] (servedSecondsAccum / termSeconds). */
+  progressFraction: number;
+  /** € earned so far. */
+  earnedEur: number;
+}
+
 /** The Act-1 contract readout (the one offered REGION-0 demand). */
 export interface NetContractReadout {
   id: string;
@@ -117,6 +156,10 @@ export interface NetPhasingReadout {
 
 /** Everything the planner panel paints — projected per-frame from the live NetSession. */
 export interface NetPlannerRenderState {
+  /** The current per-act OBJECTIVE (what the player is trying to do now). Null before any beat. */
+  objective: NetObjective | null;
+  /** ALL live contracts (offered + active + a short terminal tail), for the CONTRACTS view. */
+  contracts: NetContractRow[];
   /** On-hand € (the wallet that visibly ticks as a served contract pays). */
   balanceEur: number;
   /** The offered Act-1 contract (null before the scenario emits it). */
@@ -147,7 +190,9 @@ export interface NetPlannerActions {
    * back to SI/radians, edits the draft, and re-runs previewLaunch (the live consequence). */
   onEditDraft(field: NetDraftField, pos: number): void;
   onLaunch(): void;
-  onAccept(): void;
+  /** Accept an OFFERED contract. With no id, accepts the first offered (the headline ACCEPT button);
+   * the CONTRACTS-view inline buttons pass the row's id so any offered contract can be taken. */
+  onAccept(contractId?: string): void;
   /** Act-2 — fire ONE batch launch of the suggested phased constellation (the §3.4 batch). */
   onConstellation(): void;
   /** §7.3 / §10 — the player CYCLED which active contract the prefer slider tunes (when 2+ exist). */
@@ -161,6 +206,19 @@ export interface NetPlannerActions {
 export class NetPlanner implements PanelHandle {
   readonly title = "NET·LAUNCH";
   readonly content: HTMLElement;
+
+  // --- OBJECTIVE (the per-act goal made explicit) ---
+  private objectiveGroup: HTMLElement;
+  private objectiveLegend: HTMLElement;
+  private vObjTitle: HTMLElement;
+  private vObjDetail: HTMLElement;
+
+  // --- CONTRACTS view (all live deals + their terms/progress) ---
+  private contractsGroup: HTMLElement;
+  private contractsHost: HTMLElement;
+  /** Per-contract row elements, rebuilt on a state-signature change, value-updated each frame. */
+  private contractRows = new Map<string, { root: HTMLElement; head: HTMLElement; terms: HTMLElement; prog: HTMLElement; accept: HTMLButtonElement }>();
+  private contractsSig = "";
 
   // --- WALLET + CONTRACT ---
   private vBalance: HTMLElement;
@@ -208,12 +266,30 @@ export class NetPlanner implements PanelHandle {
   constructor(private actions: NetPlannerActions) {
     this.content = el("div", "telem");
 
-    // GROUP: NETWORK — the wallet (CLIMBS as the served contract pays) + the one demand.
+    // GROUP: OBJECTIVE — what the player is trying to do RIGHT NOW (the per-act goal made explicit;
+    // the "no clear goals" fix). A title line + a concrete how-to, driven by the scenario cursor.
+    this.objectiveGroup = el("div", "group net-objective");
+    this.objectiveLegend = el("div", "legend");
+    this.objectiveLegend.textContent = "OBJECTIVE";
+    this.vObjTitle = el("div", "net-obj-title");
+    this.vObjDetail = el("div", "net-obj-detail");
+    this.objectiveGroup.append(this.objectiveLegend, this.vObjTitle, this.vObjDetail);
+    this.content.append(this.objectiveGroup);
+
+    // GROUP: NETWORK — the wallet (CLIMBS as the served contract pays) + the headline demand.
     const net = group("NETWORK · ACT 1");
     this.vBalance = valueOf(row(net, "WALLET", "green"));
     this.vContractState = valueOf(row(net, "REGION-0"));
     this.vEarned = valueOf(row(net, "EARNED", "cyan"));
     this.content.append(net);
+
+    // GROUP: CONTRACTS — the legible deal board (the "clear contracts view" fix): every live
+    // contract with its ENFORCED SLA terms, reward, live served% + term progress, and an inline
+    // ACCEPT for offered ones. Rows are rebuilt only on a state-signature change (no per-frame churn).
+    this.contractsGroup = group("CONTRACTS");
+    this.contractsHost = el("div", "net-contracts");
+    this.contractsGroup.append(this.contractsHost);
+    this.content.append(this.contractsGroup);
 
     // GROUP: PRESET — the floor (GEO PARK default that already works) + LEO SWEEP. Buttons.
     const presetGroup = group("PRESET · FLOOR");
@@ -226,10 +302,13 @@ export class NetPlanner implements PanelHandle {
     // cover); phase + RAAN are the fine controls. Each is a range slider that fires onEditDraft as
     // the player drags, re-running previewLaunch so the on-globe consequence updates live.
     const orbitGroup = group("ORBIT · DRAG ME");
-    this.buildSlider(orbitGroup, "semiMajorM", "altitude", "ALTITUDE");
-    this.buildSlider(orbitGroup, "incRad", "inclination", "INCLINATION");
-    this.buildSlider(orbitGroup, "subLonRad", "phase", "PHASE");
-    this.buildSlider(orbitGroup, "raanRad", "raan", "RAAN");
+    // §3.1 — per-axis EFFECT captions: teach cause BEFORE effect. Altitude + inclination are the two
+    // that matter first (the GEO/LEO reach axis + which latitudes); phase + RAAN are the FINE controls
+    // (captioned as such so a cold player drags the right two first).
+    this.buildSlider(orbitGroup, "semiMajorM", "altitude", "ALTITUDE", "higher = wider reach, more delay · GEO parks, LEO sweeps");
+    this.buildSlider(orbitGroup, "incRad", "inclination", "INCLINATION", "tilt the orbit — reach higher latitudes");
+    this.buildSlider(orbitGroup, "subLonRad", "phase", "PHASE", "fine · where it sits along the orbit");
+    this.buildSlider(orbitGroup, "raanRad", "raan", "RAAN", "fine · rotates the orbital plane");
     this.content.append(orbitGroup);
 
     // GROUP: PREVIEW — the truthful consequence of the LIVE EDITABLE DRAFT before commit.
@@ -319,7 +398,7 @@ export class NetPlanner implements PanelHandle {
    * re-runs previewLaunch and the on-globe consequence moves live. The value cell shows the human
    * readout (km / degrees) painted from render(). Built once; the value updates per frame.
    */
-  private buildSlider(parent: HTMLElement, field: NetDraftField, key: string, label: string): void {
+  private buildSlider(parent: HTMLElement, field: NetDraftField, key: string, label: string, caption?: string): void {
     const r = el("div", "net-slider");
     const head = el("div", "row");
     const lab = el("span", "label");
@@ -338,12 +417,32 @@ export class NetPlanner implements PanelHandle {
       this.actions.onEditDraft(field, Number(input.value) / 1000);
     });
     r.append(head, input);
+    // §3.1 — the per-axis EFFECT caption (teach cause→effect): a dim one-liner under the slider.
+    if (caption) {
+      const cap = el("div", "net-slider-cap");
+      cap.textContent = caption;
+      r.append(cap);
+    }
     parent.append(r);
     this.draftSliders.set(field, input);
     this.draftValues.set(field, v);
   }
 
   render(state: NetPlannerRenderState): void {
+    // OBJECTIVE — the per-act goal (what to do now). Driven by the scenario cursor in main.ts.
+    const obj = state.objective;
+    if (obj) {
+      this.objectiveGroup.style.display = "";
+      setText(this.objectiveLegend, `OBJECTIVE · ${obj.actLabel}`);
+      setText(this.vObjTitle, obj.title);
+      setText(this.vObjDetail, obj.detail);
+    } else {
+      this.objectiveGroup.style.display = "none";
+    }
+
+    // CONTRACTS — the legible deal board (rebuilt on a state-signature change, values per frame).
+    this.syncContracts(state.contracts);
+
     // WALLET — the headline € that visibly ticks up while the contract is served.
     setText(this.vBalance, fmtEuro(state.balanceEur));
     setValueClass(this.vBalance, state.balanceEur < 0 ? "red" : "green");
@@ -449,10 +548,20 @@ export class NetPlanner implements PanelHandle {
       setText(this.hint, `coverage MOVES — press PLACE SET to launch ${ph.count} phased sats, then add one to hold it`);
       this.hint.className = "net-hint";
     } else if (!state.launched) {
-      setText(
-        this.hint,
-        "DRAG the ORBIT sliders — watch the footprint + ground-track move on the globe until the RED gap goes GREEN, then LAUNCH",
-      );
+      // Coverage-aware: when the pre-aimed default already COVERS (the gentle "place one thing works"
+      // cold open), invite experimentation rather than imply a gap that isn't there; when there IS a
+      // gap, point at closing it. Either way the sliders read as meaningful (their captions teach why).
+      if (state.preview.served && state.preview.coveredFraction >= 0.999) {
+        setText(
+          this.hint,
+          "REGION-0 is fully covered — LAUNCH now, or drag ALTITUDE down / try LEO SWEEP to feel the tradeoff",
+        );
+      } else {
+        setText(
+          this.hint,
+          "DRAG the ORBIT sliders — watch the footprint + ground-track move on the globe until the RED gap goes GREEN, then LAUNCH",
+        );
+      }
       this.hint.className = "net-hint";
     } else if (c && c.state === "offered") {
       setText(this.hint, "sat is up — press ACCEPT to start earning from REGION-0");
@@ -478,6 +587,67 @@ export class NetPlanner implements PanelHandle {
     }
     const v = this.draftValues.get(field);
     if (v) setText(v, p.label);
+  }
+
+  /**
+   * Paint THE CONTRACTS VIEW: one row per live contract (state · terms · reward · served% · earned),
+   * with an inline ACCEPT for offered ones. The row set is rebuilt only when the (id, state) signature
+   * changes (so accepting / a new offer rebuilds, but per-frame value updates don't churn the DOM).
+   */
+  private syncContracts(contracts: NetContractRow[]): void {
+    const sig = contracts.map((c) => `${c.id}:${c.state}`).join("|");
+    if (sig !== this.contractsSig) {
+      this.contractsSig = sig;
+      this.contractsHost.replaceChildren();
+      this.contractRows.clear();
+      if (contracts.length === 0) {
+        const empty = el("div", "net-contract-empty");
+        empty.textContent = "— no contracts yet —";
+        this.contractsHost.append(empty);
+      }
+      for (const c of contracts) {
+        const root = el("div", "net-contract");
+        const head = el("div", "net-contract-head");
+        const terms = el("div", "net-contract-terms");
+        const prog = el("div", "net-contract-prog");
+        const accept = button("ACCEPT", "accept-row");
+        accept.dataset.contractId = c.id;
+        accept.addEventListener("click", () => this.actions.onAccept(c.id));
+        root.append(head, terms, prog, accept);
+        this.contractsHost.append(root);
+        this.contractRows.set(c.id, { root, head, terms, prog, accept });
+      }
+    }
+    // Per-frame value updates (no DOM churn).
+    for (const c of contracts) {
+      const r = this.contractRows.get(c.id);
+      if (!r) continue;
+      const stateWord =
+        c.state === "offered" ? "OFFERED"
+        : c.state === "active" ? (c.served ? "SERVED ✓" : "UNSERVED")
+        : c.state === "completed" ? "✓ DONE"
+        : "✕ ENDED";
+      const tone =
+        c.state === "offered" ? "cyan"
+        : c.state === "active" ? (c.served ? "green" : "amber")
+        : c.state === "completed" ? "green"
+        : "red";
+      r.head.className = `net-contract-head ${tone}`;
+      setText(r.head, `${c.label} · ${stateWord}`);
+      setText(r.terms, `${c.terms} · +€${Math.round(c.rewardPerHr)}/hr`);
+      if (c.state === "active") {
+        setText(r.prog, `served ${fmtPct(c.servedFraction)} · term ${fmtPct(c.progressFraction)} · earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.style.display = "";
+      } else if (c.state === "offered") {
+        setText(r.prog, "accept to start earning");
+        r.prog.style.display = "";
+      } else {
+        setText(r.prog, `earned ${fmtEuro(c.earnedEur)}`);
+        r.prog.style.display = "";
+      }
+      r.accept.style.display = c.state === "offered" ? "" : "none";
+      r.accept.classList.toggle("ready", c.state === "offered");
+    }
   }
 
   /** Build the preset buttons once (in render-order), then light the selected one. */

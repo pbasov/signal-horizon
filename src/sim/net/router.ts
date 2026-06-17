@@ -30,7 +30,7 @@
  * PURE: no three, no DOM, no wall-clock, no RNG. Reuses solveOrbit (unforked) for sat
  * world positions and the net/link-budget predicate for every edge.
  *
- * @see docs/signal-horizon-m1-design.md §2.4 (router), §7 (the solver spine), §5.
+ * @see docs/signal-horizon-m1.md Part II §2.4 (router), §7 (the solver spine), §5.
  */
 
 import type { Ephemeris, Vec3 } from "../ephemeris";

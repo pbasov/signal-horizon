@@ -14,7 +14,7 @@
  * Generalizes (design §2.1): more bus tiers / antenna types / slot classes drop in as
  * enum members + loadout entries; frame + pacing never change.
  *
- * @see docs/signal-horizon-m1-design.md §2.1 (sat atom).
+ * @see docs/signal-horizon-m1.md Part II §2.1 (sat atom).
  */
 
 import type { SatOrbit } from "../m2/roster";

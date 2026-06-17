@@ -697,12 +697,34 @@ body {
 .net-hint.warn { color: var(--amber); }
 .net-hint.good { color: var(--green); }
 
+/* ---- net/ OBJECTIVE (the per-act goal made explicit) + the CONTRACTS view ------------------- */
+/* OBJECTIVE: a bright title line (the signal — what you're doing now) over a dim how-to. The group
+   housing is the standard 1-bit dashed box; only the title carries colour. */
+.net-obj-title { color: var(--cyan); font-weight: 700; font-size: 11.5px; letter-spacing: 0.02em; margin: 3px 0 1px; }
+.net-obj-detail { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+
+/* CONTRACTS: one bordered mini-card per deal — a state-toned head, the enforced SLA terms + reward,
+   the live served%/term progress, and an inline ACCEPT for offered ones. Chrome card, coloured head. */
+.net-contracts { display: flex; flex-direction: column; gap: 4px; margin: 3px 0 1px; }
+.net-contract { border: 1px solid var(--line-dim); padding: 3px 6px 4px; }
+.net-contract-head { font-weight: 700; font-size: 10.5px; letter-spacing: 0.02em; color: var(--fg); }
+.net-contract-head.cyan { color: var(--cyan); }
+.net-contract-head.green { color: var(--green); }
+.net-contract-head.amber { color: var(--amber); }
+.net-contract-head.red { color: var(--red); }
+.net-contract-terms { color: var(--fg-dim); font-size: 10px; margin-top: 1px; }
+.net-contract-prog { color: var(--fg-dim); font-size: 10px; margin-top: 1px; }
+.net-contract .net-btn { margin-top: 3px; }
+.net-contract-empty { color: var(--fg-dim); font-size: 10.5px; font-style: italic; padding: 2px 0; }
+
 /* ---- net/ §3.1 ORBIT draft sliders (the ceiling — drag altitude/inclination/phase/RAAN) ------ */
 /* Each row: a NAME · value head over a full-width range input. The slider is the make-or-break
    "drag the orbit" control; its value cell shows the live human readout (km / degrees). 1-bit
    chrome, hard edges, cyan thumb (the SIGNAL the player is dragging the consequence). */
 .net-slider { margin: 2px 0 5px; }
 .net-slider .row { margin-bottom: 1px; }
+/* §3.1 — the per-axis EFFECT caption: a dim one-liner teaching what the slider does (cause→effect). */
+.net-slider-cap { color: var(--fg-dim); font-size: 9.5px; line-height: 1.25; margin-top: 1px; opacity: 0.82; }
 .net-range {
   -webkit-appearance: none;
   appearance: none;

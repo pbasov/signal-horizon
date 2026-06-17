@@ -36,8 +36,8 @@
  *
  * PURE: no three / DOM / wall-clock / unseeded-random. Minimal + stable.
  *
- * @see docs/signal-horizon-m1-act3-act4-design.md (ACT 3, fault.ts/trace.ts/3b portions).
- * @see docs/signal-horizon-m1-onboarding.md (Act 3, sub-beat 3B).
+ * @see docs/signal-horizon-m1.md Part III (ACT 3, fault.ts/trace.ts/3b portions).
+ * @see docs/signal-horizon-m1.md Part IV (Act 3, sub-beat 3B).
  */
 
 import type { NetSat } from "./sat";

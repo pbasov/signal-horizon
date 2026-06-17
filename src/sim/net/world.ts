@@ -14,7 +14,7 @@
  * budget — never an Act-1 "closing-lever" forced-imperfection knob. The dropped
  * A1_DISH_EIRP=1.1 and its preset framing do NOT migrate here.
  *
- * @see docs/signal-horizon-m1-design.md §1 (layout), §2.1 (pacing), §5 (Act-1 slice).
+ * @see docs/signal-horizon-m1.md Part II §1 (layout), §2.1 (pacing), §5 (Act-1 slice).
  */
 
 import type { Ephemeris } from "../ephemeris";

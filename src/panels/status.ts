@@ -126,9 +126,9 @@ export class StatusStrip {
       appendKeys(keys, "K");
       keys.append(" accept ");
       appendKeys(keys, "C");
-      keys.append(" constln ");
-      appendKeys(keys, "P");
-      keys.append(" cache");
+      keys.append(" constln");
+      // (P · the Act-4 Mars breadcrumb is intentionally NOT in the opening legend — it would
+      // surface the word "cache" before the connectivity game has even been learned.)
     } else {
       // M1-cache verbs (unchanged).
       appendKeys(keys, "F");
@@ -150,10 +150,12 @@ export class StatusStrip {
       this.tiled.cell,
       this.play,
       this.scale.cell,
-      this.em.cell,
-      this.focus.cell,
-      this.cam.cell,
     ];
+    // E→M is the Earth↔Mars light-delay (a CACHE-game readout). The connectivity game is an
+    // Earth-orbit puzzle, so the strip drops it in net mode (it would surface "Mars" at the
+    // cold open). It returns in ?mode=cache, where the Earth↔Mars delay IS the core constraint.
+    if (!netMode) cells.push(this.em.cell);
+    cells.push(this.focus.cell, this.cam.cell);
     if (!netMode) cells.push(this.policy.cell);
     cells.push(spacer, keys);
     this.element.append(...cells);

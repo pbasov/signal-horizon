@@ -16,7 +16,7 @@
  *     equatorial sub-longitude advance (+n·t), so a GEO with the same sense parks.
  *   - Rz(θ)·[x,y,z] = [x·cosθ − y·sinθ, x·sinθ + y·cosθ, z]  (right-handed about +Z).
  *
- * @see docs/signal-horizon-m1-design.md §2.1 (frame), §5 (Act-1 slice).
+ * @see docs/signal-horizon-m1.md Part II §2.1 (frame), §5 (Act-1 slice).
  */
 
 import type { Vec3 } from "../ephemeris";

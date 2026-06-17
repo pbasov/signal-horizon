@@ -35,8 +35,8 @@
  * {@link SimRng} (never a `new SimRng`), so the seam is trivially replay-safe. Mutates NOTHING
  * the caller passes in (it returns a delta — the session folds the resulting {@link FaultState}[]).
  *
- * @see docs/signal-horizon-m1-act3-act4-design.md (ACT 3, fault.ts / 3B portions).
- * @see docs/signal-horizon-m1-onboarding.md (Act 3, sub-beat 3B).
+ * @see docs/signal-horizon-m1.md Part III (ACT 3, fault.ts / 3B portions).
+ * @see docs/signal-horizon-m1.md Part IV (Act 3, sub-beat 3B).
  */
 
 import type { SimRng } from "../rng";

@@ -24,7 +24,7 @@
  * `isPointServed` at each sampled instant — the SAME machinery, sampled across TIME instead of
  * across the disc.
  *
- * @see docs/signal-horizon-m1-design.md §4.4 (the SLA-axis ramp / availability), §2.2, §4.
+ * @see docs/signal-horizon-m1.md Part II §4.4 (the SLA-axis ramp / availability), §2.2, §4.
  */
 
 import type { Ephemeris } from "../ephemeris";

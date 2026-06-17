@@ -27,7 +27,7 @@
  * constants (NET_MIN_ELEVATION_RAD, the per-antenna eirp + rangeRefM). It does NOT
  * import the field.ts grid/cell machinery — only the speed of light + the constants.
  *
- * @see docs/signal-horizon-m1-design.md §2.4 (router edges), §5 (the WHOLE-DISC pin).
+ * @see docs/signal-horizon-m1.md Part II §2.4 (router edges), §5 (the WHOLE-DISC pin).
  */
 
 import { type Ephemeris, type Vec3, C_LIGHT } from "../ephemeris";

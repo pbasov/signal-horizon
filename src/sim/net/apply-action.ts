@@ -17,7 +17,7 @@
  * any RNG is the session's seeded splitmix64 (faults, Act 3b — absent here). Returns the
  * outcome (or null for a non-net action) for the live caller's feedback + record decision.
  *
- * @see docs/signal-horizon-m1-design.md §4 (action kinds + apply order), §2.3 (the planner).
+ * @see docs/signal-horizon-m1.md Part II §4 (action kinds + apply order), §2.3 (the planner).
  */
 
 import type { Ephemeris } from "../ephemeris";

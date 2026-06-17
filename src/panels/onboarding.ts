@@ -47,11 +47,13 @@ interface OnboardingCard {
 const ONBOARDING_CARDS: Record<OnboardingConcept, OnboardingCard> = {
   act1: {
     id: "act1",
-    title: "LAUNCH PLANNER",
+    // EASIER COLD OPEN — not a 3-step lecture on top of the planner. ONE welcoming, non-imperative
+    // line that ORIENTS the player to the persistent surfaces (the OBJECTIVE goal + the globe) that
+    // now carry the step-by-step. The planner is pre-aimed, so the very first move is just LAUNCH.
+    title: "WELCOME, OPERATOR",
     lines: [
-      "Aim a satellite's orbit and watch its coverage on the globe.",
-      "Drag ALTITUDE / INCLINATION (or pick a preset), then LAUNCH.",
-      "ACCEPT the contract to get paid for serving the lit region.",
+      "Your job: keep regions connected — and get paid for it.",
+      "The green OBJECTIVE up top always says your next move; the globe shows your coverage.",
     ],
   },
   act2: {

@@ -147,6 +147,29 @@ export interface ContractsRenderState {
   balanceEur: number;
 }
 
+/**
+ * net/ Act-1 — the CONNECTIVITY-game economy the FINANCE/STATUS chrome reads in net mode
+ * (instead of the cache {@link DemandReadout}). The net game has NO standing opex — you spend
+ * launch CAPEX up front and earn standing contract revenue — so the readout is wallet + revenue
+ * + earned + roster counts, never freshness/cache slots. A pure projection of the NetSession.
+ */
+export interface NetEconomy {
+  /** On-hand € wallet (earns contract revenue, pays launch capex). */
+  balanceEur: number;
+  /** Total € earned across all contracts this session. */
+  earnedEur: number;
+  /** Current REVENUE rate (€/sim-second) summed across ACTIVE contracts (negative ⇒ net penalty). */
+  revenueRatePerSecond: number;
+  /** Count currently ACTIVE (serving + earning). */
+  activeContracts: number;
+  /** Count currently OFFERED (awaiting accept). */
+  offeredContracts: number;
+  /** Launched satellites in the roster. */
+  satCount: number;
+  /** True once the wallet has gone negative (capex overspend) — the kill condition. */
+  bankrupt: boolean;
+}
+
 /** Per-frame snapshot the panels render from. */
 export interface FrameState {
   /**
@@ -180,4 +203,11 @@ export interface FrameState {
   packet: PacketState | null;
   /** M1-05 standing-demand resolve readout (the live cache loop). */
   demand: DemandReadout;
+  /**
+   * net/ Act-1 — the connectivity-game economy, present ONLY in net mode. When set, the
+   * FINANCE panel + STATUS strip read THIS (wallet/revenue/earned/roster) instead of the
+   * cache {@link demand} block, so the chrome stops surfacing freshness/cache-slots in the
+   * connectivity game. Absent (undefined) in ?mode=cache, where {@link demand} drives them.
+   */
+  netEconomy?: NetEconomy;
 }

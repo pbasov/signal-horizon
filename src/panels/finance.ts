@@ -49,9 +49,14 @@ export class Finance implements PanelHandle {
   private vOpex: HTMLElement;
   private vNet: HTMLElement;
 
-  // --- VALUE ---
-  private vPremium: HTMLElement;
-  private vSlots: HTMLElement;
+  // --- VALUE (cache mode) ---
+  private vPremium!: HTMLElement;
+  private vSlots!: HTMLElement;
+
+  // --- NETWORK (net mode) — the connectivity-game readout ---
+  private vEarned!: HTMLElement;
+  private vSats!: HTMLElement;
+  private vContracts!: HTMLElement;
 
   // --- BANKRUPT banner (created/removed dynamically, like the occult alarm) ---
   private bankruptBanner: HTMLElement | null = null;
@@ -61,31 +66,64 @@ export class Finance implements PanelHandle {
   /** Mirrors the last-seen runway (sim-seconds) for status(). */
   private runwaySeconds = Number.POSITIVE_INFINITY;
 
-  constructor() {
+  /**
+   * @param netMode — net/ Act-1: when true the panel reads {@link FrameState.netEconomy}
+   * (wallet / revenue / earned / roster) and drops the cache-only FRESHNESS-PREMIUM /
+   * CACHE-SLOTS / RUNWAY-burn rows (the connectivity game has no cache and no standing opex).
+   * When false it is the M1-cache FINANCE view, byte-identical to before.
+   */
+  constructor(private netMode = false) {
     this.content = el("div", "telem"); // reuse the telemetry housing styles
 
     // GROUP: WALLET — where you stand and how long you last.
     const wallet = group("WALLET");
     this.vBalance = valueOf(row(wallet, "BALANCE", "green"));
-    this.vRunway = valueOf(row(wallet, "RUNWAY", "green"));
+    if (netMode) {
+      // net/ Act-1 — no standing burn to count down, so the second WALLET row is the
+      // contract EARNINGS to date (the loop's reward), not a cache-opex runway.
+      this.vEarned = valueOf(row(wallet, "EARNED", "green"));
+      this.vRunway = this.vEarned; // alias so status()/update() never touch a dead ref
+    } else {
+      this.vRunway = valueOf(row(wallet, "RUNWAY", "green"));
+    }
 
-    // GROUP: FLOW — continuous RATES (€ per sim-hour): revenue in, opex out, and
-    // the NET earn/burn that drives the runway. Rates, never per-tick.
-    const flow = group("FLOW · €/HR (SIM)");
-    this.vRevenue = valueOf(row(flow, "REVENUE", "green"));
-    this.vOpex = valueOf(row(flow, "OPEX", "red"));
-    this.vNet = valueOf(row(flow, "NET", "green"));
+    if (netMode) {
+      // GROUP: FLOW — the live contract REVENUE rate (€/sim-hour). No OPEX/NET rows: the net
+      // game has no standing upkeep (capex is a one-off launch charge against the wallet).
+      const flow = group("FLOW · €/HR (SIM)");
+      this.vRevenue = valueOf(row(flow, "REVENUE", "green"));
+      this.vOpex = this.vRevenue; // unused in net mode
+      this.vNet = this.vRevenue; //  "
 
-    // GROUP: VALUE — the derived worth of freshness across the roster + the cache
-    // contention (occupied / total slots, the E7 strain readout).
-    const value = group("VALUE · ALL FEEDS");
-    this.vPremium = valueOf(row(value, "FRESHNESS PREMIUM", "cyan"));
-    this.vSlots = valueOf(row(value, "CACHE SLOTS"));
+      // GROUP: NETWORK — the connectivity-game roster glance: launched sats + contract counts.
+      const net = group("NETWORK");
+      this.vSats = valueOf(row(net, "SATELLITES", "cyan"));
+      this.vContracts = valueOf(row(net, "CONTRACTS"));
 
-    this.content.append(wallet, flow, value);
+      this.content.append(wallet, flow, net);
+    } else {
+      // GROUP: FLOW — continuous RATES (€ per sim-hour): revenue in, opex out, and
+      // the NET earn/burn that drives the runway. Rates, never per-tick.
+      const flow = group("FLOW · €/HR (SIM)");
+      this.vRevenue = valueOf(row(flow, "REVENUE", "green"));
+      this.vOpex = valueOf(row(flow, "OPEX", "red"));
+      this.vNet = valueOf(row(flow, "NET", "green"));
+
+      // GROUP: VALUE — the derived worth of freshness across the roster + the cache
+      // contention (occupied / total slots, the E7 strain readout).
+      const value = group("VALUE · ALL FEEDS");
+      this.vPremium = valueOf(row(value, "FRESHNESS PREMIUM", "cyan"));
+      this.vSlots = valueOf(row(value, "CACHE SLOTS"));
+
+      this.content.append(wallet, flow, value);
+    }
   }
 
   update(state: FrameState): void {
+    if (this.netMode) {
+      this.updateNet(state);
+      return;
+    }
     const d = state.demand;
     this.bankrupt = d.bankrupt;
     this.runwaySeconds = d.runway; // runway is already in SIM-SECONDS (rate model).
@@ -156,7 +194,53 @@ export class Finance implements PanelHandle {
     }
   }
 
-  /** Titlebar lamp: crit while bankrupt, warn while runway is short, else ok. */
+  /**
+   * net/ Act-1 — the connectivity-game FINANCE update: wallet, the live contract REVENUE
+   * rate, total EARNED, and the roster glance. Reads {@link FrameState.netEconomy} (falls
+   * back to a quiet zero state if absent so the panel never throws). No cache/runway here.
+   */
+  private updateNet(state: FrameState): void {
+    const n = state.netEconomy;
+    const balance = n?.balanceEur ?? 0;
+    const earned = n?.earnedEur ?? 0;
+    const revPerHr = (n?.revenueRatePerSecond ?? 0) * SECONDS_PER_HOUR;
+    this.bankrupt = n?.bankrupt ?? false;
+    this.runwaySeconds = Number.POSITIVE_INFINITY; // no standing burn in the net game.
+
+    // BALANCE — solvent green / overspent red, redundant on the ✕ + "€-…" sign glyph.
+    const insolvent = balance < 0;
+    setText(this.vBalance, insolvent ? `✕ ${fmtEuro(balance)}` : fmtEuro(balance));
+    setValueClass(this.vBalance, insolvent ? "red" : "green");
+
+    // EARNED — total contract income to date (the loop's reward), always ≥ 0, neutral-green.
+    setText(this.vEarned, fmtEuro(earned));
+    setValueClass(this.vEarned, earned > 0 ? "green" : "");
+
+    // REVENUE — the live serve rate (€/sim-hour). +€…/hr serving (green), −€…/hr in penalty
+    // (red), €0/hr idle. Leading +/− is the colour-off channel.
+    setText(this.vRevenue, fmtRatePerHour(revPerHr));
+    setValueClass(this.vRevenue, revPerHr > 0 ? "green" : revPerHr < 0 ? "red" : "");
+
+    // NETWORK — the roster glance: launched sats + active/offered contract counts.
+    setText(this.vSats, String(n?.satCount ?? 0));
+    setValueClass(this.vSats, (n?.satCount ?? 0) > 0 ? "cyan" : "");
+    const active = n?.activeContracts ?? 0;
+    const offered = n?.offeredContracts ?? 0;
+    setText(this.vContracts, offered > 0 ? `${active} active · ${offered} offered` : `${active} active`);
+    setValueClass(this.vContracts, active > 0 ? "green" : offered > 0 ? "amber" : "");
+
+    // BANKRUPT banner — structural, only while the wallet is overspent.
+    if (this.bankrupt && !this.bankruptBanner) {
+      this.bankruptBanner = el("div", "finance-bankrupt");
+      this.bankruptBanner.textContent = "✕ OVERSPENT · WALLET NEGATIVE";
+      this.content.appendChild(this.bankruptBanner);
+    } else if (!this.bankrupt && this.bankruptBanner) {
+      this.bankruptBanner.remove();
+      this.bankruptBanner = null;
+    }
+  }
+
+  /** Titlebar lamp: crit while bankrupt/overspent, warn while runway is short, else ok. */
   status(): "ok" | "warn" | "crit" {
     if (this.bankrupt) return "crit";
     if (Number.isFinite(this.runwaySeconds) && this.runwaySeconds < RUNWAY_WARN_SECONDS) {
@@ -166,7 +250,7 @@ export class Finance implements PanelHandle {
   }
 
   subtitle(): string {
-    return "· ALL FEEDS";
+    return this.netMode ? "· CONNECTIVITY" : "· ALL FEEDS";
   }
 }
 

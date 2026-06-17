@@ -80,7 +80,7 @@ import { bridgeForPoint, satPositionRelative } from "./sim/net/router";
 import { suggestPhasing } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
-import { preferFromSliderPos, preferSliderPos } from "./sim/net/contract";
+import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond } from "./sim/net/contract";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
 import { ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
@@ -90,7 +90,7 @@ import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
 // net/ Act-3b P2 — the LIVE telegraphed countdown + the permanent-drop predicate (the §5 watch-and-
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
 import { telegraphedCountdownRemainingS, faultRemovesSatAt } from "./sim/net/fault-types";
-import { NetPlanner, type NetPlannerRenderState } from "./panels/net-planner";
+import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
@@ -125,7 +125,7 @@ import { StatusStrip } from "./panels/status";
 // CORE CONCEPT, fired off the scenario beats (act1 at the cold open; the rest when the cursor reaches
 // them). Render/UI only — no sim math, net mode ONLY. See drainNetOnboarding below for the trigger.
 import { Onboarding, type OnboardingConcept } from "./panels/onboarding";
-import type { ContractReadout, ContractsRenderState, FrameState } from "./types";
+import type { ContractReadout, ContractsRenderState, FrameState, NetEconomy } from "./types";
 
 applyDither();
 
@@ -756,6 +756,88 @@ function netPreviewWorld(): PreviewWorld {
 }
 
 /**
+ * net/ Act-1 — THE PER-ACT OBJECTIVE text (render-only, the "no clear goals" fix). Mirrors the m1
+ * doc's per-act curriculum; the scenario cursor (act1→act2→act3a→act3b→act4) indexes it. NOT a sim
+ * concept — pure UI copy keyed off the live cursor. Never invents goals beyond the doc's intent.
+ */
+const NET_OBJECTIVES: NetObjective[] = [
+  { actLabel: "ACT 1", title: "Serve a region, get paid", detail: "Aim a sat over REGION-0 until the red gap goes GREEN, LAUNCH (L), then ACCEPT (K)." },
+  { actLabel: "ACT 2", title: "Hold a region that moves", detail: "One sat drifts off and coverage drops — phase a CONSTELLATION (C) so it never gaps." },
+  { actLabel: "ACT 3", title: "Relieve the congested link", detail: "Your success is overloading a shared sat — retune PREFER or add capacity to clear it." },
+  { actLabel: "ACT 3", title: "Weather the fault", detail: "A fault is telegraphed — build redundancy so a served region survives the drop." },
+  { actLabel: "ACT 4", title: "The frontier", detail: "You've reached the edge: Mars, and the speed of light. To be continued." },
+];
+
+/** net/ Act-1 — the current OBJECTIVE for the planner's goal surface, indexed by the live cursor. */
+function netObjectiveState(): NetObjective | null {
+  const i = Math.max(0, Math.min(NET_OBJECTIVES.length - 1, netSession.cursor));
+  return NET_OBJECTIVES[i] ?? null;
+}
+
+/** net/ Act-1 — render the ENFORCED SLA terms of a contract (only the axes in activeAxes), so Act 1
+ * reads "connectivity" and later acts reveal avail/latency/bandwidth as the escalation adds them. */
+function netContractTerms(c: (typeof netSession.contracts)[number]): string {
+  const parts: string[] = [];
+  const axes = c.activeAxes;
+  if (axes.size === 0 || axes.has("connectivity")) parts.push("connectivity");
+  if (axes.has("availability")) parts.push(`avail ≥ ${Math.round(c.slaAvail * 100)}%`);
+  if (axes.has("latency")) parts.push(`≤ ${Math.round(c.slaLatencyS * 1000)} ms`);
+  if (axes.has("bandwidth")) parts.push(`bw ≥ ${Math.round(c.slaBandwidth)}`);
+  return parts.join(" · ");
+}
+
+/** net/ Act-1 — project ALL live net contracts into the planner's CONTRACTS view rows (the "clear
+ * contracts view" fix). PURE reads of the session; the served flag comes from the live router solve. */
+function netContractRows(t: number): NetContractRow[] {
+  void t;
+  return netSession.contracts.map((c) => {
+    const solve = netSession.lastSolveFor(c.id);
+    return {
+      id: c.id,
+      label: c.label,
+      state: c.state,
+      terms: netContractTerms(c),
+      rewardPerHr: c.payPerSecond * 3600,
+      served: c.state === "active" && (solve?.served ?? false),
+      servedFraction: c.lastServedFraction,
+      progressFraction: c.termSeconds > 0 ? Math.min(1, c.servedSecondsAccum / c.termSeconds) : 0,
+      earnedEur: c.earnedEur,
+    };
+  });
+}
+
+/**
+ * net/ Act-1 — project the live NetSession into the {@link NetEconomy} the FINANCE panel + STATUS
+ * strip read in net mode: wallet, total earned, the live serve REVENUE rate (summed over active
+ * contracts at their current served fraction), the offered/active counts, the sat roster size, and
+ * the overspend flag. PURE reads of the net session (no sim mutation, no golden impact).
+ */
+function netEconomyState(): NetEconomy {
+  let earnedEur = 0;
+  let revenueRatePerSecond = 0;
+  let activeContracts = 0;
+  let offeredContracts = 0;
+  for (const c of netSession.contracts) {
+    earnedEur += c.earnedEur;
+    if (c.state === "active") {
+      activeContracts++;
+      revenueRatePerSecond += netRevenueRatePerSecond(c, c.lastServedFraction);
+    } else if (c.state === "offered") {
+      offeredContracts++;
+    }
+  }
+  return {
+    balanceEur: netSession.balance,
+    earnedEur,
+    revenueRatePerSecond,
+    activeContracts,
+    offeredContracts,
+    satCount: netSession.sats.length,
+    bankrupt: netSession.balance < 0,
+  };
+}
+
+/**
  * net/ A4 — build the LAUNCH PLANNER panel's per-frame {@link NetPlannerRenderState}: the
  * wallet, the REGION-0 contract (state + served + earned), the preset buttons, and the
  * TRUTHFUL consequence preview of the selected preset via the pure {@link previewLaunch}
@@ -778,6 +860,8 @@ function netPlannerRenderState(): NetPlannerRenderState {
   const shortfall = netSession.currentShortfall(t);
 
   return {
+    objective: netObjectiveState(),
+    contracts: netContractRows(t),
     balanceEur: netSession.balance,
     contract: c
       ? {
@@ -1595,16 +1679,22 @@ function netLaunch(): void {
  * serving the whole disc, so the contract earns from the first served step — the launch→
  * cover→PAID chain closes.
  */
-function netAccept(): void {
-  const action = netAcceptAction(ACT1_CONTRACT_ID, clock.tick);
+function netAccept(contractId?: string): void {
+  // Accept the named contract, else the first OFFERED one (so the headline ACCEPT button + the
+  // CONTRACTS-view inline buttons both work; falls back to REGION-0 for the Act-1 cold open).
+  const id =
+    contractId ??
+    netSession.contracts.find((c) => c.state === "offered")?.id ??
+    ACT1_CONTRACT_ID;
+  const action = netAcceptAction(id, clock.tick);
   const res = applyAndRecordNetAction(action);
   if (res && res.kind === "contract_accepted") {
     log.append({
       tSim: clock.seconds,
       sev: "info",
       entity: "NET-CONTRACT",
-      value: ACT1_CONTRACT_ID,
-      msg: `accepted REGION-0 — serve it to EARN (the wallet ticks while served)`,
+      value: id,
+      msg: `accepted ${id} — serve it to EARN (the wallet ticks while served)`,
     });
   }
 }
@@ -1796,6 +1886,23 @@ let prevCue: CueDemandSlice | null = null;
  * it onto the one-way bus (drained by the frame loop). The sim never sees audio.
  */
 function tickSim(t: number): void {
+  // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
+  // scenario emit (REGION-0 onto the board) + serve/breach + revenue + the gate. A net action
+  // is recorded at clock.tick and applied IMMEDIATELY in its handler (after THIS tick's step
+  // has already run in the prior drain) — exactly the m2 build pattern, which is byte-identical
+  // to the replay golden's "step at atTick, then apply post-step" order. Stepped every tick so
+  // the scenario is live the instant net mode boots (the contract is offered before launch).
+  // ALWAYS stepped (net mode is the live game; cache mode steps it too, harmlessly inert).
+  netSession.step(eph, t, DT);
+
+  // THE CACHE / M2-BUILD SIM IS CACHE-MODE ONLY. In net mode the connectivity game is the
+  // whole world; stepping the cache session here is what leaked the mars_imagery/EARTH→MARS
+  // misses, the Earth→Mars packet crawl, and the cache-framed FINANCE/SYSTEM.LOG into the
+  // connectivity opening (the "we're still focusing on caching" confusion). Gating it OUT of
+  // net mode keeps the cache/M2/Mission worlds CONSTRUCTED-BUT-INERT (so FrameState.demand keeps
+  // a well-typed idle shape) and steps them only under ?mode=cache — byte-identical to before.
+  if (netMode) return;
+
   // The Mission advances the orrery's single Earth→Mars packet crawl (the visible
   // aggregate wait). E9: it no longer feeds the SYSTEM.LOG — the log is the
   // TRUTHFUL sim event stream (session.events), rendered each frame below.
@@ -1806,13 +1913,6 @@ function tickSim(t: number): void {
   // wallet (DT-invariant, summed once per step). This is what CLOSES the §3 loop — the
   // coverage the player built now EARNS € back. Same shared step() the replay drives.
   build.step(eph, t, DT);
-  // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
-  // scenario emit (REGION-0 onto the board) + serve/breach + revenue + the gate. A net action
-  // is recorded at clock.tick and applied IMMEDIATELY in its handler (after THIS tick's step
-  // has already run in the prior drain) — exactly the m2 build pattern, which is byte-identical
-  // to the replay golden's "step at atTick, then apply post-step" order. Stepped every tick so
-  // the scenario is live the instant net mode boots (the contract is offered before launch).
-  netSession.step(eph, t, DT);
   // The Mission's single Earth→Mars packet represents the AGGREGATE in-flight
   // wait (all feeds share the same geometry); the orrery draws a packet PER feed
   // in flight from the per-feed readout. Launch the packet whenever any leg is
@@ -1853,6 +1953,10 @@ const orrery = new Orrery({
   eph,
   now: () => clock.seconds,
   packet: () => {
+    // net/ Act-1 — NO Earth→Mars packet crawl in the connectivity game (it is the cache
+    // Mission's visible wait, deferred to the Act-4 Mars teaser). The Mission is not even
+    // stepped in net mode, but gate the provider too so a mode toggle can never leak a packet.
+    if (netMode) return null;
     const p = mission.packet;
     return p ? { fromId: p.fromId, toId: p.toId, progress: p.progress, freshness: p.freshness } : null;
   },
@@ -1871,7 +1975,10 @@ orrery.netRenderMode = netMode;
 
 const log = new SystemLog();
 const telemetry = new Telemetry();
-const finance = new Finance();
+// net/ Act-1 — FINANCE reads the connectivity-game economy (wallet/revenue/earned/roster) in
+// net mode instead of the cache freshness-premium/cache-slots readout (fix: stop surfacing the
+// caching game in the connectivity opening). Byte-identical cache view under ?mode=cache.
+const finance = new Finance(netMode);
 // THE PARSE (§4.12 / §5 view #9) — the reviewable-at-rest legible record. It holds
 // no sim state; refreshParse() folds the truthful event log into a RunParse and
 // hands it over whenever the player opens the PARSE view (preset 6 / key G).
@@ -1898,7 +2005,7 @@ const netPlannerPanel = new NetPlanner({
     netEditDraft(field, b.min + pos * (b.max - b.min));
   },
   onLaunch: () => netLaunch(),
-  onAccept: () => netAccept(),
+  onAccept: (id?: string) => netAccept(id),
   // Act-2 — the phasing assist's batch launch (the §3.4 launch-as-a-batch): one press places
   // the suggested phased constellation into a plane. Same shared applier the keys + replay use.
   onConstellation: () => netConstellation(),
@@ -2269,7 +2376,9 @@ function frame(now: number): void {
 
   // E10c — the foreshadow nudge: once the margin first enters the watch band
   // (approach > 0), surface the looming blackout + the speed control, one-shot.
-  if (!conjunctionNudged) {
+  // CACHE MODE ONLY — the nudge is cache-framed ("pre-stage the cache (P/A)") and the
+  // Earth↔Mars conjunction blackout is the cache game's constraint, not the net game's.
+  if (!netMode && !conjunctionNudged) {
     const approach = conjunctionApproach(los.marginSolarRadii, los.inCorridor, los.corridorRsun);
     if (approach > 0) {
       conjunctionNudged = true;
@@ -2326,16 +2435,24 @@ function frame(now: number): void {
       autoPrefetched: demand.autoPrefetched,
       autoBlackoutPrestage: demand.autoBlackoutPrestage,
     },
+    // net/ Act-1 — the connectivity-game economy for the FINANCE/STATUS chrome (net mode only;
+    // undefined in cache mode, where `demand` drives them).
+    netEconomy: netMode ? netEconomyState() : undefined,
   };
 
   // E9 — paint the truthful SYSTEM.LOG: drain the new tail of the sim event stream
   // (incremental, by seq) into the panel. The log IS the surfaced sim record.
-  log.render(session.events);
-  // M2f — interleave the truthful M2 WORLD-event stream (demand shocks / rival actions / news) into
-  // the same ledger: emergent story beats surface in SYSTEM.LOG, §8-highlighted (rivals in their
-  // faction hue). Incremental drain by the M2 seq cursor; the events are REAL world changes (a shock
-  // line means the demand actually bumped; a relay-failure line means a contract was spawned).
-  log.renderM2(build.events);
+  // CACHE MODE ONLY — in net mode the SYSTEM.LOG carries ONLY the connectivity game's lines
+  // (the net loop's log.append calls + drainNetFaultLog/drainNetAct4Log + the objective beats);
+  // rendering the cache session's events here is what flooded the opening with mars_imagery
+  // MISS / fetch-launched-EARTH→MARS / cache-EVICT lines.
+  if (!netMode) {
+    log.render(session.events);
+    // M2f — interleave the truthful M2 WORLD-event stream (demand shocks / rival actions / news)
+    // into the same ledger: emergent story beats surface in SYSTEM.LOG, §8-highlighted (rivals in
+    // their faction hue). Incremental drain by the M2 seq cursor; REAL world changes.
+    log.renderM2(build.events);
+  }
   telemetry.update(fs);
   finance.update(fs);
   status.update(fs);

@@ -18,7 +18,7 @@
  * builders the live applier commits (resolveOrbit + the standard loadout), so a measured set is
  * byte-truthful to what a batch launch lands.
  *
- * @see docs/signal-horizon-m1-design.md §3.3 (the assist), §3.4 (launch-as-a-batch), §3.2 (LOCKED).
+ * @see docs/signal-horizon-m1.md Part II §3.3 (the assist), §3.4 (launch-as-a-batch), §3.2 (LOCKED).
  */
 
 import type { Ephemeris } from "../ephemeris";

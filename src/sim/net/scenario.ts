@@ -32,7 +32,7 @@
  * read only `(session, t)`. Determinism is the whole point: every emit/gate transition
  * is a function of (session state, t), evaluated inside step, recorded in the cursor.
  *
- * @see docs/signal-horizon-m1-design.md §3 (the gating engine), §4 (determinism), §5.
+ * @see docs/signal-horizon-m1.md Part II §3 (the gating engine), §4 (determinism), §5.
  */
 
 import type { NetSession } from "./session";

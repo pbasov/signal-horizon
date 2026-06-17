@@ -25,7 +25,7 @@
  *
  * PURE: plain JSON-safe data + pure constructors. No three / DOM / wall-clock / RNG.
  *
- * @see docs/signal-horizon-m1-design.md §2.2 (the reuse decision), §4 (the fold), §5.
+ * @see docs/signal-horizon-m1.md Part II §2.2 (the reuse decision), §4 (the fold), §5.
  */
 
 import type { ContractState } from "../m2/contracts"; // SHARED state vocabulary (NOT re-declared)

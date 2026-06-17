@@ -1395,6 +1395,11 @@ describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure 
     // (you pay the provider win or lose), but NO sat reaches orbit and the monotonic id is NOT consumed.
     const eph = buildEph();
     const s = new NetSession(NET_OPENING_BALANCE, failSeed!);
+    // ACT 1 (scenarioCursor 0) deliberately SUPPRESSES the launch-failure roll (the gentle "place one
+    // thing works" cold open, m1.md §IV). To exercise the FAILURE path, ARM failures by advancing the
+    // cursor past act1 via a snapshot/restore that sets scenarioCursor while PRESERVING the rng state
+    // (so the first roll is still the fail roll). From Act 2 on, the §3.5 flat failure chance applies.
+    s.restore({ ...s.snapshot(), scenarioCursor: 1 });
     const before = s.balance;
     const action = netLaunch(
       { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
@@ -1408,10 +1413,35 @@ describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure 
     const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
     expect(before - s.balance).toBeCloseTo(expectedCost, 9); // charged anyway (the §3.5 minimum).
     // The id was NOT consumed (a failed launch leaves the monotonic sequence stable): the NEXT
-    // (successful) launch takes NET-SAT-0, proving the failure did not burn an id.
+    // (successful) launch takes NET-SAT-0, proving the failure did not burn an id. (Arm failures
+    // past act1 here too, else the gentle Act-1 cold open would force this launch to succeed.)
     const s2 = new NetSession(NET_OPENING_BALANCE, failSeed!);
+    s2.restore({ ...s2.snapshot(), scenarioCursor: 1 });
     applyNetAction(eph, s2, action, dt); // fails, consumes one roll, no id.
     expect(s2.nextSatId()).toBe("NET-SAT-0");
+  });
+
+  it("ACT 1 SUPPRESSES the launch-failure roll: a fail-seed launch on the FIRST beat (scenarioCursor 0) still reaches orbit — the gentle 'place one thing works' cold open (m1.md §IV) — but is STILL CHARGED", () => {
+    // The same fail-seed search as above: a seed whose first roll lands below the 5% chance.
+    let failSeed: bigint | null = null;
+    for (let k = 1n; k < 200n; k++) {
+      if (!rollNetLaunch(new SimRng(k)).ok) { failSeed = k; break; }
+    }
+    expect(failSeed).not.toBeNull();
+    const eph = buildEph();
+    // Fresh session ⇒ scenarioCursor 0 ⇒ ACT 1 ⇒ failures disarmed: the fail roll is OVERRIDDEN.
+    const s = new NetSession(NET_OPENING_BALANCE, failSeed!);
+    const before = s.balance;
+    const action = netLaunch(
+      { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
+      0,
+    );
+    const res = applyNetAction(eph, s, action, dt)!;
+    expect(res.kind).toBe("sats_launched"); // forced success in Act 1 (the gentle opener).
+    expect(s.sats.length).toBe(1); // the sat reached orbit despite the fail-seed.
+    // The roll was STILL DRAWN (only the outcome overridden), so the wallet is STILL charged.
+    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
+    expect(before - s.balance).toBeCloseTo(expectedCost, 9);
   });
 
   it("EVERY canonical-log launch CLEARS the 5% roll at NET_RNG_SEED (so the scripted Act-1→Act-4 arc still gates deterministically)", () => {
