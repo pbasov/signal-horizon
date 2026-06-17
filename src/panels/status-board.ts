@@ -27,12 +27,13 @@ export class StatusBoard implements PanelHandle {
   private vSummary!: HTMLElement;
   // --- per-contract status rows (rebuilt on a state-signature change) ---
   private rowsHost: HTMLElement;
-  private rows = new Map<string, { root: HTMLElement; label: HTMLElement; state: HTMLElement; served: HTMLElement; earned: HTMLElement; reason: HTMLElement }>();
+  private rows = new Map<string, { root: HTMLElement; label: HTMLElement; state: HTMLElement; served: HTMLElement; earned: HTMLElement; reason: HTMLElement; navTarget: string | null }>();
   private sig = "";
 
   private worst: "ok" | "warn" | "crit" = "ok";
 
-  constructor() {
+  /** @param onNavigate deep-link callback — main.ts switches to the named WM desktop (the fix lives there). */
+  constructor(private onNavigate?: (desktop: string) => void) {
     this.content = el("div", "telem");
 
     // GROUP: OBJECTIVE — the per-act goal banner (the green "what is my next move" surface).
@@ -119,7 +120,14 @@ export class StatusBoard implements PanelHandle {
         const reason = el("div", "status-reason");
         root.append(top, reason);
         this.rowsHost.append(root);
-        this.rows.set(c.id, { root, label, state: stateWord, served, earned, reason });
+        const entry = { root, label, state: stateWord, served, earned, reason, navTarget: null as string | null };
+        // DEEP-LINK — click a demand to jump to the desktop that fixes it (the navTarget the per-frame
+        // pass sets from its live state/binding). Mission-control flow: glance the problem → click → act.
+        root.addEventListener("click", () => {
+          const t = this.rows.get(c.id)?.navTarget;
+          if (t && this.onNavigate) this.onNavigate(t);
+        });
+        this.rows.set(c.id, entry);
       }
     }
 
@@ -152,6 +160,15 @@ export class StatusBoard implements PanelHandle {
       } else {
         r.reason.style.display = "none";
       }
+      // DEEP-LINK target — where the fix lives: an offered deal → BUSINESS (accept); an over-cap
+      // breach → ROUTING (reroute); any other unserved demand → CONNECTIVITY (launch/aim/constellation).
+      // Served / terminal demands need no action → not clickable.
+      r.navTarget =
+        c.state === "offered" ? "BUSINESS"
+        : atRisk ? (c.bindingReason === "bandwidth" ? "ROUTING" : "CONNECTIVITY")
+        : null;
+      r.root.className = r.navTarget ? "status-row clickable" : "status-row";
+      r.root.title = r.navTarget ? `→ ${r.navTarget}` : "";
       if (atRisk) worst = worst === "crit" ? "crit" : "warn";
       if (c.state === "failed") worst = "crit";
     }

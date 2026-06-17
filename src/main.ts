@@ -2203,7 +2203,11 @@ const netContractsPanel = new NetContracts(netPlannerActions);
 const netPreferPanel = new NetPrefer(netPlannerActions);
 // net/ M1 (SD-44 PHASE 1) — THE NEW MISSION-CONTROL DASHBOARDS: the OVERVIEW triage board, the
 // CONNECTIVITY coverage roster, the ROUTING link-load board, and the REFERENCE how-it-works page.
-const statusBoardPanel = new StatusBoard();
+// DEEP-LINK — the OVERVIEW triage rows jump to the desktop where the fix lives (by preset NAME).
+const statusBoardPanel = new StatusBoard((desktop: string) => {
+  const i = presets.findIndex((p) => p.name === desktop);
+  if (i >= 0) setWmPreset(i);
+});
 const coverageRosterPanel = new CoverageRoster();
 const linkLoadPanel = new LinkLoad();
 const howtoPanel = new Howto();

@@ -726,7 +726,10 @@ body {
 /* STATUS·BOARD rows: one line per demand — label · STATE word (colour-redundant) · served% · earned.
    The state WORD carries the meaning colour-off; the .v colour modifiers reinforce it. */
 .status-rows { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px; }
-.status-row { display: flex; flex-direction: column; gap: 0; padding: 1px 0; }
+.status-row { display: flex; flex-direction: column; gap: 0; padding: 1px 2px; }
+/* DEEP-LINK affordance — an at-risk / offered demand is clickable (jumps to the fix desktop). */
+.status-row.clickable { cursor: pointer; border-left: 2px solid transparent; }
+.status-row.clickable:hover { border-left-color: var(--cyan); background: rgba(70, 214, 201, 0.06); }
 .status-row-top {
   display: grid;
   grid-template-columns: 1fr auto auto auto;
