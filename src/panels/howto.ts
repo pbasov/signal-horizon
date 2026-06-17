@@ -25,48 +25,48 @@ interface HowtoCard {
 const HOWTO_CARDS: HowtoCard[] = [
   {
     cursor: 0,
-    title: "1 · SERVE A REGION",
+    title: "1 · SERVE A REGION — & THE BET",
     lines: [
-      "Your job: keep regions connected — and get paid for it.",
-      "Aim a sat over a region until the red gap goes GREEN, LAUNCH, then ACCEPT the contract.",
+      "Keep regions connected and get paid. Every contract is a WAGER: a reward/hr staked against a penalty/hr it bleeds if you breach its SLA.",
+      "On CONNECTIVITY (2) aim the orbit until the preview reads WILL SERVE, press L to launch. Then ACCEPT on BUSINESS (4) — the card tells you whether your current fleet can actually hold it before you commit.",
     ],
-    xref: "LAUNCH desktop (key 2) → CONTRACTS desktop (key 4)",
+    xref: "CONNECTIVITY (2) → BUSINESS (4) · OVERVIEW (1) flags what's at risk",
   },
   {
     cursor: 1,
-    title: "2 · COVERAGE MOVES",
+    title: "2 · COVERAGE MOVES — SIZE THE SET",
     lines: [
-      "One satellite can't hold a region that needs constant coverage — it orbits away.",
-      "Launch a CONSTELLATION (several phased sats) so one rises as another sets.",
+      "A region that needs CONTINUOUS coverage can't be held by one LEO — it orbits away and the link sawtooths.",
+      "On CONNECTIVITY (2) dial the CONSTELLATION SIZE on the held-vs-capex ladder: add phased sats until HELD crosses the bar (the measured minimum), but every sat past it is idle capex — trim to the minimum.",
     ],
-    xref: "LAUNCH desktop (key 2) → the PLACE SET button",
+    xref: "CONNECTIVITY (2) → the SIZE stepper + PLACE SET",
   },
   {
     cursor: 2,
-    title: "3 · STRAIN",
+    title: "3 · STRAIN — WHO STARVES",
     lines: [
-      "Your success grew demand and a shared link is congesting toward breach.",
-      "Re-route (prefer a different path) or launch more capacity.",
+      "Your success grows demand. When two contracts share one sat and their peaks collide, the link over-subscribes and can no longer honor every floor.",
+      "On ROUTING (3) read the LINK·LOAD allocation ledger — it shows each contract's share vs its floor and flags the STARVED one. PREFER bandwidth to reroute the one you protect onto a lighter sat, or launch more capacity.",
     ],
-    xref: "ROUTING desktop (key 3) → LINK·LOAD + ROUTING·PREFER",
+    xref: "ROUTING (3) → LINK·LOAD ledger + the PREFER reroute preview",
   },
   {
     cursor: 3,
-    title: "4 · FAULTS",
+    title: "4 · FAULTS — REDUNDANCY",
     lines: [
-      "Satellites degrade and fail. Build redundancy and watch the diagnostic.",
-      "A telegraphed failure warns you before it dies.",
+      "Satellites degrade and fail; a telegraphed fault warns you before it drops.",
+      "Build redundancy so a served region survives the outage — launch a backup over it before the countdown ends; OVERVIEW (1) flags the region the moment it's at risk.",
     ],
-    xref: "ROUTING desktop (key 3) → watch LINK·LOAD",
+    xref: "CONNECTIVITY (2) launch a backup · OVERVIEW (1) triage",
   },
   {
     cursor: 4,
-    title: "5 · DISTANCE",
+    title: "5 · DISTANCE — THE FRONTIER",
     lines: [
-      "Mars is minutes away at light-speed.",
-      "Your real-time playbook breaks here — the signal arrives old.",
+      "Mars is minutes away at light-speed — your real-time playbook breaks here, and the signal arrives old.",
+      "A teaser: connectivity by relay presence, latency by the REAL light delay. To be continued.",
     ],
-    xref: "OVERVIEW desktop (key 1) → the orrery + STATUS·BOARD",
+    xref: "OVERVIEW (1) → the orrery + the Earth↔Mars span",
   },
 ];
 
