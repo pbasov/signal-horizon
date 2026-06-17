@@ -1157,7 +1157,13 @@ export class Orrery {
       glslVersion: THREE.GLSL3,
       vertexShader: SPHERE_VERT,
       fragmentShader: SPHERE_FRAG,
-      transparent: true,
+      // FLICKER FIX (the real one): the globe is OPAQUE — SPHERE_FRAG outputs alpha 1.0 and uses a
+      // Bayer `discard` for the 1-bit dither, never blends. Marking it `transparent:true` forced it
+      // into the TRANSPARENT pass, where MSAA + the dithered discard + depthWrite at the silhouette
+      // flicker in GPU-dependent ways (the limb shimmer the player sees — invisible to the headless
+      // software-GL renderer, which is why instrument scans read clean). Render it OPAQUE so it goes
+      // through the clean opaque pass with stable depth. Visual is identical (alpha was always 1).
+      transparent: false,
       depthWrite: true, // a SOLID globe: coverage discs sit just above the surface + read on top.
       uniforms: {
         uColor: { value: this._netBodyDark.clone() },
@@ -1211,7 +1217,10 @@ export class Orrery {
     }
     const gg = new THREE.BufferGeometry();
     gg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
-    const gmat = new THREE.LineBasicMaterial({ color: 0x6f7d9a, transparent: true, opacity: 0.34 });
+    // depthTest keeps the back-side grid hidden by the opaque globe; depthWrite:false because a
+    // TRANSLUCENT overlay must not write depth (writing it makes the faint lines z-fight each other +
+    // the discard-sphere at the limb — a GPU-dependent shimmer). Standard transparent-overlay combo.
+    const gmat = new THREE.LineBasicMaterial({ color: 0x6f7d9a, transparent: true, opacity: 0.34, depthWrite: false });
     const grat = new THREE.LineSegments(gg, gmat);
     grat.frustumCulled = false;
     grat.renderOrder = 5; // over the sphere fill, under the coverage discs.
@@ -1249,7 +1258,7 @@ export class Orrery {
     }
     const cg = new THREE.BufferGeometry();
     cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
-    const cmat = new THREE.LineBasicMaterial({ color: 0x6fae93, transparent: true, opacity: 0.6 });
+    const cmat = new THREE.LineBasicMaterial({ color: 0x6fae93, transparent: true, opacity: 0.6, depthWrite: false });
     const coast = new THREE.LineSegments(cg, cmat);
     coast.frustumCulled = false;
     coast.renderOrder = 6; // over the sphere fill + graticule, under the coverage discs.
@@ -1350,6 +1359,7 @@ export class Orrery {
         color: isSat ? 0xff9e2e : 0xcfcfdb,
         transparent: true,
         opacity: isSat ? 0.55 : 0.42,
+        depthWrite: false, // translucent ring: don't write depth (z-fights the limb otherwise).
       });
       const line = new THREE.LineSegments(geo, mat);
       line.frustumCulled = false;
@@ -1386,7 +1396,7 @@ export class Orrery {
       const positions = new Float32Array(segCount * 2 * 3);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      const mat = new THREE.LineBasicMaterial({ color: 0xff9e2e, transparent: true, opacity: 0.5 });
+      const mat = new THREE.LineBasicMaterial({ color: 0xff9e2e, transparent: true, opacity: 0.5, depthWrite: false });
       const line = new THREE.LineSegments(geo, mat);
       line.frustumCulled = false;
       this.scene.add(line);
@@ -1774,7 +1784,7 @@ export class Orrery {
     const positions = new Float32Array(dashes * 2 * 3);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.LineBasicMaterial({ color: 0xff9e2e, transparent: true, opacity: 0.5 });
+    const mat = new THREE.LineBasicMaterial({ color: 0xff9e2e, transparent: true, opacity: 0.5, depthWrite: false });
     const line = new THREE.LineSegments(geo, mat);
     line.frustumCulled = false;
     return line;
@@ -1817,7 +1827,7 @@ export class Orrery {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity });
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthTest: false, depthWrite: false });
     const line = new THREE.LineSegments(geo, mat);
     line.frustumCulled = false;
     return line;
@@ -2945,13 +2955,12 @@ export class Orrery {
       this.camera.updateProjectionMatrix();
     }
     // FLICKER FIX (depth precision). The fixed near/far (0.001 .. 100000) spreads the depth buffer's
-    // range across EIGHT orders of magnitude, so at the globe (z_eye ≈ dist ≈ a few units) the depth
-    // resolution is far coarser than the thin gaps between the surface, graticule and coastlines —
-    // they z-fight, and the floating-origin rebase jitters the result every frame (the limb flicker).
-    // In NET MODE pull NEAR up to just inside the focus body's nearest surface point (dist − sceneR):
-    // everything else (the log-folded Moon/Mars/markers) sits TOWARD the origin, i.e. FARTHER from the
-    // camera, so it can never be clipped. Only NEAR moves (FAR stays wide) ⇒ ~1000× better precision
-    // with zero clip risk. Restored to the wide default off-mode, so cache framing is byte-unchanged.
+    // range across EIGHT orders of magnitude; at the globe (z_eye ≈ dist) the resolution is coarse.
+    // Standard depth precision is dominated by the NEAR plane, so in NET MODE pull NEAR up to just
+    // inside the focus body's nearest surface point (dist − sceneR) — everything else (the log-folded
+    // Moon/Mars/markers) sits FARTHER, so it is never clipped. (FAR stays wide: the net scene reaches
+    // ~tens of scene units — the Moon among them — so a tight FAR would clip it; near-field precision
+    // at the globe is near-plane-dominated anyway.) Off-mode keeps the wide default (cache unchanged).
     const nearWant = this._netRenderMode && body !== null ? Math.max(1e-3, (dist - sceneR) * 0.5) : 0.001;
     if (Math.abs(this.camera.near - nearWant) > 1e-3) {
       this.camera.near = nearWant;
