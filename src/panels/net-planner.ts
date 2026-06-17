@@ -131,6 +131,15 @@ export interface NetPreferControl {
   prefer: { lat: number; bw: number; stab: number };
   /** Whether more than one active contract exists (so the SELECT button is meaningful). */
   canSelect: boolean;
+  /** REROUTE PREVIEW (§7.3): the sat this contract bridges RIGHT NOW + its utilisation. null = unserved. */
+  currentSat: string | null;
+  currentUtil: number;
+  /** Where preferring BANDWIDTH would route it instead (the congestion-relief alternative) + that
+   * sat's utilisation — so the slider's effect is legible BEFORE you commit. null = no other path. */
+  altSat: string | null;
+  altUtil: number;
+  /** True when the bandwidth-preferring route differs from the current one (the slider WOULD move it). */
+  wouldReroute: boolean;
 }
 
 /** The truthful consequence preview of the SELECTED preset draft at the current tick. */
@@ -1251,6 +1260,7 @@ export class NetPrefer implements PanelHandle {
   private vPreferContract: HTMLElement;
   private vPreferClass: HTMLElement;
   private vPreferWeights: HTMLElement;
+  private vReroute: HTMLElement;
   private preferSelectBtn: HTMLButtonElement;
   private preferSlider: HTMLInputElement;
   private preferContractId: string | null = null;
@@ -1276,6 +1286,8 @@ export class NetPrefer implements PanelHandle {
     this.controls.append(pRow);
     this.vPreferClass = valueOf(row(this.controls, "CLASS", "green"));
     this.vPreferWeights = valueOf(row(this.controls, "WEIGHTS"));
+    // REROUTE PREVIEW — the contract's current bridge + where preferring bandwidth would move it.
+    this.vReroute = valueOf(row(this.controls, "REROUTE", ""));
     const sRow = el("div", "net-slider");
     const sHead = el("div", "row");
     const sLab = el("span", "label");
@@ -1318,6 +1330,21 @@ export class NetPrefer implements PanelHandle {
         this.vPreferWeights,
         `lat ${pc.prefer.lat.toFixed(2)} · bw ${pc.prefer.bw < 0.01 && pc.prefer.bw > 0 ? pc.prefer.bw.toExponential(0) : pc.prefer.bw.toFixed(2)} · stab ${pc.prefer.stab.toFixed(2)} (dormant)`,
       );
+      // REROUTE PREVIEW — make the slider's effect legible: where the contract bridges now (+ that
+      // sat's load) and where preferring BANDWIDTH would move it (the congestion-relief alternative).
+      const cur = pc.currentSat
+        ? `${pc.currentSat} ${Math.round(pc.currentUtil * 100)}%${pc.currentUtil >= 1 ? " OVER" : ""}`
+        : "unserved";
+      if (pc.currentSat === null) {
+        setText(this.vReroute, "unserved — launch over it first");
+        setValueClass(this.vReroute, "amber");
+      } else if (pc.wouldReroute && pc.altSat) {
+        setText(this.vReroute, `on ${cur} → prefer bw: ${pc.altSat} ${Math.round(pc.altUtil * 100)}%`);
+        setValueClass(this.vReroute, pc.altUtil < pc.currentUtil ? "green" : "");
+      } else {
+        setText(this.vReroute, `on ${cur} · no lighter path${pc.currentUtil >= 1 ? " — launch capacity" : ""}`);
+        setValueClass(this.vReroute, pc.currentUtil >= 1 ? "amber" : "");
+      }
       if (document.activeElement !== this.preferSlider) {
         const next = String(Math.round(pc.pos * 1000));
         if (this.preferSlider.value !== next) this.preferSlider.value = next;

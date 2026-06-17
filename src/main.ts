@@ -932,7 +932,7 @@ function netPlannerRenderState(): NetPlannerRenderState {
     phasing: netPhasingReadout(t),
     // §7.3/§10 — the per-contract prefer control (the first thing the player tunes): the selected
     // active contract + its class + the latency↔bandwidth↔stability slider position.
-    prefer: netPreferControl(),
+    prefer: netPreferControl(t),
   };
 }
 
@@ -944,11 +944,23 @@ function netPlannerRenderState(): NetPlannerRenderState {
  * moment a contract goes active). A pure read of the live session. The slider drag (onSetPrefer)
  * appends net_set_prefer → the router re-solves that contract → its path re-routes (the P1 link line).
  */
-function netPreferControl(): import("./panels/net-planner").NetPreferControl | null {
+function netPreferControl(t: number): import("./panels/net-planner").NetPreferControl | null {
   const active = netSession.contracts.filter((c) => c.state === "active");
   if (active.length === 0) return null;
   const chosen =
     active.find((c) => c.id === netPreferContractId) ?? active[0];
+  // REROUTE PREVIEW — the contract's current bridge sat + where preferring BANDWIDTH would route it
+  // (the congestion-relief lever's effect), both as a PURE read (bridgeForPoint over the live roster
+  // with the current shared-load map; no sim mutation, no golden impact).
+  const live = [...netSession.sats];
+  const grounds = [...netSession.grounds];
+  const cap = NET_LINK_CAPACITY_UNITS;
+  const loadBySat = new Map(live.map((s) => [s.id, netSession.loadOnSat(s.id)]));
+  const solve = netSession.lastSolveFor(chosen.id);
+  const currentSat = solve?.served && solve.path !== null && solve.path.length >= 2 ? solve.path[1] : null;
+  const centre = { latRad: chosen.region.latRad, lonRad: chosen.region.lonRad };
+  const altBridge = bridgeForPoint(eph, centre, grounds, live, t, preferFromSliderPos(0.5), loadBySat);
+  const altSat = altBridge.satId;
   return {
     contractId: chosen.id,
     label: chosen.label,
@@ -956,6 +968,11 @@ function netPreferControl(): import("./panels/net-planner").NetPreferControl | n
     pos: preferSliderPos(chosen.prefer),
     prefer: { lat: chosen.prefer.lat, bw: chosen.prefer.bw, stab: chosen.prefer.stab },
     canSelect: active.length > 1,
+    currentSat,
+    currentUtil: currentSat ? netSession.loadOnSat(currentSat) / cap : 0,
+    altSat,
+    altUtil: altSat ? netSession.loadOnSat(altSat) / cap : 0,
+    wouldReroute: altSat !== null && currentSat !== null && altSat !== currentSat,
   };
 }
 
@@ -1589,24 +1606,41 @@ function netCoverageRosterState(): CoverageRosterState {
  * before any served contract.
  */
 function netLinkLoadState(): LinkLoadState {
-  // Group active served contracts by their bridging sat (path[1]); collect the binding constraint.
-  const bySat = new Map<string, { contracts: string[]; binding: string }>();
+  // Group active served contracts by their bridging sat (path[1]); KEEP the contract refs (for the
+  // allocation ledger) + collect the binding constraint.
+  type NetC = (typeof netSession.contracts)[number];
+  const bySat = new Map<string, { contracts: NetC[]; binding: string }>();
   for (const c of netSession.contracts) {
     if (c.state !== "active") continue;
     const solve = netSession.lastSolveFor(c.id);
     if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
     const satId = solve.path[1];
     const entry = bySat.get(satId) ?? { contracts: [], binding: "—" };
-    entry.contracts.push(c.id);
+    entry.contracts.push(c);
     if (solve.bindingConstraint !== null) entry.binding = solve.bindingConstraint;
     bySat.set(satId, entry);
   }
-  const rows = [...bySat.entries()].map(([satId, e]) => ({
-    satId,
-    util: netSession.loadOnSat(satId) / NET_LINK_CAPACITY_UNITS,
-    contracts: e.contracts,
-    binding: e.binding,
-  }));
+  const rows = [...bySat.entries()].map(([satId, e]) => {
+    const sharedLoad = netSession.loadOnSat(satId);
+    // ALLOCATION LEDGER — each sharing contract's served bandwidth vs its committed floor, computed
+    // the SAME way router.ts does (§4.3): under cap the link honors full offered load; over cap it
+    // splits capacity in PROPORTION to offered load (capacity·own/shared), and a contract STARVES iff
+    // that fair-share falls below its own floor. A pure read — no sim mutation, no golden impact.
+    const overCap = sharedLoad > NET_LINK_CAPACITY_UNITS && sharedLoad > 0;
+    const shares = e.contracts.map((c) => {
+      const own = c.offeredLoad;
+      const served = overCap ? (NET_LINK_CAPACITY_UNITS * own) / sharedLoad : own;
+      const floor = c.activeAxes.has("bandwidth") ? c.slaBandwidth : 0;
+      return { contractId: c.region.id, served, floor, underFloor: overCap && floor > 0 && served < floor };
+    });
+    return {
+      satId,
+      util: sharedLoad / NET_LINK_CAPACITY_UNITS,
+      contracts: e.contracts.map((c) => c.region.id),
+      binding: e.binding,
+      shares,
+    };
+  });
   return { rows };
 }
 
