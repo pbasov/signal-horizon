@@ -416,10 +416,6 @@ const NET_GLOBE_PX_SCALE = 4.4;
 /** net/ Act-1 — Moon billboard magnification in net mode so the cislunar scale reference reads
  * (its raw 16px terminator disc is otherwise a sub-pixel speck at the toy globe fold). */
 const NET_MOON_PX_SCALE = 2.6;
-/** net/ Act-1 — STYLIZED Moon distance, in operated-Earth scene radii. The honest toy-Earth↔real-
- * Moon scale gap (~1280×) can't frame both; the Moon is non-interactive ambiance, so it rides a
- * fixed pleasing offset (in its real direction) instead — a companion body, always near Earth. */
-const NET_MOON_DISTANCE_R = 1.9;
 /** §3 — THE PLANNER CLOSE-UP framing. When the LAUNCH planner is open/active, the camera FOCUSES
  * the operated body and ZOOMS IN CLOSE so the region + the coverage gap read IN DETAIL (the region
  * fills a good part of the view, not a sub-pixel dot). On top of the net dolly-in we pull the
@@ -987,7 +983,10 @@ export class Orrery {
     for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
       const m = this.buildSurfaceDisc([0.45, 0.85, 1.0]); // cool cyan footprint.
       m.visible = false;
-      m.renderOrder = 6.5; // committed sat coverage, over the region; per-slot depth-lift separates overlaps.
+      // DISTINCT per-slot renderOrder (6.50, 6.52, …) so overlapping footprints during a hand-off
+      // never share an order ⇒ the z-tiebreaker is never consulted ⇒ no flicker. Stays in (region
+      // 6.2 .. draft 7.0), below the markers (10+).
+      m.renderOrder = 6.5 + i * 0.02;
       this.netFootprintMeshes.push(m);
       this.scene.add(m);
     }
@@ -1240,19 +1239,18 @@ export class Orrery {
       vertexShader: VERT,
       fragmentShader: SURFACE_DISC_FRAG,
       transparent: true,
-      // FLICKER FIX (net coverage): the discs used depthTest:false + a shared renderOrder, so the
-      // co-located region/footprint/gap patches sorted only by the transparent z-tiebreaker — and
-      // the per-frame floating-origin rebase JITTERED their near-equal view-space z, flipping which
-      // painted on top every frame (the visible flicker). Now they depth-test + depth-WRITE against
-      // the globe AND each other, with a per-CLASS ascending outward LIFT (orientSurfaceDisc) so each
-      // patch sits at a strictly distinct depth — a deterministic, flip-free stack. depthTest also
-      // makes far-side patches correctly occluded by the globe (no more back-side bleed-through).
-      // polygonOffset keeps the lifted patch winning cleanly against the sphere/coastline surface.
-      depthWrite: true,
-      depthTest: true,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
+      // FLICKER FIX (net coverage). The discs flicker because the co-located region/footprint/gap
+      // patches paint at near-equal view-space depth and the floating-origin rebase jitters that
+      // depth every frame. An earlier attempt used depthTest+depthWRITE with tiny per-class lifts —
+      // but this scene's near/far range (0.001 .. 100000) gives terrible depth-buffer precision, so
+      // the sub-pixel lifts could not be resolved and the patches Z-FOUGHT instead (a worse flicker).
+      // The robust fix: NO depth comparison at all (depthTest:false, depthWrite:false), so ordering
+      // is decided SOLELY by renderOrder — and every co-located disc class (and every footprint slot)
+      // is given a DISTINCT renderOrder, so the z-tiebreaker is never consulted. Deterministic,
+      // flip-free, and z-fight-free. (Trade-off: far-side patches paint over the globe; not visible
+      // in the close planner view and far less objectionable than the flicker.)
+      depthWrite: false,
+      depthTest: false,
       uniforms: {
         uColor: { value: new THREE.Color(...color) },
         uCell: { value: 2.0 },
@@ -2245,27 +2243,13 @@ export class Orrery {
       }
       mesh.visible = true;
       const absBody = this.ctx.eph.position(spec.id, t);
+      // HONEST position for every body, INCLUDING the Moon: rebased through the same log-fold as
+      // everything else. The Moon sits at its real cislunar distance, so it moves naturally and is
+      // off-frame in the tight EARTH/PLAY close-up (you are zoomed into your LEO/GEO orbits) and
+      // comes into frame when you pull back to the SYSTEM/CISLUNAR overview — never a faked,
+      // camera-dependent floating disc. (A prior stylized-offset experiment made it slide insanely
+      // as the camera moved; removed.)
       this.renderInto(this._rp, absBody, focusAbs);
-      // net/ Act-1 — STYLIZE the Moon's distance. The toy Earth is a 300km-radius globe but the
-      // Moon sits at its real ~384,000km: a ~1280× gap that makes a combined Earth+Moon frame
-      // impossible on the honest fold (the Moon is off-screen, or the Earth collapses to sub-pixel).
-      // The Moon is non-interactive ambiance/scale here, so pull it to a pleasing fixed multiple of
-      // the operated-Earth SCENE radius, along its REAL direction (so it still moves naturally) —
-      // it reads as a companion body in every net view. Cache mode keeps the honest position.
-      if (this._netRenderMode && spec.id === "moon" && this.netState?.body) {
-        const earthR = this.netBodySceneRadius(this.netState.body, focusAbs);
-        this.renderInto(this._rp2, this.netState.body.centerPosM, focusAbs); // operated-Earth scene centre
-        this._rp.sub(this._rp2); // folded Moon direction from Earth (the radial fold preserves direction)
-        // Project OUT the camera-forward component so the Moon always sits BESIDE Earth on the
-        // SCREEN PLANE — never along the view axis (where it would overlap the globe at frame centre,
-        // as the raw real direction happened to). The remaining (right/up) component still tracks the
-        // real Moon's screen-projected motion, so it drifts naturally.
-        this.camera.getWorldDirection(this.tmpV);
-        this._rp.addScaledVector(this.tmpV, -this._rp.dot(this.tmpV));
-        if (this._rp.lengthSq() < 1e-9) this._rp.set(1, 0.45, 0); // degenerate: pin a default offset
-        const len = this._rp.length() || 1;
-        this._rp.multiplyScalar((NET_MOON_DISTANCE_R * earthR) / len).add(this._rp2);
-      }
       mesh.position.copy(this._rp);
       // fix #1 — MAGNIFY the toy Earth in net mode so it is the LARGE central hero the overlay
       // discs read against (matched by the same NET_GLOBE_PX_SCALE on every overlay disc below).
