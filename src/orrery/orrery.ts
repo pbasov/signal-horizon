@@ -1036,6 +1036,7 @@ export class Orrery {
     this.scene.add(this.netDraftFootprint);
     this.netGroundTrack = this.buildPolyline(NET_DRAFT_TRACK_SAMPLES, 0x7df2ff, 0.7); // warm-cyan dashed arc.
     this.netGroundTrack.visible = false;
+    this.netGroundTrack.renderOrder = 9; // over the coverage discs (≤8), under the markers (10+) — reads on top, no z-fight.
     this.scene.add(this.netGroundTrack);
     this.netServedLink = this.buildPolyline(2, 0x8dffc6, 0.85); // green served beam (region→sat→ground).
     this.netServedLink.visible = false;
@@ -1745,7 +1746,15 @@ export class Orrery {
     const positions = new Float32Array(maxPoints * 2 * 3);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+    // FLICKER FIX — these overlay lines (the draft GROUND-TRACK + the served BEAM) run ALONG the globe
+    // surface at the same radius as the operated-body sphere. With the default depthTest/depthWrite they
+    // Z-FOUGHT the sphere per pixel (poor depth precision over the 0.001..100000 range) and STROBED as
+    // the surface swept — fast, and frozen on pause. Like the coverage discs, they are now a pure
+    // painter's-overlay (depthTest:false, depthWrite:false), ordered by renderOrder alone, so they sit
+    // cleanly on the globe without z-fighting. (The caller sets a renderOrder ABOVE the globe + discs.)
+    const mat = new THREE.LineBasicMaterial({
+      color, transparent: true, opacity, depthTest: false, depthWrite: false,
+    });
     const line = new THREE.LineSegments(geo, mat);
     line.frustumCulled = false;
     return line;
@@ -3217,6 +3226,11 @@ export class Orrery {
       // P1 — the live network drawn this frame (the count from the slice + the mesh visibility).
       servedLinkCount: this.netState?.servedLinks?.length ?? 0,
       servedLinkVisible: this.netServedLinks?.visible ?? false,
+      // FLICKER probe — the live draft preview values that drive the coverage discs + ground-track.
+      draftCovered: this.netState?.draft?.gap?.coveredFraction ?? null,
+      gtLen: this.netState?.draft?.groundTrack?.length ?? 0,
+      gtVisible: this.netGroundTrack?.visible ?? false,
+      footVisible: this.netDraftFootprint?.visible ?? false,
       ...(() => {
         const moon = this.bodyMeshes.get("moon");
         if (!moon) return { moonVisible: false, moonOnScreen: false, moonNdc: [0, 0, 0] as [number, number, number] };
