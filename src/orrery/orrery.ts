@@ -858,6 +858,13 @@ export class Orrery {
    * body (0 = normal net framing, 1 = the close-up). Lerps toward the target each frame so opening /
    * closing the planner glides smoothly (the same feel as a preset change). */
   private netPlannerFocus = 0;
+  /** Render-only — the DESKTOP HERO FRAMING request (#14). When > 0 (set by the active WM desktop via
+   * {@link Orrery.setNetHeroFraming}), the camera dollies so the operated globe DIAMETER fills this
+   * fraction of the pane height — even with NO planner open — so OVERVIEW/CONNECTIVITY show Earth as a
+   * clear central hero instead of the ~3px speck the bare preset dist produces (the toy globe's scene
+   * radius is tiny). 0 = no hero dolly (use the preset dist, e.g. the pulled-back ROUTING orbits view).
+   * The planner close-up still overrides to {@link NET_PLANNER_SPHERE_FILL} while it is open. */
+  private netHeroFill = 0;
   private readonly _netBodyDark = new THREE.Color(0.5, 0.56, 0.7); // dim slate globe tint.
   private _sphereSunDir = new THREE.Vector3();
   /** Surface-coverage patch scratch: a basis (centre normal + two tangents) reused to orient a
@@ -1140,9 +1147,15 @@ export class Orrery {
     // transform; we additionally spin it by θ(t) about the body's +Z so it turns with the body).
     const pts: number[] = [];
     const seg = NET_GRATICULE_SAMPLES;
+    // FLICKER FIX — LIFT the graticule a hair OFF the unit sphere fill (R 1.0). Built at R 1.0 it was
+    // EXACTLY COPLANAR with the SphereGeometry(1) surface, and with both depthWrite:true the two
+    // z-FOUGHT — the floating-origin rebase jitters that tie every frame, flipping the winner ⇒ the
+    // GLOBE-LIMB flicker. Lifting it to GRAT_R (just under the coastlines at 1.004) makes it
+    // UNAMBIGUOUSLY in front of the surface everywhere, so the depth test resolves deterministically.
+    const GRAT_R = 1.0025;
     // ecliptic (x,y,z=north) → three (x, up=z, -y): the SAME axis swap renderInto uses, so the
     // graticule's +Z spin axis matches the body-fixed θ(t) convention (spin about ecliptic north).
-    const toThree = (x: number, y: number, z: number): [number, number, number] => [x, z, -y];
+    const toThree = (x: number, y: number, z: number): [number, number, number] => [x * GRAT_R, z * GRAT_R, -y * GRAT_R];
     for (let p = 1; p < NET_GRATICULE_PARALLELS; p++) {
       const lat = -Math.PI / 2 + (Math.PI * p) / NET_GRATICULE_PARALLELS;
       const cl = Math.cos(lat);
@@ -2095,6 +2108,16 @@ export class Orrery {
     this.marsFreshness = r.freshness;
   }
 
+  /**
+   * #14 — set the active desktop's HERO globe framing. `fill` is the fraction of the pane HEIGHT the
+   * operated globe's DIAMETER should fill (0 = no hero dolly, use the bare preset distance). The
+   * dolly glides in/out via the same smoothing the planner close-up uses, so SWITCHING desktops
+   * pans the camera smoothly. Net-mode only (the off-mode camera is untouched). Call from setWmPreset.
+   */
+  setNetHeroFraming(fill: number): void {
+    this.netHeroFill = this._netRenderMode ? Math.max(0, fill) : 0;
+  }
+
   setPreset(i: number): void {
     if (i < 0 || i >= CAMERA_PRESETS.length) return;
     this.activePreset = i;
@@ -2371,13 +2394,15 @@ export class Orrery {
    */
   private applyPlannerFocus(k: number): void {
     const body = this.netState?.body ?? null;
-    // While the LAUNCH planner is OPEN, FOCUS the operated body so it is centred + the camera frames
-    // it (the region fills the view when zoomed). Only force focus while planning, so a click-to-
-    // focus / preset still controls the camera when the planner is closed. Body-agnostic.
-    if (body !== null && body.plannerActive && this.ctx.eph.hasBody(body.id)) {
+    // The close-up engages when the LAUNCH planner is OPEN *or* the active desktop requests a HERO
+    // globe (#14, netHeroFill > 0). Either way FOCUS the operated body so it is centred + the camera
+    // frames it. Only force focus then, so a click-to-focus / preset still controls the camera on a
+    // desktop with no hero framing + no planner. Body-agnostic.
+    const wantClose = (body?.plannerActive ?? false) || this.netHeroFill > 0;
+    if (body !== null && wantClose && this.ctx.eph.hasBody(body.id)) {
       this.focusId = body.id;
     }
-    const want = body?.plannerActive ? 1 : 0;
+    const want = wantClose ? 1 : 0;
     // Smooth the dolly with the same exponential lerp the camera frame uses (glides in/out).
     this.netPlannerFocus += (want - this.netPlannerFocus) * k;
     if (Math.abs(want - this.netPlannerFocus) < 1e-3) this.netPlannerFocus = want;
@@ -2834,11 +2859,16 @@ export class Orrery {
     const fovDist = this.cur.dist * (1 - f * (1 - NET_PLANNER_DIST_SCALE));
     let dist = fovDist;
     const body = this._netRenderMode ? this.netState?.body ?? null : null;
-    if (f > 1e-3 && body !== null && focusAbs) {
-      const sceneR = this.netBodySceneRadius(body, focusAbs);
+    // The focus body's scene radius (cheap, no alloc) — drives both the close-up dolly AND the
+    // near-plane tightening below. Computed once for the whole net frame.
+    const sceneR = body !== null && focusAbs ? this.netBodySceneRadius(body, focusAbs) : 0;
+    // The close-up FILL fraction: the planner close-up frames tighter (NET_PLANNER_SPHERE_FILL); a
+    // desktop hero framing (#14) uses its requested netHeroFill. Whichever is active drives the dolly.
+    const fill = body?.plannerActive ? NET_PLANNER_SPHERE_FILL : this.netHeroFill;
+    if (f > 1e-3 && body !== null && focusAbs && fill > 0) {
       const halfFov = (fov * DEG) / 2;
-      const fillDist = sceneR / (NET_PLANNER_SPHERE_FILL * Math.tan(halfFov));
-      // Blend toward the fill distance by the smoothed planner focus (glides in/out of the close-up).
+      const fillDist = sceneR / (fill * Math.tan(halfFov));
+      // Blend toward the fill distance by the smoothed close-up amount (glides in/out of the close-up).
       dist = fovDist * (1 - f) + fillDist * f;
     }
     this.camera.position.set(
@@ -2850,6 +2880,19 @@ export class Orrery {
     this.camera.lookAt(0, 0, 0);
     if (Math.abs(this.camera.fov - fov) > 1e-3) {
       this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    // FLICKER FIX (depth precision). The fixed near/far (0.001 .. 100000) spreads the depth buffer's
+    // range across EIGHT orders of magnitude, so at the globe (z_eye ≈ dist ≈ a few units) the depth
+    // resolution is far coarser than the thin gaps between the surface, graticule and coastlines —
+    // they z-fight, and the floating-origin rebase jitters the result every frame (the limb flicker).
+    // In NET MODE pull NEAR up to just inside the focus body's nearest surface point (dist − sceneR):
+    // everything else (the log-folded Moon/Mars/markers) sits TOWARD the origin, i.e. FARTHER from the
+    // camera, so it can never be clipped. Only NEAR moves (FAR stays wide) ⇒ ~1000× better precision
+    // with zero clip risk. Restored to the wide default off-mode, so cache framing is byte-unchanged.
+    const nearWant = this._netRenderMode && body !== null ? Math.max(1e-3, (dist - sceneR) * 0.5) : 0.001;
+    if (Math.abs(this.camera.near - nearWant) > 1e-3) {
+      this.camera.near = nearWant;
       this.camera.updateProjectionMatrix();
     }
     this.camera.updateMatrixWorld();

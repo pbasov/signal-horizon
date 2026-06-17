@@ -2204,6 +2204,14 @@ function setWmPreset(i: number): void {
   if (netMode) {
     if (wmPresetName === "OVERVIEW" || wmPresetName === "CONNECTIVITY") orrery.setPreset(0); // EARTH
     else if (wmPresetName === "ROUTING") orrery.setPreset(2); // ORBITS
+    // #14 — HERO globe framing per desktop. The bare EARTH preset frames the toy globe at ~3px (its
+    // scene radius is tiny); only a sphere-FILL dolly makes it legible. OVERVIEW is the triage glance,
+    // so frame Earth as a clear central hero with room for the constellation around it; CONNECTIVITY
+    // (where you launch) frames it a touch larger so the regions/footprints read. ROUTING stays pulled
+    // back (fill 0) so the live links read across the whole constellation.
+    if (wmPresetName === "OVERVIEW") orrery.setNetHeroFraming(0.34);
+    else if (wmPresetName === "CONNECTIVITY") orrery.setNetHeroFraming(0.42);
+    else orrery.setNetHeroFraming(0);
   }
   // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run
   // summary on entry so it reflects the live log even on a paused run (the per-frame caller is dirty-
