@@ -11,3 +11,7 @@ dist/
 /diag-*.png
 /mcp-boot.png
 /rd-*.png
+
+# Playwright playtest screenshots (session artifacts)
+*.png
+!docs/**/*.png
