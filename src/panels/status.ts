@@ -104,7 +104,9 @@ export class StatusStrip {
       // net/ M1 (SD-44) — THE CLEAN NET KEYMAP (the legend shows ONLY keys that work in net mode;
       // accept / constellation / prefer are panel BUTTONS now, the camera is set by the desktop, and
       // every cache-era key is cut — see the main.ts net key handler). Reads as one short row.
-      appendKeys(keys, "1-5");
+      // R1 (SD-45): MISSION + REVIEW desktops; L opens the pad; the aim-nudge keys work
+      // while the pad is open (the typed fields are first-class).
+      appendKeys(keys, "1", "2");
       keys.append(" desktops ");
       appendKeys(keys, "0");
       keys.append(" reset ");
@@ -112,14 +114,14 @@ export class StatusStrip {
       keys.append(" pause ");
       appendKeys(keys, ",", ".");
       keys.append(" speed ");
+      appendKeys(keys, "L");
+      keys.append(" pad ");
       appendKeys(keys, "↑", "↓");
       keys.append(" alt ");
       appendKeys(keys, "←", "→");
       keys.append(" inc ");
       appendKeys(keys, "[", "]");
       keys.append(" phase ");
-      appendKeys(keys, "L");
-      keys.append(" launch ");
       appendKeys(keys, "R");
       keys.append(" cam");
     } else {

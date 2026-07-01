@@ -3086,13 +3086,14 @@ export class Orrery {
       // the orbit-tuning keys only do something while the LAUNCH planner is on screen (CONNECTIVITY),
       // so only show them there — elsewhere (OVERVIEW triage / ROUTING) point the player to the launch
       // desktop instead of advertising keys that look inert.
+      // R1 (SD-45): a pure CONTROL LEGEND (keys only, never goal instructions — LAW 2).
       const planning = this.netState?.body?.plannerActive ?? false;
       const line2 = planning
-        ? `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase · <span class="k">L</span> launch`
-        : `<span class="k">drag</span>/<span class="k">wheel</span> to look · open <span class="k">CONNECTIVITY (2)</span> to aim + launch`;
+        ? `<span class="k">↑↓</span> altitude · <span class="k">←→</span> inclination · <span class="k">[ ]</span> phase`
+        : `<span class="k">drag</span>/<span class="k">wheel</span> to look · <span class="k">L</span> pad`;
       set(
         "br",
-        `<span class="k">1-5</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` + line2,
+        `<span class="k">1 2</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` + line2,
       );
     } else {
       set(

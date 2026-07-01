@@ -1028,3 +1028,53 @@ body {
   line-height: 1.3;
 }
 .net-mars .nm-hint.good { color: var(--green); }
+
+/* ── R1 (SD-45) — MISSION panel chrome (DD-1 1-bit) ─────────────────────────── */
+.mission-top { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.mission-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mission-mode { min-width: 110px; }
+.mission-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.mission-bus, .mission-card { display: block; width: 100%; text-align: left; margin: 1px 0; opacity: 0.75; padding: 2px 5px; }
+.mission-bus.active, .mission-card.active { opacity: 1; outline: 1px solid #49d7c8; color: #49d7c8; background: #0b0b12 !important; }
+.mission-cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; }
+.mission-hint { color: #7f8ea3; font-size: 10px; margin-top: 3px; }
+.mission-param { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0; }
+.mission-param-label { color: #7f8ea3; font-size: 10px; letter-spacing: 0.08em; }
+.mission-input { width: 90px; background: #0b0b12; color: #e8eef7; border: 1px solid #2a3646; font: inherit; padding: 2px 4px; text-align: right; }
+.mission-count { min-width: 26px; text-align: center; color: #49d7c8; font-weight: 700; }
+.mission-step { width: 26px; }
+.mission-comb { width: 100%; height: 18px; image-rendering: pixelated; border: 1px solid #2a3646; }
+.mission-stack { font-size: 11px; margin: 3px 0; }
+.mission-problem { color: #e2b04a; font-size: 10px; margin: 2px 0; }
+.mission-arm { margin: 3px 4px 3px 0; }
+.mission-arm.active { color: #e2b04a; outline: 1px solid #e2b04a; }
+.mission-launch { opacity: 0.5; }
+.mission-launch.ready { opacity: 1; color: #49d7c8; outline: 1px solid #49d7c8; }
+.mission-tender { border-top: 1px dashed #2a3646; padding: 5px 0; }
+.mission-tender-head { display: flex; justify-content: space-between; gap: 8px; }
+.mission-tender-label { font-weight: 700; }
+.mission-tender-state.offered { color: #e2b04a; }
+.mission-tender-state.active { color: #49d7c8; }
+.mission-tender-state.active.dark { color: #e2604a; }
+.mission-tender-state.failed { color: #e2604a; }
+.mission-pips { display: flex; gap: 4px; margin: 3px 0; align-items: center; }
+.mission-pip { font-size: 9px; padding: 0 3px; border: 1px solid #2a3646; color: #4a5a70; }
+.mission-pip.on { color: #49d7c8; border-color: #49d7c8; }
+.mission-terms { font-size: 10px; color: #7f8ea3; margin-left: 6px; }
+.mission-tender-bet { font-size: 10px; color: #9aa8bb; }
+.mission-tender-served { font-size: 10px; color: #7f8ea3; margin: 2px 0; }
+.mission-accept { margin-top: 3px; color: #49d7c8; }
+.ledger-fleet { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.lf-wallet { font-size: 15px; font-weight: 700; }
+.lf-rate.up { color: #49d7c8; }
+.lf-rate.down { color: #e2604a; }
+.lf-chip { border-top: 1px dashed #2a3646; padding: 4px 0; }
+.lf-chip-head { display: flex; justify-content: space-between; gap: 6px; }
+.lf-chip-id { font-weight: 700; }
+.lf-chip-orbit { color: #7f8ea3; font-size: 10px; }
+.lf-beam, .lf-beam-fixed { display: block; width: 100%; text-align: left; font-size: 10px; margin: 2px 0; }
+.lf-beam-fixed { color: #9aa8bb; padding: 2px 4px; border: 1px dashed #2a3646; }
+.lf-beam.unaimed { color: #e2b04a; outline: 1px dashed #e2b04a; }
+.lf-beam.hot, .lf-beam-fixed.hot { color: #e2604a; }
+.lf-fix { display: block; width: 100%; color: #e2b04a; margin: 2px 0; }
+.lf-pending { color: #e2b04a; font-size: 10px; padding: 2px 0; }

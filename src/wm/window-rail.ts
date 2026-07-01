@@ -54,19 +54,14 @@ export const RAIL_PANELS: RailPanel[] = [
  */
 export const NET_RAIL_PANELS: RailPanel[] = [
   { host: "orrery", label: "ORRERY" },
-  { host: "net-launch", label: "LAUNCH" },
-  { host: "net-contracts", label: "CONTRACTS" },
-  { host: "link-load", label: "LINK·LOAD" },
-  { host: "net-prefer", label: "PREFER" },
-  { host: "coverage-roster", label: "ROSTER" },
-  { host: "status-board", label: "STATUS" },
+  { host: "mission-top", label: "MISSION" },
+  { host: "ledger-fleet", label: "LEDGER·FLEET" },
   { host: "finance", label: "FINANCE" },
-  { host: "howto", label: "HOW-IT-WORKS" },
-  { host: "system-log", label: "SYSTEM.LOG" },
-  // telemetry + parse are intentionally OMITTED from the net rail: both still read the CACHE session
-  // (Earth↔Mars distance / packet / freshness / mars_* feeds) and would leak the deferred caching
-  // game. Their net-aware versions are later-phase work; until then they are cache-mode only.
+  { host: "system-log", label: "WIRE" },
+  // R1 (SD-45): the SD-44 dashboard panels (net-launch/net-contracts/net-prefer/status-board/
+  // coverage-roster/link-load/howto) are RETIRED from net mode — the loop lives on MISSION.
 ];
+
 
 export class WindowRail {
   readonly element: HTMLElement;

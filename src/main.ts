@@ -48,6 +48,8 @@ import {
   placeDC as placeDCAction,
   netLaunch as netLaunchAction,
   netAccept as netAcceptAction,
+  netAssignBeam as netAssignBeamAction,
+  netCircularize as netCircularizeAction,
   netSetPrefer as netSetPreferAction,
   netPlaceCache as netPlaceCacheAction,
   type SimAction,
@@ -93,11 +95,23 @@ import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
 // net/ Act-3b P2 — the LIVE telegraphed countdown + the permanent-drop predicate (the §5 watch-and-
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
 import { telegraphedCountdownRemainingS, faultRemovesSatAt } from "./sim/net/fault-types";
-import { NetPlanner, NetLaunch, NetContracts, NetPrefer, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
-import { StatusBoard } from "./panels/status-board";
-import { CoverageRoster, type CoverageRosterState } from "./panels/coverage-roster";
-import { LinkLoad, type LinkLoadState } from "./panels/link-load";
-import { Howto } from "./panels/howto";
+import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
+import { MissionTop, type MissionTopState, type PadDraftReadout } from "./panels/mission-top";
+import { LedgerFleet, type LedgerFleetState, type FleetChip } from "./panels/ledger-fleet";
+import {
+  MISSION_WELCOME,
+  WIRE_COUNTDOWN,
+  WIRE_LIFTOFF,
+  WIRE_DEPLOY,
+  WIRE_NOSEP,
+  WIRE_UNDERBURN,
+  WIRE_VEHICLE_LOST,
+  WIRE_FIRST_SIGNAL,
+} from "./panels/copy";
+import { coverageComb } from "./sim/net/comb";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, type BusTier } from "./sim/net/sat";
+import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
+import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
@@ -250,6 +264,28 @@ let netPreferContractId: string | null = null;
 // a preset click overwrites it wholesale, a slider/arrow nudges one field. RAAN starts undefined so
 // an undragged launch stays byte-identical (golden-safe — see netLaunch wire).
 let netDraft: LaunchDraft = cloneDraft(NET_PLANNER_PRESETS[0].draft);
+
+// ── R1 (SD-45) — THE MISSION PAD state ─────────────────────────────────────────
+// The pad's sat DESIGN (bus + antenna cards + batch) + the two-step ARM latch. The DEAD
+// PRE-AIM (m1-redesign §2.6): the boot draft parks 90° WEST of the Act-1 region — the
+// footprint visibly misses until the player aims it home. Presets are LOADOUT/regime
+// starting points; aim is never preset.
+let r1Mode: "book" | "pad" = "book";
+let r1Bus: BusTier = "smallsat";
+let r1Cards: string[] = ["BROADCAST"];
+let r1Armed = false;
+let r1PhaseSpreadRad = 0;
+if (APP_MODE === "net") netDraft.subLonRad = -Math.PI / 2;
+
+/** Typed-param edit (display units → SI/radians), clamped sanely. Facts follow live. */
+function r1SetParam(name: keyof PadDraftReadout, value: number): void {
+  const clamp = (v: number, lo: number, hi: number) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo);
+  if (name === "altKm") netDraft = { ...netDraft, semiMajorM: A1_BODY_RADIUS_M + clamp(value, 20, 900) * 1000 };
+  else if (name === "incDeg") netDraft = { ...netDraft, incRad: clamp(value, 0, 90) * (Math.PI / 180) };
+  else if (name === "subLonDeg") netDraft = { ...netDraft, subLonRad: clamp(value, -180, 180) * (Math.PI / 180) };
+  else if (name === "raanDeg") netDraft = { ...netDraft, raanRad: clamp(value, -180, 180) * (Math.PI / 180) };
+  else if (name === "phaseSpreadDeg") r1PhaseSpreadRad = clamp(value, 0, 360) * (Math.PI / 180);
+}
 
 /** §3.1 — the draggable bounds + nudge steps for the four planner parameters (radians + SI metres),
  * scoped to the toy world. Altitude rides from just above the toy surface (low LEO) past the GEO
@@ -1344,9 +1380,9 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
   const c = currentNetContract();
-  // §3 — whether the LAUNCH planner is open (drives the orrery's planner-focus close-up). SD-44
-  // PHASE 1: the LAUNCH tile is now the split "net-launch" host (shown on the CONNECTIVITY desktop).
-  const plannerActive = shell.visibleHosts().includes("net-launch");
+  // §3 — whether the LAUNCH PAD is open (drives the orrery's planner-focus close-up). R1
+  // (SD-45): the pad is a MODE of the MISSION panel, not a desktop.
+  const plannerActive = r1Mode === "pad";
   if (c === null) {
     return {
       // §3 — the operated body even with no contract: the camera focus body, so the orrery still
@@ -1441,10 +1477,9 @@ function netDraftSlice(
   add: (rel: Vec3) => Vec3,
   c: ReturnType<NetSession["contractById"]>,
 ): import("./orrery/orrery").NetRenderState["draft"] {
-  // Only draw the draft while the LAUNCH PLANNER is on screen (it IS the planner's consequence view);
-  // off-planner the globe stays the clean monument view. Cheap visibleHosts read. SD-44 PHASE 1: the
-  // LAUNCH tile is the split "net-launch" host (the CONNECTIVITY desktop).
-  if (!shell.visibleHosts().includes("net-launch")) return null;
+  // Only draw the draft while the LAUNCH PAD is open (it IS the pad's consequence view);
+  // off-pad the globe stays the clean monument view. R1 (SD-45): pad = MISSION panel mode.
+  if (r1Mode !== "pad") return null;
   // The truthful preview of the live editable draft (the SAME call the panel makes).
   const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t);
   // The draft sat's NADIR footprint (the would-be sat built the SAME way the applier builds it).
@@ -1582,89 +1617,6 @@ function netServedLinksSlice(
   // Drop trackers for contracts no longer served (so a re-acquire flashes as a fresh re-route).
   for (const id of [...netLinkLastSat.keys()]) if (!live.has(id)) { netLinkLastSat.delete(id); netLinkReroute.delete(id); }
   return out;
-}
-
-/**
- * net/ M1 (SD-44 PHASE 1) — project the live net session into the COVERAGE·ROSTER tile state: one row
- * per launched sat (id + orbit CLASS LEO/GEO derived from its semi-major axis + a "covers REGION-x / —"
- * note from the router's per-contract solve), plus the DARK list of active contracts NOT served right
- * now. A PURE read of netSession (sats + contracts + lastSolveFor) — no sim mutation, no golden impact.
- */
-function netCoverageRosterState(): CoverageRosterState {
-  // Which active contract each sat is bridging right now: read the router's served path (path[1] = sat).
-  const satCovers = new Map<string, string[]>();
-  const dark: string[] = [];
-  for (const c of netSession.contracts) {
-    if (c.state !== "active") continue;
-    const solve = netSession.lastSolveFor(c.id);
-    if (solve !== null && solve.served && solve.path !== null && solve.path.length >= 2) {
-      const satId = solve.path[1];
-      const list = satCovers.get(satId) ?? [];
-      list.push(c.region.id);
-      satCovers.set(satId, list);
-    } else {
-      dark.push(c.region.id);
-    }
-  }
-  const geoBoundaryM = (A1_LEO_SEMI_MAJOR_M + A1_GEO_SEMI_MAJOR_M) / 2;
-  const sats = netSession.sats.map((s) => {
-    const covered = satCovers.get(s.id) ?? [];
-    return {
-      id: s.id,
-      orbitClass: s.orbit.aM >= geoBoundaryM ? "GEO" : "LEO",
-      covers: covered.length > 0 ? `covers ${covered.join(", ")}` : "—",
-      active: covered.length > 0,
-      altKm: (s.orbit.aM - A1_BODY_RADIUS_M) / 1000,
-      incDeg: (s.orbit.incRad * 180) / Math.PI,
-    };
-  });
-  return { sats, dark };
-}
-
-/**
- * net/ M1 (SD-44 PHASE 1) — project the live net session into the LINK·LOAD tile state: one row per
- * BRIDGING sat (a sat carrying ≥1 served contract), its utilisation (loadOnSat / capacity, the §4.3
- * oversubscription read), the contract ids sharing it, and the binding constraint from the router's
- * last solve. A PURE read of netSession (loadOnSat + lastSolveFor). Empty (→ "no traffic yet") in Act 1
- * before any served contract.
- */
-function netLinkLoadState(): LinkLoadState {
-  // Group active served contracts by their bridging sat (path[1]); KEEP the contract refs (for the
-  // allocation ledger) + collect the binding constraint.
-  type NetC = (typeof netSession.contracts)[number];
-  const bySat = new Map<string, { contracts: NetC[]; binding: string }>();
-  for (const c of netSession.contracts) {
-    if (c.state !== "active") continue;
-    const solve = netSession.lastSolveFor(c.id);
-    if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
-    const satId = solve.path[1];
-    const entry = bySat.get(satId) ?? { contracts: [], binding: "—" };
-    entry.contracts.push(c);
-    if (solve.bindingConstraint !== null) entry.binding = solve.bindingConstraint;
-    bySat.set(satId, entry);
-  }
-  const rows = [...bySat.entries()].map(([satId, e]) => {
-    const sharedLoad = netSession.loadOnSat(satId);
-    // ALLOCATION LEDGER — each sharing contract's served bandwidth vs its committed floor, computed
-    // the SAME way router.ts does (§4.3): under cap the link honors full offered load; over cap it
-    // splits capacity in PROPORTION to offered load (capacity·own/shared), and a contract STARVES iff
-    // that fair-share falls below its own floor. A pure read — no sim mutation, no golden impact.
-    const overCap = sharedLoad > NET_LINK_CAPACITY_UNITS && sharedLoad > 0;
-    const shares = e.contracts.map((c) => {
-      const own = c.offeredLoad;
-      const served = overCap ? (NET_LINK_CAPACITY_UNITS * own) / sharedLoad : own;
-      const floor = c.activeAxes.has("bandwidth") ? c.slaBandwidth : 0;
-      return { contractId: c.region.id, served, floor, underFloor: overCap && floor > 0 && served < floor };
-    });
-    return {
-      satId,
-      util: sharedLoad / NET_LINK_CAPACITY_UNITS,
-      contracts: e.contracts.map((c) => c.region.id),
-      binding: e.binding,
-      shares,
-    };
-  });
-  return { rows };
 }
 
 /**
@@ -1828,6 +1780,10 @@ function netLaunch(): void {
       subLonRad: netDraft.subLonRad,
       raanRad: netDraft.raanRad,
       count: netDraft.count,
+      // R1 (SD-45): the sat DESIGN rides the wire (bus + antenna cards + batch phasing).
+      phaseSpreadRad: netDraft.count > 1 ? r1PhaseSpreadRad : 0,
+      bus: r1Bus,
+      loadout: r1Cards,
     },
     clock.tick,
   );
@@ -1843,8 +1799,8 @@ function netLaunch(): void {
       value: `${label} · −€${Math.round(res.costEur)}`,
       msg:
         failed > 0
-          ? `${label} reached orbit (${failed} lost to a launch failure — €${Math.round(res.costEur)} charged) — drag the orbit so its ground-track covers the dark region`
-          : `${label} reached orbit (€${Math.round(res.costEur)} charged) — drag the orbit so its ground-track covers the dark region`,
+          ? `${label} committed — ${failed} of the batch will not separate (€${Math.round(res.costEur)} charged, win or lose)`
+          : `${label} committed (€${Math.round(res.costEur)} charged) — vehicle on the pad`,
     });
   } else if (res && res.kind === "launch_failed") {
     // THE LAUNCH WHOLLY FAILED (every member lost the §3.5 risk roll): the sat/batch is lost, but you
@@ -1882,6 +1838,78 @@ function netAccept(contractId?: string): void {
       value: id,
       msg: `accepted ${id} — serve it to EARN (the wallet ticks while served)`,
     });
+  }
+}
+
+// ── R1 (SD-45) — THE POINTING VERB + THE UNDERBURN FIX ─────────────────────────
+/** Cycle a pointable pipe's beam across the live demand regions (… → region A → region B →
+ * unassigned → …). Instant, free, a logged topology change — whoever the beam leaves goes
+ * dark next tick. */
+function r1CycleBeam(satId: string, slot: number): void {
+  const targets = netSession.contracts
+    .filter((c) => (c.state === "active" || c.state === "offered") && c.region.bodyId === "earth")
+    .map((c) => c.region.id);
+  const cycle = [...targets, ""];
+  const cur = netSession.beams.get(beamPipeKey(satId, slot)) ?? "";
+  const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
+  const res = applyAndRecordNetAction(netAssignBeamAction(satId, slot, next, clock.tick));
+  if (res && res.kind === "beam_assigned") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "BEAM",
+      value: `${satId}:${slot}`,
+      msg: next === "" ? `${satId} beam ${slot} stowed` : `${satId} beam ${slot} → ${next}`,
+    });
+  }
+}
+
+/** Pay the circularization burn on an underburned sat (raises it to the intended orbit). */
+function r1Circularize(satId: string): void {
+  const res = applyAndRecordNetAction(netCircularizeAction(satId, clock.tick));
+  if (res && res.kind === "circularized") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "BURN",
+      value: `−€${Math.round(res.costEur)}`,
+      msg: `${satId} circularized — riding the intended orbit`,
+    });
+  }
+}
+
+// ── R1 (SD-45) — THE WIRE: launch-event beats + first-signal, drained per frame ─
+const wireSeen = new Set<string>();
+let wireWelcomed = false;
+const wireServedOnce = new Set<string>();
+function drainMissionWire(): void {
+  const t = clock.seconds;
+  if (!wireWelcomed) {
+    wireWelcomed = true;
+    log.append({ tSim: t, sev: "info", entity: "MISSION", value: "on console", msg: MISSION_WELCOME });
+  }
+  const beat = (key: string, due: boolean, sev: "info" | "warn", msg: string, value: string): void => {
+    if (!due || wireSeen.has(key)) return;
+    wireSeen.add(key);
+    log.append({ tSim: t, sev, entity: "PAD", value, msg });
+  };
+  for (const ev of netSession.launchEvents) {
+    beat(`${ev.id}:cd`, t >= ev.committedAtS, "info", WIRE_COUNTDOWN(ev.id), ev.id);
+    beat(`${ev.id}:up`, t >= ev.liftoffAtS, "info", WIRE_LIFTOFF(ev.id), ev.id);
+    if (ev.lost === 1) beat(`${ev.id}:lost`, t >= ev.lostAtS, "warn", WIRE_VEHICLE_LOST(ev.id), ev.id);
+    for (const m of ev.members) {
+      if (m.deployed !== 1) continue;
+      if (m.outcome === "no_sep") beat(`${m.sat.id}:nosep`, true, "warn", WIRE_NOSEP(m.sat.id), m.sat.id);
+      else if (m.outcome === "underburn") beat(`${m.sat.id}:ub`, true, "warn", WIRE_UNDERBURN(m.sat.id), m.sat.id);
+      else beat(`${m.sat.id}:dep`, true, "info", WIRE_DEPLOY(m.sat.id), m.sat.id);
+    }
+  }
+  // FIRST SIGNAL — the launch→cover→lit payoff, once per contract.
+  for (const c of netSession.contracts) {
+    if (c.state !== "active" || c.lastServedFraction <= 0 || wireServedOnce.has(c.id)) continue;
+    wireServedOnce.add(c.id);
+    const satId = netSession.lastSolveFor(c.id)?.path?.[1] ?? "the network";
+    log.append({ tSim: t, sev: "info", entity: "LINK", value: c.id, msg: WIRE_FIRST_SIGNAL(satId, c.label) });
   }
 }
 
@@ -2208,29 +2236,18 @@ const netPlannerActions = {
 };
 // The cache-mode monolithic planner (kept for ?mode=cache; net mode mounts the split tiles instead).
 const netPlannerPanel = new NetPlanner(netPlannerActions);
-// net/ M1 (SD-44 PHASE 1) — THE THREE SPLIT MISSION-CONTROL TILES: NET·LAUNCH (the verb + the dead-clear
-// WHAT/WHERE headline), CONTRACTS (the deal board + ACCEPT), ROUTING·PREFER (the per-contract tuner).
-// All take the SAME actions object + the SAME per-frame NetPlannerRenderState.
-const netLaunchPanel = new NetLaunch(netPlannerActions);
-const netContractsPanel = new NetContracts(netPlannerActions);
-const netPreferPanel = new NetPrefer(netPlannerActions);
-// net/ M1 (SD-44 PHASE 1) — THE NEW MISSION-CONTROL DASHBOARDS: the OVERVIEW triage board, the
-// CONNECTIVITY coverage roster, the ROUTING link-load board, and the REFERENCE how-it-works page.
-// DEEP-LINK — the OVERVIEW triage rows jump to the desktop where the fix lives (by preset NAME).
-const statusBoardPanel = new StatusBoard((desktop: string) => {
-  const i = presets.findIndex((p) => p.name === desktop);
-  if (i >= 0) setWmPreset(i);
-});
-const coverageRosterPanel = new CoverageRoster();
-const linkLoadPanel = new LinkLoad();
-const howtoPanel = new Howto();
+// R1 (SD-45): the SD-44 split tiles + dashboards (NetLaunch/NetContracts/NetPrefer/
+// StatusBoard/CoverageRoster/LinkLoad/Howto) are RETIRED from net mode — the loop lives on
+// the MISSION panel. Their classes remain on disk for reference until the R3 acts pass.
 
 // net/ M1 — THE ONBOARDING POPUPS (the briefing cards): one dismissible 1-bit info card per CORE
 // CONCEPT, mounted over the whole window (the app root) so it reads over every tile + the rail. Net
 // mode ONLY (never constructed in ?mode=cache). Render/UI only — drainNetOnboarding (below) fires
 // the card for the CURRENT concept off the scenario cursor each frame; the card is shown ONCE per
 // session + dismissed via GOT IT / Esc / click-out (the clock keeps running underneath).
-const onboarding = netMode ? new Onboarding(app) : null;
+// R1 (SD-45): the briefing MODALS are retired — teaching lives in the world + the WIRE
+// (m1-redesign anti-pattern: "teaching via interrupting modals"). Cache mode never had them.
+const onboarding: Onboarding | null = null;
 
 // Latest Earth→Mars line-of-sight state, refreshed each frame — drives the orrery
 // titlebar lamp. The link is dead inside the solar-interference CORRIDOR (E10a),
@@ -2257,6 +2274,148 @@ const CONJ_EPOCH_SECONDS = ((): number => {
   return best.t;
 })();
 
+// ── R1 (SD-45) — THE MISSION PANELS + their per-frame state builders ────────────
+const missionTopPanel = new MissionTop({
+  onMode: (m) => {
+    r1Mode = m;
+    r1Armed = false;
+  },
+  onAccept: (id) => netAccept(id),
+  onBus: (b) => {
+    r1Bus = b;
+    if (validateLoadout(b, r1Cards) !== null) r1Cards = ["BROADCAST"];
+    r1Armed = false;
+  },
+  onToggleCard: (id) => {
+    r1Cards = r1Cards.includes(id) ? r1Cards.filter((c) => c !== id) : [...r1Cards, id];
+    r1Armed = false;
+  },
+  onCount: (d) => {
+    netDraft = { ...netDraft, count: Math.max(1, Math.min(6, netDraft.count + d)) };
+    if (netDraft.count > 1 && r1PhaseSpreadRad === 0) r1PhaseSpreadRad = (2 * Math.PI) / netDraft.count;
+    r1Armed = false;
+  },
+  onParam: (name, v) => {
+    r1SetParam(name, v);
+    r1Armed = false;
+  },
+  onArm: () => {
+    r1Armed = !r1Armed;
+  },
+  onLaunch: () => {
+    if (!r1Armed || validateLoadout(r1Bus, r1Cards) !== null) return;
+    netLaunch();
+    r1Armed = false;
+    r1Mode = "book";
+  },
+});
+
+const ledgerFleetPanel = new LedgerFleet({
+  onCycleBeam: (satId, slot) => r1CycleBeam(satId, slot),
+  onCircularize: (satId) => r1Circularize(satId),
+});
+
+/** The comb/aim TARGET region: the first OFFERED Earth demand, else the first ACTIVE one. */
+function r1TargetRegion(): { region: import("./sim/net/endpoint").Region; label: string } | null {
+  const c =
+    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
+    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
+    null;
+  return c ? { region: c.region, label: c.label } : null;
+}
+
+function missionTopState(): MissionTopState {
+  const t = clock.seconds;
+  const target = r1TargetRegion();
+  let comb: { windows: boolean[]; duty: number } | null = null;
+  let latencyMs: number | null = null;
+  let periodS = 0;
+  let parks = false;
+  if (r1Mode === "pad") {
+    const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t);
+    periodS = preview.periodS;
+    parks = Math.abs(preview.periodS - A1_GEO_PERIOD_S) < 1;
+    if (target) {
+      comb = coverageComb(eph, target.region, netSession.grounds.slice(), netDraft, t);
+      const cp = preview.contracts.find((x) => x.contractId === target.region.id);
+      latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
+    }
+  }
+  const vehicleEur = launchVehicleCost(r1Bus, netDraft.semiMajorM);
+  const hardwareEur = hardwarePriceEur(r1Bus, r1Cards);
+  return {
+    mode: r1Mode,
+    act: netSession.cursor,
+    tenders: netContractRows(t),
+    balanceEur: netSession.balance,
+    bus: r1Bus,
+    cards: r1Cards,
+    count: netDraft.count,
+    draft: {
+      altKm: (netDraft.semiMajorM - A1_BODY_RADIUS_M) / 1000,
+      incDeg: netDraft.incRad * (180 / Math.PI),
+      subLonDeg: netDraft.subLonRad * (180 / Math.PI),
+      raanDeg: (netDraft.raanRad ?? 0) * (180 / Math.PI),
+      phaseSpreadDeg: r1PhaseSpreadRad * (180 / Math.PI),
+    },
+    stack: {
+      vehicleEur,
+      hardwareEur,
+      totalEur: launchStackCost(r1Bus, r1Cards, netDraft.semiMajorM, netDraft.count),
+    },
+    facts: { periodS, parks, latencyMs },
+    comb,
+    combRegionLabel: target?.label ?? "no demand yet",
+    armed: r1Armed,
+    problem: validateLoadout(r1Bus, r1Cards),
+  };
+}
+
+/** Smoothed €/min flow (wallet delta across a rolling ~2 s window). */
+let r1RateWallet = 0;
+let r1RateT = 0;
+let r1RatePerMin = 0;
+function r1FlowRate(): number {
+  const t = clock.seconds;
+  if (t - r1RateT >= 2) {
+    if (r1RateT > 0 && t > r1RateT) r1RatePerMin = ((netSession.balance - r1RateWallet) / (t - r1RateT)) * 60;
+    r1RateWallet = netSession.balance;
+    r1RateT = t;
+  }
+  return r1RatePerMin;
+}
+
+function ledgerFleetState(): LedgerFleetState {
+  const chips: FleetChip[] = netSession.sats.map((sat) => ({
+    id: sat.id,
+    tier: BUS_SPECS[sat.bus].label,
+    altKm: (sat.orbit.aM - A1_BODY_RADIUS_M) / 1000,
+    incDeg: sat.orbit.incRad * (180 / Math.PI),
+    underburned: netSession.underburnFor(sat.id) !== null,
+    beams: sat.loadout.map((a, slot) => ({
+      slot,
+      type: a.type,
+      target: netSession.beams.get(beamPipeKey(sat.id, slot)) ?? "",
+      pointable: isPointable(a),
+      loadU: netSession.loadOnPipe(beamPipeKey(sat.id, slot)),
+      capU: a.capacityUnits,
+    })),
+  }));
+  const pending = netSession.launchEvents.map((ev) => {
+    const t = clock.seconds;
+    const phase =
+      ev.lost === 1 && t >= ev.lostAtS
+        ? "LOST"
+        : t < ev.liftoffAtS
+          ? "terminal count"
+          : ev.members.every((m) => m.deployed === 1)
+            ? "deploy complete"
+            : "ascent";
+    return { id: ev.id, phase };
+  });
+  return { balanceEur: netSession.balance, ratePerMin: r1FlowRate(), chips, pending };
+}
+
 const orreryHandle: PanelHandle = {
   title: "ORRERY",
   content: orrery.host,
@@ -2277,13 +2436,9 @@ const registry = new Map<string, PanelHandle>([
   ["parse", parse],
 ]);
 if (netMode) {
-  registry.set("net-launch", netLaunchPanel);
-  registry.set("net-contracts", netContractsPanel);
-  registry.set("net-prefer", netPreferPanel);
-  registry.set("status-board", statusBoardPanel);
-  registry.set("coverage-roster", coverageRosterPanel);
-  registry.set("link-load", linkLoadPanel);
-  registry.set("howto", howtoPanel);
+  // R1 (SD-45): the loop lives on MISSION — the SD-44 dashboards are retired from net mode.
+  registry.set("mission-top", missionTopPanel);
+  registry.set("ledger-fleet", ledgerFleetPanel);
 } else {
   registry.set("contracts", contractsPanel);
   registry.set("fleet", fleetPanel);
@@ -2331,8 +2486,8 @@ function setWmPreset(i: number): void {
     // so frame Earth as a clear central hero with room for the constellation around it; CONNECTIVITY
     // (where you launch) frames it a touch larger so the regions/footprints read. ROUTING stays pulled
     // back (fill 0) so the live links read across the whole constellation.
-    if (wmPresetName === "OVERVIEW") orrery.setNetHeroFraming(0.34);
-    else if (wmPresetName === "CONNECTIVITY") orrery.setNetHeroFraming(0.42);
+    // R1 (SD-45): MISSION is the one primary desktop — the globe is always the hero there.
+    if (wmPresetName === "MISSION") orrery.setNetHeroFraming(0.38);
     else orrery.setNetHeroFraming(0);
   }
   // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run
@@ -2437,7 +2592,7 @@ window.addEventListener("keydown", (e) => {
   // axis), Left/Right = INCLINATION (which latitudes you reach); `[`/`]` nudge PHASE and `{`/`}`
   // (shift-bracket) nudge RAAN. Each re-runs previewLaunch so the on-globe footprint + ground-track
   // + coverage gap move live. Gated to net mode so cache mode keeps its `[`/`]` freshness controls.
-  if (netMode && netDraftNudgeKey(k)) {
+  if (netMode && r1Mode === "pad" && netDraftNudgeKey(k)) {
     e.preventDefault();
     return;
   }
@@ -2450,7 +2605,7 @@ window.addEventListener("keydown", (e) => {
   // CONNECTIVITY / ROUTING), never global keys. The desktop sets the camera, so E/C/O/S/T are gone;
   // and F/P/H/D/B/M/'/N/J/A/; (all cache-mode verbs) never fire in net mode.
   if (netMode) {
-    if (k >= "1" && k <= "5") setWmPreset(Number(k) - 1);
+    if (k === "1" || k === "2") setWmPreset(Number(k) - 1);
     else if (k === "0") shell.reset();
     else if (k === " ") {
       e.preventDefault();
@@ -2463,7 +2618,10 @@ window.addEventListener("keydown", (e) => {
       clock.faster();
       recordScale();
     } else if (k === "l" || k === "L") {
-      netLaunch();
+      // R1 (SD-45): L opens/closes the PAD — the commit is the two-step ARM → LAUNCH on the
+      // pad itself (no one-key launches; the design/aim/commit sequence is the game).
+      r1Mode = r1Mode === "pad" ? "book" : "pad";
+      r1Armed = false;
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
     }
@@ -2477,7 +2635,7 @@ window.addEventListener("keydown", (e) => {
     // rail. G is the keyboard parity: SUMMON it into the focused tile if it is off-screen, else jump to
     // its at-rest home desktop (REFERENCE in net mode, REVIEW in cache mode). Summoning folds the run.
     if (shell.visibleHosts().includes("parse")) {
-      const home = netMode ? "REFERENCE" : "REVIEW";
+      const home = "REVIEW"; // R1 (SD-45): net mode reads at REVIEW too.
       setWmPreset(presets.findIndex((p) => p.name === home));
     } else windowRail.summonParse();
   }
@@ -2732,14 +2890,9 @@ function frame(now: number): void {
     // the four dashboards take their own pure projections. Each panel rebuilds DOM only on change, so
     // painting an off-screen tile is cheap (the Shell only mounts the visible ones, but a detached
     // panel's render is a no-op churn-wise). The orrery planner overlay keys on the net-launch tile.
-    const ns = netPlannerRenderState();
-    netLaunchPanel.render(ns);
-    netContractsPanel.render(ns);
-    netPreferPanel.render(ns);
-    statusBoardPanel.render(ns);
-    coverageRosterPanel.render(netCoverageRosterState());
-    linkLoadPanel.render(netLinkLoadState());
-    howtoPanel.render(netSession.cursor);
+    missionTopPanel.render(missionTopState());
+    ledgerFleetPanel.render(ledgerFleetState());
+    drainMissionWire();
   } else {
     // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project
     // the live build session each frame; the panel rebuilds its rows only on a change.

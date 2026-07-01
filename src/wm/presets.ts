@@ -104,83 +104,38 @@ export const PRESET_SPECS: PresetSpec[] = [
  */
 export const NET_PRESET_SPECS: PresetSpec[] = [
   {
-    // OVERVIEW (key 1) — the BOOT triage wall. The toy globe is the hero on the left; the STATUS·BOARD
-    // (objective banner + per-contract state) sits over the FINANCE/wallet readout on the right. The
-    // first thing the player should read: "is anything wrong right now?" — not the launch controls.
-    name: "OVERVIEW",
+    // MISSION (key 1) — THE game screen (m1-redesign.md §2.1): 90% of play happens here and
+    // the loop never leaves it. The orrery is the input device on the left; the right rail
+    // stacks the MISSION book/pad (tenders ⇄ vehicle builder), the WIRE (SYSTEM.LOG), and
+    // the LEDGER·FLEET strip (wallet + per-sat pipes/beams).
+    name: "MISSION",
     columns: [
       { weight: 0.64, rows: [{ weight: 1, host: "orrery" }] },
       {
         weight: 0.36,
         rows: [
-          { weight: 1.4, host: "status-board" },
-          { weight: 1.0, host: "finance" },
+          { weight: 2.3, host: "mission-top" },
+          { weight: 0.7, host: "system-log" },
+          { weight: 0.8, host: "ledger-fleet" },
         ],
       },
     ],
   },
   {
-    // CONNECTIVITY (key 2) — the LAUNCH desktop. The globe is the hero (the make-or-break drag→
-    // consequence read), with the NET·LAUNCH planner over the COVERAGE·ROSTER on the right. The
-    // planner overlay + camera dolly fire because the net-launch tile is visible here (see main.ts).
-    name: "CONNECTIVITY",
+    // REVIEW (key 2) — the at-rest reading room: the full-height WIRE beside the finance
+    // ledger and the fleet strip. No loop beat REQUIRES this desktop; it is the parse's
+    // future home.
+    name: "REVIEW",
     columns: [
-      { weight: 0.62, rows: [{ weight: 1, host: "orrery" }] },
+      { weight: 0.55, rows: [{ weight: 1, host: "system-log" }] },
       {
-        weight: 0.38,
-        rows: [
-          { weight: 1.7, host: "net-launch" },
-          { weight: 1.0, host: "coverage-roster" },
-        ],
-      },
-    ],
-  },
-  {
-    // ROUTING (key 3) — the traffic desktop. The globe (framed ORBITS) on the left so the live links
-    // read large, with the LINK·LOAD utilisation board over the ROUTING·PREFER tuner on the right.
-    name: "ROUTING",
-    columns: [
-      { weight: 0.58, rows: [{ weight: 1, host: "orrery" }] },
-      {
-        weight: 0.42,
-        rows: [
-          { weight: 1.4, host: "link-load" },
-          { weight: 1.0, host: "net-prefer" },
-        ],
-      },
-    ],
-  },
-  {
-    // BUSINESS (key 4) — the deals desktop. The CONTRACTS board is the hero on the left (accept / read
-    // every deal), with FINANCE over SYSTEM.LOG on the right. No orrery here (not mounted).
-    name: "BUSINESS",
-    columns: [
-      { weight: 0.56, rows: [{ weight: 1, host: "net-contracts" }] },
-      {
-        weight: 0.44,
+        weight: 0.45,
         rows: [
           { weight: 1.0, host: "finance" },
-          { weight: 1.2, host: "system-log" },
-        ],
-      },
-    ],
-  },
-  {
-    // REFERENCE (key 5) — the help / at-rest desktop. HOW-IT-WORKS explainer wide on the left, with the
-    // HOW-IT-WORKS explainer hero, with the live SYSTEM.LOG (the net "raw truth" event stream) over
-    // the net FINANCE readout. No orrery here. NOTE: telemetry + the PARSE are NOT mounted in net mode
-    // — both still read the CACHE session (Earth↔Mars distance / packet / freshness / mars_* feeds) and
-    // would leak the deferred caching game onto this wall; their net-aware versions are later-phase work.
-    name: "REFERENCE",
-    columns: [
-      { weight: 0.5, rows: [{ weight: 1, host: "howto" }] },
-      {
-        weight: 0.5,
-        rows: [
-          { weight: 1.4, host: "system-log" },
-          { weight: 1.0, host: "finance" },
+          { weight: 1.0, host: "ledger-fleet" },
         ],
       },
     ],
   },
 ];
+
