@@ -66,6 +66,7 @@ function served(region: string, satId: string, latencyS = 0.002): SolveResult {
   return {
     served: true,
     path: [region, satId, "GROUND-0"],
+    pipe: `${satId}:0`,
     latencyS,
     bindingConstraint: null,
     losses: [],
@@ -83,6 +84,7 @@ function unserved(opts: {
   return {
     served: false,
     path: opts.path ?? null,
+    pipe: opts.path && opts.path.length > 1 ? `${opts.path[1]}:0` : null,
     latencyS: opts.latencyS ?? Infinity,
     bindingConstraint: opts.axis,
     losses: opts.losses ?? [],

@@ -41,6 +41,8 @@ import {
   type ContractState,
 } from "../m2/contracts";
 import type { NetSat } from "./sat";
+import { BUS_SPECS } from "./sat";
+import { type BeamMap, validateBeamAssign, pipeKey, parsePipeKey } from "./beams";
 import { type GroundNet, NET_ACT1_GROUND, NET_ACT2_GROUND, NET_ACT4_RELAY_ID_STEM } from "./endpoint";
 import {
   type Contract,
@@ -61,6 +63,7 @@ import {
   type SolveResult,
   type RouterState,
   resolveTick,
+  pipeCapacityOf,
 } from "./router";
 import { windowAvailability } from "./availability";
 import { freshness } from "../delay";
@@ -113,12 +116,65 @@ const stepOfferedContract = m2StepOfferedContract as unknown as (
   nowS: number,
 ) => boolean;
 
-/** Opening € for a net session — sized with HEADROOM for the §3.5 launch charges so the full
- * scripted Act-1→Act-4 arc (the GEO + the N=4 LEO batch + the act3a corridor LEOs + the Mars relay,
- * ≈€11.6k of launch capex) stays affordable AND a served contract earns the capex back over a
- * sitting. (Overspending is ALLOWED — the wallet can dip negative, the build-vs-budget tension —
- * but the canonical run is comfortably in the black.) Placeholder. */
-export const NET_OPENING_BALANCE = 20000.0;
+/** Opening € for a net session (m1-redesign.md §2.5 — scarcity from minute one): the first
+ * full launch stack (T1 bus + BROADCAST card + the GEO lift ≈ €19k) consumes ~half of it, so
+ * every early commit is felt. Overspending is ALLOWED (the wallet can dip negative — the
+ * build-vs-budget tension), but the theorem holds: no single contract's term revenue pays for
+ * its own honest provisioning (economy.test.ts asserts it). TUNABLE. */
+export const NET_OPENING_BALANCE = 40000.0;
+
+// ── the launch-event pipeline (m1-redesign.md §2.2 phase 3 — launch as a sim-tick event) ──
+
+/** Countdown from commit to liftoff (sim-seconds). */
+export const NET_LAUNCH_COUNTDOWN_S = 4.0;
+/** Ascent from liftoff to the deploy window (sim-seconds). */
+export const NET_LAUNCH_ASCENT_S = 10.0;
+/** Spacing between successive batch-member deploys (sim-seconds). */
+export const NET_LAUNCH_DEPLOY_SPACING_S = 1.5;
+/** How long a finished launch event lingers for the render layer before pruning (s). */
+export const NET_LAUNCH_EVENT_LINGER_S = 8.0;
+
+/** Whole-vehicle loss chance per launch (rare, dramatic; maiden + Act-1 launches are
+ * forced-success). TUNABLE. */
+export const NET_VEHICLE_LOSS_CHANCE = 0.02;
+/** Per-member UNDERBURN chance (the COMMON failure flavor): the sat arrives in a lower
+ * orbit and needs a paid circularization burn. TUNABLE. */
+export const NET_UNDERBURN_CHANCE = 0.08;
+/** Per-member separation-failure chance (the sat never deploys; the hole in YOUR phasing).
+ * TUNABLE. */
+export const NET_NOSEP_CHANCE = 0.03;
+/** The underburn arrival factor: the sat's semi-major axis arrives at this fraction of
+ * the intended one until circularized. TUNABLE. */
+export const NET_UNDERBURN_FACTOR = 0.82;
+/** The circularization burn price (€) — the "fix the underburn" button. TUNABLE. */
+export const NET_CIRCULARIZE_COST_EUR = 300.0;
+
+/** One batch member riding a pending launch. JSON-safe; folded. */
+export interface PendingMember {
+  /** The sat as it will DEPLOY (underburn members carry the lowered orbit). */
+  sat: NetSat;
+  /** Sim-time this member pops off the vehicle (and, if ok/underburn, joins the roster). */
+  deployAtS: number;
+  /** The seeded outcome rolled at commit. */
+  outcome: "ok" | "no_sep" | "underburn";
+  /** The semi-major axis the player AIMED (== sat.orbit.aM unless underburn). */
+  intendedAM: number;
+  /** Whether the deploy instant has been processed (folded 0/1). */
+  deployed: number;
+}
+
+/** One in-flight launch event (countdown → ascent → deploys), sim-driven and folded so
+ * the render layer can stage the drama off sim truth. */
+export interface PendingLaunch {
+  id: string;
+  committedAtS: number;
+  /** committed + countdown. */
+  liftoffAtS: number;
+  /** Whole-vehicle loss (nothing ever deploys); the render shows the break at lostAtS. */
+  lost: number;
+  lostAtS: number;
+  members: PendingMember[];
+}
 
 /** Seed for the net session's splitmix64 RNG (the determinism anchor; faults draw from it
  * in Act 3b — absent in Act 1). Distinct from the m1/m2 anchors. The replay golden (A3)
@@ -138,10 +194,11 @@ export const NET_CONGESTION_BUCKET_UNITS = NET_LINK_CAPACITY_UNITS / 4;
  * (while escalation is on) to be WITNESSED as having "dipped near-breach under risen load" — the
  * first half of the act3a tame→outgrow→re-tame gate (design §3a / onboarding line 120). A sustained
  * dip to this depth of the grace (then a return to fully SERVED) demonstrates the concept WITHOUT
- * requiring an actual FAILED contract (the full grace). 0.1 of the 600 s grace = 60 s of breach —
+ * requiring an actual FAILED contract (the full grace). 0.08 of the 600 s grace = 48 s of breach —
  * a real, sustained near-breach the player must re-engineer out of, comfortably below the FAIL
- * threshold so a re-tame is reachable. Placeholder. */
-export const NET_NEAR_BREACH_GRACE_FRACTION = 0.1;
+ * threshold so a re-tame is reachable. (R0: sized under the ~54 s continuous bite window the
+ * seeded asymmetric-peak squeeze produces on the shared BROADCAST pipe.) PLAYTEST KNOB. */
+export const NET_NEAR_BREACH_GRACE_FRACTION = 0.08;
 
 /**
  * ACT 4 (the Mars frontier teaser) — a tiny LOCAL 3-field sample mirroring the m1/cache.ts
@@ -199,17 +256,21 @@ export interface NetSnapshot {
    * shared-load bucket changes. Fed into the router topologyKey so a rising load forces a
    * re-solve through the cache (the HIGH-2 fix). Folds into the golden. */
   congestionEpoch: number;
-  /** The chosen bridging sat per ACTIVE contract id (the two-pass aggregation's Pass-A result),
-   * as `[contractId, satId]` pairs. Folded (sorted by contractId) so `loadBySat` is a pure
-   * function of folded state across a restore boundary (the MED desync fix). */
-  chosenSatByContract: [string, string][];
+  /** The chosen serving PIPE (`satId:slotIdx`) per ACTIVE contract id (the two-pass
+   * aggregation's Pass-A result), as `[contractId, pipeKey]` pairs. Folded (sorted by
+   * contractId) so `loadByPipe` is a pure function of folded state across a restore
+   * boundary (the MED desync fix). */
+  chosenPipeByContract: [string, string][];
   /** Whether the act3a tame→outgrow→re-tame cycle has been WITNESSED (0/1): a previously-served
    * contract dipped near-breach under risen load, then returned to fully SERVED. The act3a gate
    * returns this. Folds into the golden. */
   act3aReTameWitnessed: number;
-  /** Contract ids that have DIPPED near-breach while escalation was on (the first half of the
-   * re-tame witness), so a later return to fully-served can complete the cycle. Folds (sorted). */
-  nearBreachWitnessed: string[];
+  /** Contracts that DIPPED near-breach while escalation was on (id → dip sim-time), so a
+   * later player-re-engineered return to fully-served completes the cycle. Folds (sorted). */
+  nearBreachWitnessed: [string, number][];
+  /** Sim-time of the last player topology action (launch/beam/circularize/prefer); null =
+   * never. The re-tame witness requires it strictly after the dip. Folded. */
+  playerTopoActionS: number | null;
   /** The quantized congestion fingerprint of the LAST step's shared-load aggregate (E3): the
    * congestion epoch bumps when the current step's fingerprint differs from this. Folded as a
    * string so a restore reproduces the epoch-bump decision of a continuous run (replay-safe). */
@@ -250,6 +311,17 @@ export interface NetSnapshot {
    * old" / "as of Nm ago" / the stale-pay dimming are render-layer reads off THIS — NO Contract
    * field, NO wallet wiring, NO freshness economy (§8 fenced). */
   marsSample: MarsSample | null;
+
+  // --- R0 (SD-45): beams + the launch pipeline + underburns -------------------------
+  /** The beam-assignment table (pipeKey → regionId), sorted pairs. Folded — pointing is
+   * topology state. */
+  beamAssign: [string, string][];
+  /** In-flight launch events (countdown/ascent/deploy pipeline), in commit order. Folded. */
+  pendingLaunches: PendingLaunch[];
+  /** Underburned sats awaiting a circularization burn: [satId, intendedAM]. Folded. */
+  underburnIntended: [string, number][];
+  /** How many launches have been COMMITTED (drives event ids + the maiden-flight rule). */
+  launchCommits: number;
 }
 
 export class NetSession {
@@ -308,16 +380,31 @@ export class NetSession {
   private escalationOn = false;
   /** The §2.4 congestion epoch (E3) — bumps on a quantized shared-load bucket change. Folded. */
   private congestionEpoch = 0;
-  /** The chosen bridging sat per ACTIVE contract id (Pass A of the two-pass aggregation). Folded
-   * as sorted `id|satId` pairs so {@link loadBySatFromState} is a pure function of folded state
-   * across a restore boundary; the live `loadBySat` map is re-derived each step, never stored. */
-  private readonly chosenSatByContract = new Map<string, string>();
+  /** The chosen serving PIPE per ACTIVE contract id (Pass A of the two-pass aggregation). Folded
+   * as sorted `id|pipeKey` pairs so {@link loadByPipeFromState} is a pure function of folded state
+   * across a restore boundary; the live `loadByPipe` map is re-derived each step, never stored. */
+  private readonly chosenPipeByContract = new Map<string, string>();
+
+  // --- R0 (SD-45): beams + the launch pipeline + underburns -------------------------
+  /** The beam-assignment table (pipeKey → regionId) — the pointing state. Folded. */
+  private readonly beamAssign = new Map<string, string>();
+  /** In-flight launch events (the countdown/ascent/deploy pipeline). Folded. */
+  private pendingLaunchList: PendingLaunch[] = [];
+  /** Underburned sats awaiting a circularization burn (satId → intended aM). Folded. */
+  private readonly underburnIntended = new Map<string, number>();
+  /** Launches COMMITTED so far (event ids + the maiden-flight forced-success rule). Folded. */
+  private launchCommits = 0;
   /** The act3a re-tame witness (folded int 0/1): a previously-served contract dipped near-breach
    * under risen load, then returned to fully SERVED. {@link escalationReTamed} returns this. */
   private act3aReTameWitnessed = false;
-  /** Contract ids that have DIPPED near-breach while escalation was on (the first half of the
-   * re-tame witness). A later return to fully-served completes the cycle. Folded (sorted). */
-  private readonly nearBreachWitnessed = new Set<string>();
+  /** Contracts that have DIPPED near-breach while escalation was on (the first half of the
+   * re-tame witness), mapped to the sim-time of the dip. A later return to fully-served —
+   * AFTER a player re-engineering action — completes the cycle. Folded (sorted pairs). */
+  private readonly nearBreachWitnessed = new Map<string, number>();
+  /** Sim-time of the last PLAYER topology action (launch commit / beam / circularize /
+   * prefer) — the "the player re-engineered" stamp the re-tame witness requires between the
+   * dip and the all-green state. null = never. Folded. */
+  private lastPlayerTopoActionS: number | null = null;
   /** The quantized congestion fingerprint of the last step's shared-load aggregate (E3) — the
    * epoch bumps when this step's fingerprint differs. Folded so a restore reproduces the bump. */
   private prevCongestionFingerprint = "";
@@ -470,6 +557,160 @@ export class NetSession {
     return `NET-SAT-${this.launchedCount}`;
   }
 
+  /** CONSUME the next sat id (advances the monotonic counter) — the applier calls this
+   * per batch member at COMMIT, so ids are stable across deploy outcomes. */
+  consumeSatId(isRelay = false): string {
+    const id = isRelay ? this.nextRelaySatId() : this.nextSatId();
+    this.launchedCount++;
+    return id;
+  }
+
+  // --- R0 (SD-45): the launch-event pipeline + beams + underburns -------------------
+
+  /** The beam-assignment table (pipeKey → regionId) — the pointing state the router
+   * consumes. Read-only view. */
+  get beams(): BeamMap {
+    return this.beamAssign;
+  }
+
+  /** In-flight launch events (the render layer stages countdown/ascent/deploy off this). */
+  get launchEvents(): readonly PendingLaunch[] {
+    return this.pendingLaunchList;
+  }
+
+  /** The intended semi-major axis of an underburned sat awaiting circularization
+   * (null when the sat is not underburned). */
+  underburnFor(satId: string): number | null {
+    return this.underburnIntended.get(satId) ?? null;
+  }
+
+  /** Every underburned sat id (the render marks them + offers the burn). */
+  get underburnedSatIds(): readonly string[] {
+    return [...this.underburnIntended.keys()].sort();
+  }
+
+  /**
+   * ASSIGN (or with `regionId === ""` UNASSIGN) a spot beam: pipe (satId, slotIdx) →
+   * region. The pointing verb (m1-redesign §2.3) — instant, free, but a topology change
+   * (the router cache invalidates; whoever the beam left is un-served next tick).
+   * Returns a problem string, or null on success. Deterministic.
+   */
+  assignBeam(satId: string, slotIdx: number, regionId: string): string | null {
+    const problem = validateBeamAssign(this.satList, satId, slotIdx, regionId);
+    if (problem !== null) return problem;
+    const key = pipeKey(satId, slotIdx);
+    if (regionId === "") this.beamAssign.delete(key);
+    else this.beamAssign.set(key, regionId);
+    this.routerStates.clear(); // pointing is a topology change (§2.4).
+    this.lastPlayerTopoActionS = this.lastStepS; // the player re-engineered.
+    return null;
+  }
+
+  /**
+   * COMMIT a launch (m1-redesign §2.2 phase 3): charge the wallet, roll the seeded
+   * outcomes, and enqueue the sim-tick launch EVENT — the sats deploy over the next
+   * ~15–20 sim-seconds ({@link processPendingLaunches}), they do NOT appear instantly.
+   *
+   * ROLL ORDER (deterministic, one stream): 1 vehicle-loss draw per launch, then per
+   * member 1 underburn draw + 1 no-sep draw — always drawn (stable draw count), outcomes
+   * FORCED to success while the scenario is on the Act-1 beat (the gentle opener) and
+   * for the vehicle-loss roll on the maiden flight (launchCommits === 0).
+   */
+  launchBatch(members: NetSat[], costEur: number, t: number): PendingLaunch {
+    this.walletBalance -= costEur; // charged win OR lose (§3.5).
+    const failuresArmed = this.scenarioCursor > 0;
+    const maiden = this.launchCommits === 0;
+
+    const lossRoll = this.rng.nextDouble();
+    const lost = failuresArmed && !maiden && lossRoll < NET_VEHICLE_LOSS_CHANCE;
+
+    const liftoffAtS = t + NET_LAUNCH_COUNTDOWN_S;
+    const firstDeployAtS = liftoffAtS + NET_LAUNCH_ASCENT_S;
+    const pending: PendingMember[] = [];
+    for (let i = 0; i < members.length; i++) {
+      const underburnRoll = this.rng.nextDouble();
+      const nosepRoll = this.rng.nextDouble();
+      const underburn = failuresArmed && underburnRoll < NET_UNDERBURN_CHANCE;
+      const nosep = failuresArmed && !underburn && nosepRoll < NET_NOSEP_CHANCE;
+      const sat = members[i];
+      const intendedAM = sat.orbit.aM;
+      if (underburn) sat.orbit.aM = intendedAM * NET_UNDERBURN_FACTOR;
+      pending.push({
+        sat,
+        deployAtS: firstDeployAtS + i * NET_LAUNCH_DEPLOY_SPACING_S,
+        outcome: lost ? "no_sep" : underburn ? "underburn" : nosep ? "no_sep" : "ok",
+        intendedAM,
+        deployed: 0,
+      });
+    }
+    const ev: PendingLaunch = {
+      id: `LAUNCH-${this.launchCommits}`,
+      committedAtS: t,
+      liftoffAtS,
+      lost: lost ? 1 : 0,
+      lostAtS: lost ? liftoffAtS + NET_LAUNCH_ASCENT_S / 2 : 0,
+      members: pending,
+    };
+    this.launchCommits++;
+    this.pendingLaunchList.push(ev);
+    return ev;
+  }
+
+  /**
+   * CIRCULARIZE an underburned sat (the paid fix, m1-redesign §2.2): charge the burn,
+   * raise its semi-major axis to the intended value. Returns true when applied (false =
+   * not underburned / unknown sat). Deterministic; a topology change.
+   */
+  circularize(satId: string): boolean {
+    const intended = this.underburnIntended.get(satId);
+    if (intended === undefined) return false;
+    const sat = this.satList.find((s) => s.id === satId);
+    if (sat === undefined) return false;
+    this.walletBalance -= NET_CIRCULARIZE_COST_EUR;
+    sat.orbit.aM = intended;
+    this.underburnIntended.delete(satId);
+    this.routerStates.clear();
+    this.lastPlayerTopoActionS = this.lastStepS; // the player re-engineered.
+    return true;
+  }
+
+  /** Deploy any pending launch members whose deploy instant has arrived (the sim-tick
+   * event pipeline), then prune finished events past the render linger. A deploy is a
+   * topology change. Pure function of (t, folded state). */
+  private processPendingLaunches(t: number): void {
+    if (this.pendingLaunchList.length === 0) return;
+    let topologyChanged = false;
+    for (const ev of this.pendingLaunchList) {
+      if (ev.lost === 1) continue;
+      for (const m of ev.members) {
+        if (m.deployed === 1 || t < m.deployAtS) continue;
+        m.deployed = 1;
+        if (m.outcome === "no_sep") continue;
+        this.satList.push({
+          ...m.sat,
+          orbit: { ...m.sat.orbit },
+          loadout: m.sat.loadout.map((a) => ({ ...a })),
+        });
+        if (m.outcome === "underburn") this.underburnIntended.set(m.sat.id, m.intendedAM);
+        topologyChanged = true;
+        // The re-tame witness stamp fires at DEPLOY (when the re-engineering physically
+        // lands), not at commit — a dip cannot be "answered" by paperwork still in flight.
+        this.lastPlayerTopoActionS = t;
+      }
+    }
+    this.pendingLaunchList = this.pendingLaunchList.filter((ev) => {
+      const endS =
+        ev.lost === 1
+          ? ev.lostAtS
+          : ev.members.length > 0
+            ? ev.members[ev.members.length - 1].deployAtS
+            : ev.liftoffAtS;
+      const done = ev.lost === 1 ? t > endS + NET_LAUNCH_EVENT_LINGER_S : ev.members.every((m) => m.deployed === 1) && t > endS + NET_LAUNCH_EVENT_LINGER_S;
+      return !done;
+    });
+    if (topologyChanged) this.routerStates.clear();
+  }
+
   /** The next Act-4 MARS RELAY id (monotonic, stable across replay). The id begins with
    * {@link NET_ACT4_RELAY_ID_STEM} so the router's solveMarsLeg PRESENCE test recognises it as
    * the deep-space relay that bridges the Mars leg by construction. */
@@ -509,6 +750,7 @@ export class NetSession {
     const c = this.contractById(contractId);
     if (c === null) return null;
     c.prefer = { lat, bw, stab };
+    this.lastPlayerTopoActionS = this.lastStepS; // re-biasing the blend = re-engineering.
     return c;
   }
 
@@ -579,10 +821,10 @@ export class NetSession {
     return this.act3aReTameWitnessed;
   }
 
-  /** The aggregate shared load routed over a sat id this step (the trace/readout reads this) —
-   * re-derived from the folded chosen-sat assignment + each contract's offeredLoad. */
+  /** The aggregate shared load routed over a sat id this step (Σ over its pipes) —
+   * re-derived from the folded chosen-pipe assignment + each contract's offeredLoad. */
   loadOnSat(satId: string): number {
-    return this.loadBySatFromState().get(satId) ?? 0;
+    return NetSession.satLoadView(this.loadByPipeFromState()).get(satId) ?? 0;
   }
 
   // --- ACT-4 (D1) the Mars frontier teaser — the freshness readouts (render-layer) ---
@@ -676,6 +918,7 @@ export class NetSession {
       faults, // Act 3b: the down-sat set (transient/telegraphed-expired); undefined pre-act3b.
       loadBySat,
       this.congestionEpoch,
+      this.beamAssign, // R0: the pointing state — eligibility + the beams topology key.
     );
     this.routerStates.set(contract.id, next);
     this.lastSolve.set(contract.id, next.result);
@@ -684,7 +927,7 @@ export class NetSession {
       return next.result.served ? 1.0 : 0.0;
     }
     // Act 2 (availability active): the held-fraction over the trailing hand-off cycle.
-    const avail = windowAvailability(eph, contract, this.satList, this.groundNets, t);
+    const avail = windowAvailability(eph, contract, this.satList, this.groundNets, t, faults, this.beamAssign);
     contract.lastAvailability = avail; // the sawtooth-meter readout (set each step).
     if (!next.result.served) return 0.0; // instant gap (a sawtooth trough) → 0.
     return avail >= contract.slaAvail ? 1.0 : 0.0; // sustained shortfall → 0; held → 1.0.
@@ -701,15 +944,37 @@ export class NetSession {
    * sat back into {@link chosenSatByContract}, and bumps {@link congestionEpoch} when a quantized
    * bucket changed — so next step's aggregate reflects this step's routing. Pure.
    */
-  private loadBySatFromState(): Map<string, number> {
+  private loadByPipeFromState(): Map<string, number> {
     const load = new Map<string, number>();
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
-      const satId = this.chosenSatByContract.get(c.id);
-      if (satId === undefined) continue;
-      load.set(satId, (load.get(satId) ?? 0) + c.offeredLoad);
+      const pipe = this.chosenPipeByContract.get(c.id);
+      if (pipe === undefined) continue;
+      load.set(pipe, (load.get(pipe) ?? 0) + c.offeredLoad);
     }
     return load;
+  }
+
+  /** Aggregate a per-PIPE load map into a per-SAT view (Σ over the sat's pipes) — the
+   * trace/readout surface that thinks in sats. Pure. */
+  private static satLoadView(loadByPipe: ReadonlyMap<string, number>): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const [pipe, l] of loadByPipe) {
+      const parsed = parsePipeKey(pipe);
+      if (parsed === null) continue;
+      out.set(parsed.satId, (out.get(parsed.satId) ?? 0) + l);
+    }
+    return out;
+  }
+
+  /** The load routed over one PIPE this step (readout). */
+  loadOnPipe(pipe: string): number {
+    return this.loadByPipeFromState().get(pipe) ?? 0;
+  }
+
+  /** The capacity (units) of a pipe on the live roster (readout; 0 = unknown). */
+  pipeCapacity(pipe: string): number {
+    return pipeCapacityOf(this.satList, pipe);
   }
 
   /** The quantized congestion FINGERPRINT of the current `loadBySat` (E3): each sat's bucket
@@ -718,10 +983,11 @@ export class NetSession {
    * the topologyKey flips ⇒ a re-solve through the cache. Pure. */
   private congestionFingerprint(load: ReadonlyMap<string, number>): string {
     const parts: string[] = [];
-    for (const [satId, l] of load) {
+    for (const [pipe, l] of load) {
       const bucket = Math.floor(l / NET_CONGESTION_BUCKET_UNITS);
-      const overCap = l >= NET_LINK_CAPACITY_UNITS ? 1 : 0;
-      parts.push(`${satId}:${bucket}:${overCap}`);
+      const cap = pipeCapacityOf(this.satList, pipe);
+      const overCap = cap > 0 && l >= cap ? 1 : 0;
+      parts.push(`${pipe}:${bucket}:${overCap}`);
     }
     parts.sort();
     return parts.join("|");
@@ -747,23 +1013,43 @@ export class NetSession {
    */
   private updateReTameWitness(contract: Contract, servedFraction: number): void {
     if (this.act3aReTameWitnessed) return; // once witnessed, latched (idempotent).
+    // R0 (SD-45): the dip only counts when the BANDWIDTH axis is what is biting — the real
+    // §4.3 squeeze. Under the pipe model a sole-pipe contract (the pointed corridor) dips on
+    // ordinary horizon gaps (connectivity-binding); those must never arm the re-tame gate.
+    const bindingBandwidth = this.lastSolve.get(contract.id)?.bindingConstraint === "bandwidth";
     const nearBreach =
       contract.breachSecondsAccum >= NET_NEAR_BREACH_GRACE_FRACTION * NET_BREACH_GRACE_SECONDS;
     if (nearBreach) {
-      this.nearBreachWitnessed.add(contract.id);
+      if (bindingBandwidth && !this.nearBreachWitnessed.has(contract.id)) {
+        this.nearBreachWitnessed.set(contract.id, this.lastStepS);
+      }
       return;
     }
-    if (!this.nearBreachWitnessed.has(contract.id)) return;
+    const dipAtS = this.nearBreachWitnessed.get(contract.id);
+    if (dipAtS === undefined) return;
     if (servedFraction < ESCALATION_SERVE_THRESHOLD) return;
-    // The contract must be the SOLE active loader of its bridge sat — the SPLIT happened (no other
-    // active contract shares its chosen sat this step). That is the structural signature of the
-    // relief; a transient coincident trough on a still-SHARED sat can never satisfy it.
-    const bridgeSat = this.chosenSatByContract.get(contract.id) ?? null;
-    if (bridgeSat === null) return;
-    for (const [otherId, otherSat] of this.chosenSatByContract) {
+    // R0 (SD-45): the re-tame must be the PLAYER'S re-engineering, not a passing sat
+    // transiently relieving the pipe — require a topology action strictly after the dip.
+    if (this.lastPlayerTopoActionS === null || this.lastPlayerTopoActionS <= dipAtS) return;
+    // The contract must be the SOLE active loader of its serving PIPE — the SPLIT happened (no
+    // other active contract shares its chosen pipe this step). That is the structural signature of
+    // the relief; a transient coincident trough on a still-SHARED pipe can never satisfy it.
+    const bridgePipe = this.chosenPipeByContract.get(contract.id) ?? null;
+    if (bridgePipe === null) return;
+    for (const [otherId, otherPipe] of this.chosenPipeByContract) {
       if (otherId === contract.id) continue;
       const other = this.contractById(otherId);
-      if (other?.state === "active" && otherSat === bridgeSat) return; // still SHARED — not re-tamed.
+      if (other?.state === "active" && otherPipe === bridgePipe) return; // still SHARED — not re-tamed.
+    }
+    // R0 (SD-45): sole-on-pipe must mean the SPLIT happened, not that the sharing partner got
+    // knocked out this instant (its own floor bite momentarily clears its pipe assignment).
+    // Require ALL active Earth contracts fully served — the network is genuinely all-green
+    // after the relief, nobody was sacrificed. (One-tick staleness across the loop is
+    // deterministic and acceptable.)
+    for (const other of this.contractList) {
+      if (other.id === contract.id || other.state !== "active") continue;
+      if (other.region.bodyId !== "earth") continue;
+      if (other.lastServedFraction < ESCALATION_SERVE_THRESHOLD) return; // not all-green yet.
     }
     // A dipped-then-re-tamed contract alone on its split bridge: the act3a concept is FELT. Latch it.
     this.act3aReTameWitnessed = true;
@@ -846,13 +1132,12 @@ export class NetSession {
     return down.size > 0 ? down : undefined;
   }
 
-  /** Apply the DEGRADATION capacity HAIRCUT to a shared-load aggregate (design §5.1): a degraded
-   * sat still routes, but its link capacity is scaled by `degradedCapacityFactor ∈ (0,1]`. The
-   * router compares the shared load against the FIXED NET_LINK_CAPACITY_UNITS, so we model the
-   * haircut by SCALING UP the degraded sat's effective load by `1/factor` — it then congests /
-   * trips the bandwidth bite sooner (biting whoever cut oversubscription thin in 3a, barely felt
-   * with headroom). Returns a NEW map (the raw `loadBySat` — the folded chosen-sat truth — is
-   * untouched); returns the input unchanged when no degradation is active. Pure. */
+  /** Apply the DEGRADATION capacity HAIRCUT to a per-PIPE shared-load aggregate (design §5.1): a
+   * degraded sat still routes, but EVERY pipe it carries has its capacity scaled by
+   * `degradedCapacityFactor ∈ (0,1]`. The router compares each pipe's shared load against that
+   * antenna's own capacity, so we model the haircut by SCALING UP the degraded sat's pipes'
+   * effective load by `1/factor` — the whole sat congests sooner (one fault domain: the
+   * consolidator's bet, felt). Returns a NEW map; the folded chosen-pipe truth is untouched. Pure. */
   private applyDegradationHaircut(
     load: ReadonlyMap<string, number>,
   ): ReadonlyMap<string, number> {
@@ -862,9 +1147,12 @@ export class NetSession {
       if (f.kind !== "degradation") continue;
       const factor = f.degradedCapacityFactor;
       if (!(factor > 0) || factor >= 1) continue; // no haircut (factor 1) or degenerate ⇒ skip.
-      const raw = out.get(f.satId) ?? 0;
-      out.set(f.satId, raw / factor); // scale the effective load up ⇒ effective capacity down.
-      touched = true;
+      for (const [pipe, raw] of load) {
+        const parsed = parsePipeKey(pipe);
+        if (parsed === null || parsed.satId !== f.satId) continue;
+        out.set(pipe, raw / factor); // effective load up ⇒ effective capacity down.
+        touched = true;
+      }
     }
     return touched ? out : load;
   }
@@ -898,7 +1186,7 @@ export class NetSession {
    * {@link surfacedShortfall} once it surfaces ≥1 shortfall (the act3b gate's layer-1 target), and
    * keep the report as a derived readout (the SYSTEM.LOG / shortfall lines / the predictability
    * seed). NOT folded — only the latched boolean folds. Pure read of the session snapshot. */
-  private diagnoseTrace(t: number, loadBySat: ReadonlyMap<string, number> | undefined): void {
+  private diagnoseTrace(t: number, loadByPipe: ReadonlyMap<string, number> | undefined): void {
     if (!this.faultsOn) return;
     const solves: ContractSolve[] = this.contractList.map((c) => ({
       contract: c,
@@ -908,7 +1196,8 @@ export class NetSession {
       solves,
       sats: this.satList,
       faults: [...this.activeFaults.values()],
-      loadBySat,
+      // The trace thinks in SATS (the fleet surface): hand it the per-sat aggregate view.
+      loadBySat: loadByPipe === undefined ? undefined : NetSession.satLoadView(loadByPipe),
       t,
     });
     this.lastTrace = report;
@@ -988,6 +1277,10 @@ export class NetSession {
     // authored arrival; it adds demand / flips a mask / enables a fault gen — never physics.
     this.emitCurrentBeat(t);
 
+    // (0b) THE LAUNCH-EVENT PIPELINE (R0, m1-redesign §2.2): deploy any pending batch
+    // members whose deploy instant arrived (a topology change), prune finished events.
+    this.processPendingLaunches(t);
+
     // (1) Expire stale offers via the SHARED helper (the SAME breach/offer convention as
     // m2; on a net contract there is no offer window, so this is a safe no-op here). Using
     // the imported helper — not a net/ copy — keeps ONE convention in the codebase.
@@ -1012,10 +1305,10 @@ export class NetSession {
     // (Pass A's one-tick lag, fully re-derivable across a restore — the MED desync fix), and bump
     // the congestion epoch when its quantized fingerprint changed (E3: a rising load ⇒ a re-solve
     // through the cache; a static load preserves it). The serve loop below is Pass B (the truth).
-    let loadBySat: ReadonlyMap<string, number> | undefined;
+    let loadByPipe: ReadonlyMap<string, number> | undefined;
     if (this.escalationOn) {
-      loadBySat = this.loadBySatFromState();
-      const fp = this.congestionFingerprint(loadBySat);
+      loadByPipe = this.loadByPipeFromState();
+      const fp = this.congestionFingerprint(loadByPipe);
       if (fp !== this.prevCongestionFingerprint) {
         this.congestionEpoch++;
         this.prevCongestionFingerprint = fp;
@@ -1031,22 +1324,28 @@ export class NetSession {
     // degraded sat congests sooner). The serve loop routes around the down sats + bites the haircut.
     this.rollAndApplyFaults(t, dtSeconds);
     const downSats = this.downSatIds(t);
-    const effLoad = this.faultsOn && loadBySat !== undefined
-      ? this.applyDegradationHaircut(loadBySat)
-      : loadBySat;
+    const effLoad = this.faultsOn && loadByPipe !== undefined
+      ? this.applyDegradationHaircut(loadByPipe)
+      : loadByPipe;
 
     // (2) Accrue revenue + advance ACTIVE contract state machines (Pass B — the truth this tick).
-    // One summed wallet add. Each contract's freshly-chosen bridging sat is recorded back into
-    // chosenSatByContract so NEXT step's aggregate reflects THIS step's routing.
+    // One summed wallet add (revenue − opex). Each contract's freshly-chosen serving PIPE is
+    // recorded back into chosenPipeByContract so NEXT step's aggregate reflects THIS routing.
     let netDelta = 0;
+    // THE PER-SAT OPEX DRAIN (m1-redesign §2.5): owning hardware costs €/s by bus tier —
+    // an idle fleet bleeds, so over-build reads in the ledger, not just in capex. DT-invariant
+    // (rate × dt summed into the same single wallet add as revenue).
+    for (const sat of this.satList) {
+      netDelta -= BUS_SPECS[sat.bus].opexPerSecond * dtSeconds;
+    }
     for (const c of this.contractList) {
       if (c.state !== "active") continue;
       const frac = this.servedFractionFor(eph, c, t, effLoad, downSats);
-      // Record the chosen bridging sat (path[1]) for the two-pass aggregation; clear it when the
-      // contract has no path this tick (so a dropped contract no longer loads a sat).
-      const chosen = this.lastSolve.get(c.id)?.path?.[1];
-      if (chosen !== undefined) this.chosenSatByContract.set(c.id, chosen);
-      else this.chosenSatByContract.delete(c.id);
+      // Record the chosen serving pipe for the two-pass aggregation; clear it when the
+      // contract has no path this tick (so a dropped contract no longer loads a pipe).
+      const chosen = this.lastSolve.get(c.id)?.pipe;
+      if (chosen !== undefined && chosen !== null) this.chosenPipeByContract.set(c.id, chosen);
+      else this.chosenPipeByContract.delete(c.id);
       // The AVAILABILITY clean-streak stamp (§3.3, the gate-hardening field): whenever an
       // availability-active contract feeds a 0 served-fraction (a breach reset — an instant gap
       // OR a rolling shortfall), the clean hand-off streak RESTARTS at this sim-time. The Act-2
@@ -1160,11 +1459,14 @@ export class NetSession {
       // [id, satId] pairs so loadBySat is a pure function of folded state across a restore.
       escalationOn: this.escalationOn ? 1 : 0,
       congestionEpoch: this.congestionEpoch,
-      chosenSatByContract: [...this.chosenSatByContract.entries()].sort((a, b) =>
+      chosenPipeByContract: [...this.chosenPipeByContract.entries()].sort((a, b) =>
         a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
       ),
       act3aReTameWitnessed: this.act3aReTameWitnessed ? 1 : 0,
-      nearBreachWitnessed: [...this.nearBreachWitnessed].sort(),
+      nearBreachWitnessed: [...this.nearBreachWitnessed.entries()].sort((a, b) =>
+        a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      ),
+      playerTopoActionS: this.lastPlayerTopoActionS,
       congestionFingerprint: this.prevCongestionFingerprint,
       // ACT-3b (C2) fault + trace fold state. activeFaults is captured SORTED by satId (by value)
       // so the fold never depends on Map insertion order; the script queue keeps order (the
@@ -1182,6 +1484,26 @@ export class NetSession {
       // by value so a snapshot never shares the live sample. Null until the Mars path first carries
       // / the cache breadcrumb is placed.
       marsSample: this.marsSample === null ? null : { ...this.marsSample },
+      // R0 (SD-45): beams + the launch pipeline + underburns — all by value, sorted for
+      // fold stability.
+      beamAssign: [...this.beamAssign.entries()].sort((a, b) =>
+        a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      ),
+      pendingLaunches: this.pendingLaunchList.map((ev) => ({
+        ...ev,
+        members: ev.members.map((m) => ({
+          ...m,
+          sat: {
+            ...m.sat,
+            orbit: { ...m.sat.orbit },
+            loadout: m.sat.loadout.map((a) => ({ ...a })),
+          },
+        })),
+      })),
+      underburnIntended: [...this.underburnIntended.entries()].sort((a, b) =>
+        a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      ),
+      launchCommits: this.launchCommits,
     };
   }
 
@@ -1215,11 +1537,12 @@ export class NetSession {
     // function of folded state across the restore boundary (restore-then-step == continuous-run).
     this.escalationOn = (s.escalationOn ?? 0) === 1;
     this.congestionEpoch = s.congestionEpoch ?? 0;
-    this.chosenSatByContract.clear();
-    for (const [id, satId] of s.chosenSatByContract ?? []) this.chosenSatByContract.set(id, satId);
+    this.chosenPipeByContract.clear();
+    for (const [id, pipe] of s.chosenPipeByContract ?? []) this.chosenPipeByContract.set(id, pipe);
     this.act3aReTameWitnessed = (s.act3aReTameWitnessed ?? 0) === 1;
     this.nearBreachWitnessed.clear();
-    for (const id of s.nearBreachWitnessed ?? []) this.nearBreachWitnessed.add(id);
+    for (const [id, dipAtS] of s.nearBreachWitnessed ?? []) this.nearBreachWitnessed.set(id, dipAtS);
+    this.lastPlayerTopoActionS = s.playerTopoActionS ?? null;
     this.prevCongestionFingerprint = s.congestionFingerprint ?? "";
     // ACT-3b (C2) fault + trace fold state. Nullish-coalesced so a pre-C2 snapshot restores to the
     // dormant defaults (faults off, empty maps/queue, no witness) — byte-identical to the Acts 1–3a
@@ -1239,6 +1562,23 @@ export class NetSession {
     // ACT-4 (D1) the Mars frontier teaser — the ONE folded slot. Nullish-coalesced so a pre-D1
     // snapshot restores to null (byte-identical to the Acts 1–3 fold); captured by value.
     this.marsSample = s.marsSample == null ? null : { ...s.marsSample };
+    // R0 (SD-45): beams + the launch pipeline + underburns. Nullish-coalesced for pre-R0 saves.
+    this.beamAssign.clear();
+    for (const [k, v] of s.beamAssign ?? []) this.beamAssign.set(k, v);
+    this.pendingLaunchList = (s.pendingLaunches ?? []).map((ev) => ({
+      ...ev,
+      members: ev.members.map((m) => ({
+        ...m,
+        sat: {
+          ...m.sat,
+          orbit: { ...m.sat.orbit },
+          loadout: m.sat.loadout.map((a) => ({ ...a })),
+        },
+      })),
+    }));
+    this.underburnIntended.clear();
+    for (const [k, v] of s.underburnIntended ?? []) this.underburnIntended.set(k, v);
+    this.launchCommits = s.launchCommits ?? 0;
     // The cached router paths are derived; the next step() rebuilds them on a full search
     // (the topology key for a restored roster differs from the empty initial state).
     this.routerStates.clear();

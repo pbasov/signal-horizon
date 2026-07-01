@@ -7,16 +7,19 @@ import {
   netAccept,
   netSetPrefer,
   netPlaceCache,
+  netAssignBeam,
+  netCircularize,
   KIND_NET_LAUNCH,
   KIND_NET_ACCEPT,
   KIND_NET_SET_PREFER,
   KIND_NET_PLACE_CACHE,
+  KIND_NET_ASSIGN_BEAM,
+  KIND_NET_CIRCULARIZE,
   type SimAction,
 } from "./action";
 import { loadEphemeris } from "./system-data";
 import { C_LIGHT, AU_M } from "./ephemeris";
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS as NET_BREACH_GRACE_SECONDS } from "./net/session";
-import { SimRng } from "./rng";
 import { applyNetAction } from "./net/apply-action";
 import {
   GEO_PARK,
@@ -25,16 +28,14 @@ import {
   resolveOrbit,
   A1_LEO_PERIOD_S,
   A1_GEO_PERIOD_S,
-  launchCost,
-  launchCostBaseForPreset,
-  rollNetLaunch,
-  NET_LAUNCH_FAILURE_CHANCE,
+  launchStackCost,
 } from "./net/world";
 import { SLA_AXIS_ORDINAL, type SlaAxis } from "./net/contract";
 import {
   ACT1_CONTRACT_ID,
   ACT2_CONTRACT_ID,
   ACT3A_CONTRACT_ID,
+  ACT3A_BACKHAUL_CONTRACT_ID,
   ACT2_ZERO_GAP_N,
   ACT2_SLA_AVAIL,
   NET_HANDOFF_CYCLE_S,
@@ -90,46 +91,40 @@ function buildEph() {
   return loadEphemeris();
 }
 
-/** Sim-time the golden replay runs to. Comfortably past the Act-1 LAUNCH+ACCEPT+gate AND the
- * full Act-2 arc: the second demand (REGION-1) is emitted on the act1 gate, the N=4 LEO
- * constellation is launched as a BATCH + accepted, and the act2 gate fires after the region is
- * held SERVED across ≥1 full hand-off cycle (NET_HANDOFF_CYCLE_S = 300 s). The act2 gate fires at
- * t≈323 s; 360 sim-seconds = 21 600 ticks runs comfortably past it (the cursor reaches act3a).
- * In ticks: t/DT. */
-const MAX_T_SECONDS = 360;
+/** Sim-time the golden replay runs to (the act1+act2 arc). R0 (SD-45): launches ride the
+ * countdown/ascent/deploy EVENT pipeline and the act2 constellation takes seeded attrition
+ * (2 no-seps + 1 underburn on this seed) needing a circularize + a fill batch — so the act2
+ * gate fires at t ≈ 661 s. 680 sim-seconds runs just past it (the cursor reaches act3a). */
+const MAX_T_SECONDS = 680;
 const MAX_TICK = Math.round(MAX_T_SECONDS / GOLDEN_DT);
 
 /** LAUNCH the default GEO PARK at this tick (the pre-seeded default that already works). */
 const TICK_LAUNCH = 600; // t = 10 sim-seconds.
-/** ACCEPT the Act-1 contract shortly after the launch — the parked GEO is already serving the
- * whole disc, so it earns from the first served step (the launch→cover→paid chain). */
-const TICK_ACCEPT = 1200; // t = 20 sim-seconds.
+/** ACCEPT the Act-1 contract AFTER the launch event deploys (~18 s pipeline) — accepting
+ * before FIRST SIGNAL bleeds the 2× penalty (R0 §2.5), so the canon signs at t = 24 s. */
+const TICK_ACCEPT = 1440; // t = 24 sim-seconds.
 
-/** ACT 2: LAUNCH the N=4 LEO_SWEEP constellation as ONE BATCH (the §3.4 launch-as-a-batch verb)
- * shortly after the act1 gate emits REGION-1 (at TICK_ACCEPT+1). count = ACT2_ZERO_GAP_N (the
- * measured zero-gap minimum), evenly m0-phased (phaseSpreadRad = 2π/count) so one sat rises as
- * another sets — the hand-off constellation. */
-const TICK_BATCH = 1300; // t ≈ 21.7 sim-seconds.
-/** ACT 2: ACCEPT REGION-1 (availability axis active+visible) just after the batch is up, so the
- * constellation holds it SERVED from the first active step (its rolling availability = 1.0). */
-const TICK_ACCEPT2 = 1400; // t ≈ 23.3 sim-seconds.
+/** ACT 2: LAUNCH the N=4 LEO_SWEEP constellation as ONE BATCH right as act2 opens. On this
+ * seed the batch takes attrition: members 1+2 NO-SEP (lost), member 3 UNDERBURNS — the
+ * constellation arrives HOLED (the launch-event drama is real). */
+const TICK_BATCH = 1441; // t ≈ 24.02 s (the tick the act1 gate fired + REGION-1 was offered).
+/** ACT 2: ACCEPT REGION-1 + CIRCULARIZE the underburned NET-SAT-4 once the batch deployed. */
+const TICK_ACCEPT2 = 3032; // t ≈ 50.5 s.
+/** ACT 2: the FILL batch — 4 more polar sats interleaved (+π/4) to close the attrition holes.
+ * Its sub-longitude compensates the spin between the two commits so the fill phases land
+ * interleaved with the survivors' plane. */
+const TICK_FILL = 20642; // t ≈ 344 s.
+const FILL_SUBLON_RAD =
+  LEO_SWEEP.subLonRad + Math.PI / 4 - ((2 * Math.PI) / 240) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
 
-/** The even in-plane mean-anomaly spread for the N=4 batch (= 2π / count) — the phasing that makes
- * the constellation hand off (the B2 batch wire term). */
+/** The even in-plane mean-anomaly spread for the N=4 batch (= 2π / count). */
 const ACT2_PHASE_SPREAD_RAD = TAU / ACT2_ZERO_GAP_N;
 
 /**
- * The recorded ACT-1 + ACT-2 action sequence (the M1 arrival arc through act2):
- *   ACT 1 — LAUNCH the default GEO PARK (radians + SI on the wire), ACCEPT the scenario-emitted
- *           equatorial REGION-0; the parked GEO serves it, it earns €, and the act1 gate fires
- *           (which deterministically emits REGION-1 inside the same step).
- *   ACT 2 — LAUNCH the N=4 LEO_SWEEP constellation as ONE BATCH (count = ACT2_ZERO_GAP_N, evenly
- *           m0-phased), then ACCEPT REGION-1 (availability axis active). The constellation holds
- *           REGION-1 SERVED across a full hand-off cycle and the act2 gate fires.
- *
- * The scenario engine OFFERS both contracts deterministically inside step (no action), so the log
- * is just the player's inputs — launch, accept, batch-launch, accept. `batchCount` parameterises
- * the act2 batch so a lone-LEO / over-build run reuses the same builder.
+ * The recorded ACT-1 + ACT-2 action sequence (the M1 arrival arc through act2). R0 (SD-45):
+ * the canon now includes the seeded-attrition RESPONSE — a circularize on the underburned
+ * member and an interleaved fill batch — because the launch event's partial-deploy drama is
+ * a real mechanic the player answers, not a scripted convenience.
  */
 function actLog(batchCount = ACT2_ZERO_GAP_N) {
   const sg = saveGame(NET_RNG_SEED, GOLDEN_DT, { game: "net", act: "act2" });
@@ -148,8 +143,7 @@ function actLog(batchCount = ACT2_ZERO_GAP_N) {
     ),
   );
   addAction(sg, netAccept(ACT1_CONTRACT_ID, TICK_ACCEPT));
-  // ACT 2 — the N=4 LEO_SWEEP constellation as ONE batch (the hand-off constellation), then accept
-  // the availability-axis REGION-1. The batch member i is m0-phased by i·(2π/count).
+  // ACT 2 — the N=4 LEO_SWEEP batch (attrition on this seed), accept, circularize, fill.
   addAction(
     sg,
     netLaunch(
@@ -165,61 +159,79 @@ function actLog(batchCount = ACT2_ZERO_GAP_N) {
     ),
   );
   addAction(sg, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
+  addAction(sg, netCircularize("NET-SAT-4", TICK_ACCEPT2));
+  addAction(
+    sg,
+    netLaunch(
+      {
+        presetId: LEO_SWEEP.id,
+        semiMajorM: LEO_SWEEP.semiMajorM,
+        incRad: LEO_SWEEP.incRad,
+        subLonRad: FILL_SUBLON_RAD,
+        count: 4,
+        phaseSpreadRad: ACT2_PHASE_SPREAD_RAD,
+      },
+      TICK_FILL,
+    ),
+  );
   return sg;
 }
 
-/** The pinned golden log: the full act1→act2 arc with the measured zero-gap N=4 batch. */
+/** The pinned golden log: the full act1→act2 arc with the attrition response. */
 function act2Log() {
   return actLog(ACT2_ZERO_GAP_N);
 }
 
-// ── ACT 3a (C1b): the escalation → oversubscription → re-tame arc (the re-pin driver) ──────────
+// ── ACT 3a (C1b): escalation → the shared-BROADCAST-pipe squeeze → re-tame ──────────────────────
 
 /** The DEG→RAD helper for the equatorial-LEO launches (act3a corridor). */
 const ACT3A_DEG_RAD = Math.PI / 180;
 
-/** ACT 3a: the player launches a short EQUATORIAL LEO (inc 0) for the latency corridor at this
- * tick (the parked GEO can't meet REGION-2's low latency SLA; a short LEO route does). */
-const TICK_EQ_LEO_1 = 19461; // shortly after the act2 gate fires (cursor reaches act3a ~t=323).
-/** ACT 3a: ACCEPT the REGION-2 corridor (latency axis active) just after its short path is up. */
-const TICK_ACCEPT_R2 = 19521;
-/** ACT 3a: the RELIEF BY EXCEPTION after escalation tips the shared link near-breach — a PARALLEL
- * equatorial LEO + a net_set_prefer on the latency-tolerant trunk REGION-0 (made bandwidth-share-
- * aware) so it YIELDS the short corridor path to the latency-critical REGION-2, splitting the
- * shared sat.
- *
- * P3 (the traffic-class re-pin): REGION-2 is now BANDWIDTH-class (§7.2, `prefer.bw` heavy), so the
- * corridor + the latency-tolerant REGION-0 trunk route DIFFERENTLY over the SAME equatorial sats —
- * demand-shape → topology-shape. The shared-link dip is DEEPER + cleaner under the class weights, so
- * the relief lands LATER (tick 27000 ≈ t=450) — after REGION-2's breach window has crossed the
- * near-breach threshold (a sustained ≥60 s dip), so the re-tame (the parallel LEO + the REGION-0
- * yield) is genuinely witnessed. */
-const TICK_RELIEF = 27000;
+/** ACT 3a: the corridor CONSTELLATION — 3 phased equatorial LEOs carrying ACCESS_S cards
+ * (R0/SD-45: a latency-active contract can never ride a BROADCAST floodlight; it needs
+ * POINTED spot beams, and one moving LEO cannot hold a low-latency SLA — three can). */
+const TICK_EQ_CORRIDOR = 39662; // the tick the act2 gate fired + act3a opened (t ≈ 661 s).
+/** ACT 3a: POINT each corridor sat's ACCESS beam at REGION-2 once the batch deployed. */
+const TICK_BEAMS = 41163; // t ≈ 686 s.
+/** ACT 3a: ACCEPT the corridor + the BACKHAUL (the two demands act3a offers). */
+const TICK_ACCEPT_R2 = 41223; // t ≈ 687 s.
+/** ACT 3a: the RELIEF — after the shared GEO BROADCAST pipe's asymmetric-peak squeeze dips
+ * REGION-0 near-breach (bandwidth-binding, ~t = 924 s), launch a parallel equatorial
+ * BROADCAST LEO; once it deploys, prefer-bw REGION-0 so the pair splits pipes durably. */
+const TICK_RELIEF = 55463; // t ≈ 924.4 s (the dip tick).
+const TICK_CIRC_RELIEF = 56303; // the relief LEO underburned on this seed — circularize it.
+const TICK_PREFER = 56784; // prefer-bw REGION-0 after the relief LEO is up.
 
 /**
- * The recorded ACT-1 → ACT-2 → ACT-3a action sequence (the M1 arrival arc THROUGH the act3a
- * re-tame — the C1b golden driver):
- *   ACT 1/2 — as {@link actLog} (GEO over REGION-0; the polar N=4 over REGION-1; both gates fire).
- *   ACT 3a — the act3a beat (emitted inside step when the act2 gate fires) enables ESCALATION +
- *            offers REGION-2 (the equatorial latency corridor). The player launches a short
- *            equatorial LEO + ACCEPTS REGION-2 (latency met — the GEO ceiling felt, a LEO passes);
- *            escalation grows the shared-link load past capacity (the bandwidth axis flips on),
- *            the corridor dips near-breach (binary bite — breachSecondsAccum accrues), and the
- *            player RE-ENGINEERS BY EXCEPTION (a parallel LEO + net_set_prefer on REGION-0) to
- *            split the shared sat ⇒ re-tamed ⇒ the act3a gate fires.
+ * The recorded ACT-1 → ACT-2 → ACT-3a action sequence (the C1b golden driver). R0 (SD-45):
+ * the squeeze is the shared GEO BROADCAST pipe (REGION-0 + BACKHAUL-3, phases ~103° apart,
+ * baselines grown by escalation until an asymmetric peak window cuts REGION-0's fair share
+ * below its 0.6 floor); the corridor teaches POINTING (3 ACCESS beams) + the GEO ceiling.
  */
 function act3aLog() {
   const sg = act2Log();
-  // The short equatorial LEO for the latency corridor (inc 0; LEO_SWEEP is polar).
+  // The corridor constellation: 3 phased equatorial ACCESS_S LEOs (pointed after deploy).
   addAction(
     sg,
     netLaunch(
-      { presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: 1.5 * ACT3A_DEG_RAD, count: 1 },
-      TICK_EQ_LEO_1,
+      {
+        presetId: "EQ_LEO",
+        semiMajorM: LEO_SWEEP.semiMajorM,
+        incRad: 0,
+        subLonRad: 1.5 * ACT3A_DEG_RAD,
+        count: 3,
+        phaseSpreadRad: TAU / 3,
+        loadout: ["ACCESS_S"],
+      },
+      TICK_EQ_CORRIDOR,
     ),
   );
+  addAction(sg, netAssignBeam("NET-SAT-9", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  addAction(sg, netAssignBeam("NET-SAT-10", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  addAction(sg, netAssignBeam("NET-SAT-11", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
   addAction(sg, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
-  // The relief: a parallel equatorial LEO + the prefer override on the latency-tolerant trunk.
+  addAction(sg, netAccept(ACT3A_BACKHAUL_CONTRACT_ID, TICK_ACCEPT_R2));
+  // The relief: a parallel equatorial BROADCAST LEO + (once deployed) the prefer override.
   addAction(
     sg,
     netLaunch(
@@ -227,64 +239,37 @@ function act3aLog() {
       TICK_RELIEF,
     ),
   );
-  addAction(sg, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_RELIEF));
+  addAction(sg, netCircularize("NET-SAT-12", TICK_CIRC_RELIEF));
+  addAction(sg, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_PREFER));
   return sg;
 }
 
-/** The act3a replay runs past the relief so the re-tame latches + the act3a gate fires (t ≈ 470 s,
- * 28 200 ticks). The act3a-SPECIFIC invariant sub-tests stop here (escalation grew, the gate is
- * state-gated, the congestion-fold restore) — the act3b faults that begin at t≈430 are dormant
- * enough at this horizon that those behaviours hold; the GOLDEN itself is pinned at the longer
- * act3b horizon below. */
-const MAX_T_ACT3A_SECONDS = 470;
+/** The act3a replay runs past the relief so the re-tame latches + the act3a gate fires
+ * (gate ≈ t = 938 s). */
+const MAX_T_ACT3A_SECONDS = 950;
 const MAX_TICK_ACT3A = Math.round(MAX_T_ACT3A_SECONDS / GOLDEN_DT);
 
 // ── ACT 3b (C2): faults — the chaos kitten, mild-first (the re-pin driver) ──────────────────────
 //
-// The act3b beat (emitted INSIDE step when the act3a gate fires, FENCED behind it) ENABLES the
-// seeded fault generator + seeds the MILD-FIRST scripted pair: a Degradation (self-recovers,
-// unwarned), THEN a Telegraphed failure (warning + countdown). The faults draw off the SAME seeded
-// SimRng the session already owns (the M2 launch-failure-roll pattern — NO new action, NO new
-// seed), so the whole spectrum folds + replays bit-stably. The action log is IDENTICAL to the
-// act3a arc (the faults are scenario-seeded, not player actions); only the HORIZON extends so both
-// scripted faults play out (the Degradation fires ~t=430 + self-recovers by ~t=460 ⇒ the 3b gate
-// fires; the Telegraphed then begins ~t=460 + drops by ~t=505). We run to t=520 so the whole arc
-// is in the fold + the network has weathered both.
+// Identical action log to act3a (the faults are scenario-seeded, not player actions); only the
+// HORIZON extends so the scripted Degradation plays out and the 3b gate fires (~t = 968 s).
 const act3bLog = act3aLog;
 
-/** The act3b replay runs past BOTH scripted faults (the Degradation self-recovers ~t=460 ⇒ the 3b
- * gate fires; the Telegraphed countdown begins ~t=460 + drops ~t=505): t = 520 s, 31 200 ticks. */
-const MAX_T_ACT3B_SECONDS = 520;
+/** The act3b replay runs past the 3b gate (~t = 968 s). */
+const MAX_T_ACT3B_SECONDS = 985;
 const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
 
-// ── ACT 4 (D1): the Mars frontier teaser — "distance changes everything" (the re-pin driver) ────
-//
-// The act3b gate fires ~t=460 ⇒ the cursor reaches act4 (the final beat) ⇒ act4.emit offers the ONE
-// Mars contract (MARS-1, bodyId "mars", connectivity-only). The player then does what they ALWAYS
-// do — LAUNCHES toward Mars (the SAME net_launch, the MARS_RELAY preset) + ACCEPTS the Mars
-// contract. The FIRST SIGNAL CRAWLS: the router's solveMarsLeg injects the REAL Earth↔Mars light
-// delay (~15.4 min one-way at the J2000 epoch) into latencyS — the Earth real-time-tune playbook
-// physically BREAKS. Data arrives OLD (the sample freezes one-way old on arrival — "as of Nm ago").
-// The player places the ONE cache breadcrumb (net_place_cache) — "data closer helps", felt by sight.
-// The cursor STOPS on act4 (the gate is false forever — a read, not a gate; "to be continued").
+// ── ACT 4 (D1): the Mars frontier teaser — "distance changes everything" ────────────────────────
 
-/** ACT 4: LAUNCH the deep-space MARS RELAY (the SAME net_launch, the Mars preset) just after act4
- * opens (~t=460). Connectivity on the Mars leg is PRESENCE-based, so this one relay bridges it. */
-const TICK_MARS_RELAY = 28800; // t = 480 s — just after the act3b gate (~t=460) opens act4.
-/** ACT 4: ACCEPT the Mars contract once the relay is up — the path carries, the signal CRAWLS, and
- * the Mars sample freezes one-way old on arrival (the "as of Nm ago" / freshness-by-sight stamp). */
-const TICK_MARS_ACCEPT = 28860; // t = 481 s.
-/** ACT 4: PLACE the ONE cache breadcrumb — "data closer helps" (the freshness readout jumps up by
- * sight). A single placeable, NOT the cache economy (§8 fenced). */
-const TICK_PLACE_CACHE = 30000; // t = 500 s.
+/** ACT 4: LAUNCH the deep-space MARS RELAY just after act4 opens (~t = 968 s). */
+const TICK_MARS_RELAY = 58104; // t ≈ 968.4 s — the tick the act3b gate fired.
+/** ACT 4: ACCEPT the Mars contract once the relay deployed (presence-based bridge). */
+const TICK_MARS_ACCEPT = 59304; // t ≈ 988.4 s.
+/** ACT 4: PLACE the ONE cache breadcrumb — "data closer helps". */
+const TICK_PLACE_CACHE = 60504; // t ≈ 1008.4 s.
 
 /**
- * The recorded ACT-1 → … → ACT-4 action sequence (the M1 arrival arc THROUGH the Mars teaser — the
- * D1 golden driver). Identical to {@link act3bLog} through act3b, then the ACT-4 player inputs:
- *   ACT 4 — the act4 beat (emitted inside step when the act3b gate fires) offers the Mars contract.
- *           The player LAUNCHES the MARS RELAY (the SAME net_launch verb), ACCEPTS the Mars contract
- *           (the signal crawls at the real Earth↔Mars light delay; the sample freezes old on
- *           arrival), and PLACES the one cache breadcrumb. The cursor STOPS on act4 (gate false).
+ * The recorded ACT-1 → … → ACT-4 action sequence (the D1 golden driver).
  */
 function act4Log() {
   const sg = act3bLog();
@@ -300,9 +285,8 @@ function act4Log() {
   return sg;
 }
 
-/** The act4 replay runs past the relay launch + the Mars accept + the cache placement so the Mars
- * sample freezes (on carry) + is re-captured (on the breadcrumb): t = 560 s, 33 600 ticks. */
-const MAX_T_ACT4_SECONDS = 560;
+/** The act4 replay runs past the relay + accept + breadcrumb: t = 1090 s. */
+const MAX_T_ACT4_SECONDS = 1090;
 const MAX_TICK_ACT4 = Math.round(MAX_T_ACT4_SECONDS / GOLDEN_DT);
 
 /** Replay an action log through a NetSession to a given max tick (the act3a arc needs a longer
@@ -330,6 +314,8 @@ function replayTo(sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResul
 /** The net action kinds this replay routes (the rest are ignored, like the m2 driver). */
 function isNetKind(kind: string): boolean {
   return (
+    kind === KIND_NET_ASSIGN_BEAM ||
+    kind === KIND_NET_CIRCULARIZE ||
     kind === KIND_NET_LAUNCH ||
     kind === KIND_NET_ACCEPT ||
     kind === KIND_NET_SET_PREFER ||
@@ -411,13 +397,17 @@ function netStateHash(s: NetSession): bigint {
   acc = mixInt(acc, BigInt(snap.escalationOn));
   acc = mixInt(acc, BigInt(snap.congestionEpoch));
   acc = mixInt(acc, BigInt(snap.act3aReTameWitnessed));
-  acc = mixInt(acc, BigInt(snap.chosenSatByContract.length));
-  for (const [cid, satId] of snap.chosenSatByContract) {
+  acc = mixInt(acc, BigInt(snap.chosenPipeByContract.length));
+  for (const [cid, pipe] of snap.chosenPipeByContract) {
     acc = mixString(acc, cid);
-    acc = mixString(acc, satId);
+    acc = mixString(acc, pipe);
   }
   acc = mixInt(acc, BigInt(snap.nearBreachWitnessed.length));
-  for (const id of snap.nearBreachWitnessed) acc = mixString(acc, id);
+  for (const [id, dipAtS] of snap.nearBreachWitnessed) {
+    acc = mixString(acc, id);
+    acc = mixFloat(acc, dipAtS);
+  }
+  acc = mixFloat(acc, snap.playerTopoActionS ?? -1);
   acc = mixString(acc, snap.congestionFingerprint);
   // The ROSTER: each sat's full SatOrbit f64s + loadout eirps.
   acc = mixInt(acc, BigInt(snap.roster.length));
@@ -625,7 +615,7 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //       holds. The two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n)
 //       are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 4638365066733440034n;
+const NET_REPLAY_GOLDEN = 12975807967364188200n; // R0 (SD-45): cards+beams+events+economy re-pin.
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -702,7 +692,10 @@ describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO +
     expect(c!.lastServedFraction).toBe(1.0);
     expect(c!.servedSecondsAccum).toBeGreaterThan(0);
     expect(c!.earnedEur).toBeGreaterThan(0);
-    expect(r.balance).toBeGreaterThan(0);
+    // R0 (SD-45): the economy is capex-heavy by design (no single contract pays for its own
+    // provisioning) — the wallet is BELOW opening at this horizon, not positive. Overspending
+    // is allowed; the assertion is that capex was genuinely charged.
+    expect(r.balance).toBeLessThan(NET_OPENING_BALANCE);
     // THE GATE FIRED at a DETERMINISTIC tick: the cursor advanced past act1, and the FIRST gate
     // tick is the first served+paid step AFTER accept. The accept lands post-step on TICK_ACCEPT
     // (step ran first, contract still offered), so the first active+served+paid step is the NEXT
@@ -766,11 +759,11 @@ describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO +
   it("OVER-BUILD still completes act2 AND the surplus is logged: a count=6 batch fires the gate and folds wasteLoggedSats = (GEO + 6 LEOs) − zeroGapN", () => {
     const over = replay(actLog(6));
     expect(over.session.cursor).toBe(2); // act2 still completes (coverage-held is the predicate).
-    // 7 sats (1 GEO + 6 LEOs) − ACT2_ZERO_GAP_N (4) = 3 surplus, silently logged for Act 3.
-    expect(over.session.snapshot().wasteLoggedSats).toBe(7 - ACT2_ZERO_GAP_N);
-    // The pinned N=4 run logs exactly (1 GEO + 4 LEOs) − 4 = 1 surplus (the GEO).
+    // R0 (SD-45): waste = live sats at the gate − zeroGapN, WITH the seeded launch attrition
+    // and the canonical fill batch in play (empirically pinned on NET_RNG_SEED).
+    expect(over.session.snapshot().wasteLoggedSats).toBe(5);
     const pinned = replay(act2Log());
-    expect(pinned.session.snapshot().wasteLoggedSats).toBe(5 - ACT2_ZERO_GAP_N);
+    expect(pinned.session.snapshot().wasteLoggedSats).toBe(3);
   }, 30000); // two full replays (count=6 over-build + the pinned N=4) — generous headroom.
 
   it("the act1 GATE does NOT fire before the contract is served+paid (state-gated, not clock-timed)", () => {
@@ -969,11 +962,12 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     const r = replayTo(act3aLog(), TICK_RELIEF - 1);
     expect(r.session.cursor).toBe(2); // still on act3a — the cycle is not yet demonstrated.
     expect(r.session.escalationReTamed()).toBe(false);
-    // The dip is REAL: the corridor accrued breach past the near-breach threshold under congestion
-    // (binary bandwidth bite — proving breachSecondsAccum actually accrues, the HIGH-1 fix).
-    const r2 = r.session.contracts.find((x) => x.id === ACT3A_CONTRACT_ID)!;
-    expect(r2.activeAxes.has("bandwidth")).toBe(true);
-    expect(r2.breachSecondsAccum).toBeGreaterThan(0);
+    // R0 (SD-45): the squeeze subject is REGION-0 (sharing the GEO BROADCAST pipe with the
+    // backhaul). At the relief tick − 1 its bandwidth axis is active and it is accruing
+    // breach inside the asymmetric-peak window (the fair-share bite is real).
+    const r0 = r.session.contracts.find((x) => x.id === ACT1_CONTRACT_ID)!;
+    expect(r0.activeAxes.has("bandwidth")).toBe(true);
+    expect(r0.breachSecondsAccum).toBeGreaterThan(0);
   }, 60000);
 
   it("RESTORE-REPLAY for the congestion + FAULT fold: restore-then-step == continuous-run (loadBySat re-derived from the folded chosen-sat map — the MED desync fix; the active faults + the mild-first script queue carry across the restore boundary — the C2 fault fold)", () => {
@@ -993,15 +987,15 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
         byTick.set(a.atTick, list);
       }
     }
-    const SPLIT = 28000; // mid-act3b (P3 timing): escalation on, REGION-2 routing live, the Degradation active.
+    const SPLIT = 57000; // mid-act3b (R0 timing): escalation on, beams live, the Degradation active (~t=950).
     const cont = new NetSession();
     for (let tick = 0; tick <= SPLIT; tick++) {
       cont.step(eph, tick * GOLDEN_DT, GOLDEN_DT);
       const list = byTick.get(tick);
       if (list !== undefined) for (const a of list) applyNetAction(eph, cont, a, GOLDEN_DT);
     }
-    // The split lands while a fault is active (the Degradation fired ~t=451) — so the restore must
-    // carry the fault fold, not just the congestion fold.
+    // The split lands while a fault is active (the Degradation fires in the 3b window ~t=940-968)
+    // — so the restore must carry the fault fold, not just the congestion fold.
     expect(cont.faultsEnabled).toBe(true);
     expect(cont.faults.length).toBeGreaterThan(0);
     // Snapshot at SPLIT, restore into a fresh session (the congestion fold + chosen-sat map + the
@@ -1144,7 +1138,7 @@ describe("SD-40 C2 — act3b faults: mild-first, fenced behind act3a, weathered,
     // Stop mid-Degradation (P3 timing: act3b emits ~t=450 when the act3a gate fires, the Degradation
     // fires ~t=451 + self-recovers ~t=480; tick 28000 ≈ t=467 is inside it): the player has NOT yet
     // weathered it (the fault has not resolved) ⇒ the cursor is still on act3b.
-    const r = replayTo(act3bLog(), 28000);
+    const r = replayTo(act3bLog(), 57500); // mid-Degradation (fires @56304, resolves @58104).
     expect(r.session.faultsEnabled).toBe(true);
     expect(r.session.faults.length).toBeGreaterThan(0); // a fault is active (mid-lifetime).
     expect(r.session.weatheredFault()).toBe(false); // not yet weathered (the fault has not resolved).
@@ -1331,13 +1325,10 @@ describe("SD-40 D1 — act4 Mars teaser: light-delay (deterministic minutes), fr
 // the cost) but the canonical golden log's launches were arranged to all CLEAR the roll at the seed,
 // so the acts still gate. These pins guard the economy + the deterministic, replay-safe failure.
 // ---------------------------------------------------------------------------
-describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure risk roll (deterministic, replay-safe)", () => {
+describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-pipeline outcome rolls", () => {
   const dt = GOLDEN_DT;
 
-  it("a successful launch DEBITS the wallet by exactly the previewed cost (the planner cost is now CHARGED, not just shown)", () => {
-    // A fresh session, no contracts: launch the parked GEO and assert the balance dropped by EXACTLY
-    // the cost the planner previews (launchCost over the resolved base + altitude term). The first
-    // roll at NET_RNG_SEED clears the 5% chance (verified), so the GEO reaches orbit.
+  it("a launch DEBITS the wallet by exactly the previewed STACK cost (vehicle + hardware), and the sat deploys via the event pipeline", () => {
     const eph = buildEph();
     const s = new NetSession();
     const before = s.balance;
@@ -1348,14 +1339,17 @@ describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure 
     );
     const res = applyNetAction(eph, s, action, dt)!;
     expect(res.kind).toBe("sats_launched");
-    // The charged cost equals the planner's previewed cost: launchCost(base-resolved-from-preset).
-    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
+    // R0 (SD-45): cost = launchStackCost(bus, cards, a, count) — one vehicle + N × hardware.
+    const expectedCost = launchStackCost("smallsat", [], GEO_PARK.semiMajorM, 1);
     expect(res.costEur).toBeCloseTo(expectedCost, 9);
-    expect(before - s.balance).toBeCloseTo(expectedCost, 9); // the WALLET actually dropped by the cost.
-    expect(s.sats.length).toBe(1); // the sat reached orbit.
+    expect(before - s.balance).toBeCloseTo(expectedCost, 9); // the WALLET actually dropped.
+    // The sat rides the countdown/ascent/deploy pipeline — in orbit only after ~18 s.
+    expect(s.sats.length).toBe(0);
+    for (let tick = 1; tick <= Math.ceil(22 / dt); tick++) s.step(eph, tick * dt, dt);
+    expect(s.sats.length).toBe(1);
   });
 
-  it("a BATCH launch debits count× the per-member cost, charged win or lose (the §3.5 'you pay the provider')", () => {
+  it("a BATCH launch debits ONE vehicle + count× hardware (batching rewarded), charged win or lose", () => {
     const eph = buildEph();
     const s = new NetSession();
     const before = s.balance;
@@ -1372,87 +1366,109 @@ describe("P0b — launches DEBIT the wallet (§3.5) + a flat per-launch failure 
       0,
     );
     const res = applyNetAction(eph, s, action, dt)!;
-    const perMember = launchCost({ semiMajorM: LEO_SWEEP.semiMajorM, costBaseEur: launchCostBaseForPreset(LEO_SWEEP.id) });
-    // EVERY member is charged (win or lose), so the debit is count× the per-member cost regardless of
-    // how many survived the roll; here the seed clears all four so the roster grows by count too.
-    expect(res.costEur).toBeCloseTo(perMember * count, 9);
-    expect(before - s.balance).toBeCloseTo(perMember * count, 9);
+    const expectedCost = launchStackCost("smallsat", [], LEO_SWEEP.semiMajorM, count);
+    expect(res.costEur).toBeCloseTo(expectedCost, 9);
+    expect(before - s.balance).toBeCloseTo(expectedCost, 9);
+    // Act 1 (cursor 0) forces every outcome to success: all `count` members deploy.
+    for (let tick = 1; tick <= Math.ceil(30 / dt); tick++) s.step(eph, tick * dt, dt);
     expect(s.sats.length).toBe(count);
   });
 
-  it("a launch CAN FAIL deterministically off the seed: a session whose next roll is below the failure chance loses the sat (but is still charged), and the FAILURE is reproducible", () => {
-    // Find a seed whose FIRST failure roll lands BELOW the 5% chance (a failed launch) — deterministic
-    // off the splitmix64 stream, so the same seed always fails identically (replay-safe).
-    let failSeed: bigint | null = null;
-    for (let k = 1n; k < 200n; k++) {
-      if (!rollNetLaunch(new SimRng(k)).ok) { failSeed = k; break; }
-    }
-    expect(failSeed).not.toBeNull();
-    // Confirm the roll is genuinely below the chance (a real failure, not a fluke of the search).
-    expect(rollNetLaunch(new SimRng(failSeed!)).roll).toBeLessThan(NET_LAUNCH_FAILURE_CHANCE);
-
-    // Drive a real launch on a session seeded so the FIRST launch fails: the wallet is still charged
-    // (you pay the provider win or lose), but NO sat reaches orbit and the monotonic id is NOT consumed.
+  it("a COMSAT with cards prices bus+cards into the stack and carries per-antenna capacity", () => {
     const eph = buildEph();
-    const s = new NetSession(NET_OPENING_BALANCE, failSeed!);
-    // ACT 1 (scenarioCursor 0) deliberately SUPPRESSES the launch-failure roll (the gentle "place one
-    // thing works" cold open, m1.md §IV). To exercise the FAILURE path, ARM failures by advancing the
-    // cursor past act1 via a snapshot/restore that sets scenarioCursor while PRESERVING the rng state
-    // (so the first roll is still the fail roll). From Act 2 on, the §3.5 flat failure chance applies.
-    s.restore({ ...s.snapshot(), scenarioCursor: 1 });
+    const s = new NetSession();
     const before = s.balance;
     const action = netLaunch(
-      { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
+      {
+        presetId: GEO_PARK.id,
+        semiMajorM: GEO_PARK.semiMajorM,
+        incRad: GEO_PARK.incRad,
+        subLonRad: GEO_PARK.subLonRad,
+        count: 1,
+        bus: "comsat",
+        loadout: ["ACCESS_L", "GATEWAY"],
+      },
       0,
     );
     const res = applyNetAction(eph, s, action, dt)!;
-    expect(res.kind).toBe("launch_failed"); // the whole launch failed (the only member lost the roll).
-    expect(res.satIds).toEqual([]); // nothing reached orbit.
-    expect(res.failedCount).toBe(1);
-    expect(s.sats.length).toBe(0); // the sat was LOST.
-    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
-    expect(before - s.balance).toBeCloseTo(expectedCost, 9); // charged anyway (the §3.5 minimum).
-    // The id was NOT consumed (a failed launch leaves the monotonic sequence stable): the NEXT
-    // (successful) launch takes NET-SAT-0, proving the failure did not burn an id. (Arm failures
-    // past act1 here too, else the gentle Act-1 cold open would force this launch to succeed.)
-    const s2 = new NetSession(NET_OPENING_BALANCE, failSeed!);
-    s2.restore({ ...s2.snapshot(), scenarioCursor: 1 });
-    applyNetAction(eph, s2, action, dt); // fails, consumes one roll, no id.
-    expect(s2.nextSatId()).toBe("NET-SAT-0");
-  });
-
-  it("ACT 1 SUPPRESSES the launch-failure roll: a fail-seed launch on the FIRST beat (scenarioCursor 0) still reaches orbit — the gentle 'place one thing works' cold open (m1.md §IV) — but is STILL CHARGED", () => {
-    // The same fail-seed search as above: a seed whose first roll lands below the 5% chance.
-    let failSeed: bigint | null = null;
-    for (let k = 1n; k < 200n; k++) {
-      if (!rollNetLaunch(new SimRng(k)).ok) { failSeed = k; break; }
-    }
-    expect(failSeed).not.toBeNull();
-    const eph = buildEph();
-    // Fresh session ⇒ scenarioCursor 0 ⇒ ACT 1 ⇒ failures disarmed: the fail roll is OVERRIDDEN.
-    const s = new NetSession(NET_OPENING_BALANCE, failSeed!);
-    const before = s.balance;
-    const action = netLaunch(
-      { presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 },
-      0,
-    );
-    const res = applyNetAction(eph, s, action, dt)!;
-    expect(res.kind).toBe("sats_launched"); // forced success in Act 1 (the gentle opener).
-    expect(s.sats.length).toBe(1); // the sat reached orbit despite the fail-seed.
-    // The roll was STILL DRAWN (only the outcome overridden), so the wallet is STILL charged.
-    const expectedCost = launchCost({ semiMajorM: GEO_PARK.semiMajorM, costBaseEur: launchCostBaseForPreset(GEO_PARK.id) });
+    expect(res.kind).toBe("sats_launched");
+    const expectedCost = launchStackCost("comsat", ["ACCESS_L", "GATEWAY"], GEO_PARK.semiMajorM, 1);
     expect(before - s.balance).toBeCloseTo(expectedCost, 9);
+    for (let tick = 1; tick <= Math.ceil(22 / dt); tick++) s.step(eph, tick * dt, dt);
+    expect(s.sats.length).toBe(1);
+    const sat = s.sats[0];
+    expect(sat.bus).toBe("comsat");
+    expect(sat.loadout.map((a) => a.cardId)).toEqual(["ACCESS_L", "GATEWAY"]);
+    expect(sat.loadout[0].capacityUnits).toBe(2.4);
+    expect(sat.loadout[1].capacityUnits).toBe(4.0);
   });
 
-  it("EVERY canonical-log launch CLEARS the 5% roll at NET_RNG_SEED (so the scripted Act-1→Act-4 arc still gates deterministically)", () => {
-    // Replay the full canonical log: if any scripted launch had failed the roll, the roster would be
-    // short (a missing GEO/LEO/relay) and the gates would not all fire. Assert the full roster is
-    // intact (1 GEO + N=4 LEO + 2 act3a corridor LEOs + 1 Mars relay = 8 sats) and the cursor reached
-    // act4 — i.e. NO scripted launch was lost to the risk roll.
+  it("an over-stuffed loadout is REJECTED with the validation problem (no charge, no event)", () => {
+    const eph = buildEph();
+    const s = new NetSession();
+    const before = s.balance;
+    const action = netLaunch(
+      {
+        presetId: GEO_PARK.id,
+        semiMajorM: GEO_PARK.semiMajorM,
+        incRad: GEO_PARK.incRad,
+        subLonRad: GEO_PARK.subLonRad,
+        count: 1,
+        loadout: ["ACCESS_L", "GATEWAY"], // 2 G cards on a 1-G smallsat.
+      },
+      0,
+    );
+    const res = applyNetAction(eph, s, action, dt)!;
+    expect(res.kind).toBe("rejected");
+    expect(res.problem).toContain("G slot");
+    expect(s.balance).toBe(before);
+    expect(s.launchEvents.length).toBe(0);
+  });
+
+  it("outcome rolls are DETERMINISTIC off the seed and FORCED to success while Act 1 (cursor 0)", () => {
+    // Find a seed whose first batch takes attrition when armed (cursor > 0).
+    const eph = buildEph();
+    const action = netLaunch(
+      { presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: 4, phaseSpreadRad: TAU / 4 },
+      0,
+    );
+    let attritionSeed: bigint | null = null;
+    for (let k = 1n; k < 400n; k++) {
+      const probe = new NetSession(NET_OPENING_BALANCE, k);
+      probe.restore({ ...probe.snapshot(), scenarioCursor: 1 }); // arm failures, preserve rng.
+      const r = applyNetAction(eph, probe, action, dt)!;
+      if ((r.failedCount ?? 0) > 0 || r.kind === "launch_failed") { attritionSeed = k; break; }
+    }
+    expect(attritionSeed).not.toBeNull();
+    // The SAME seed reproduces the SAME outcome (replay-safe)…
+    const a = new NetSession(NET_OPENING_BALANCE, attritionSeed!);
+    a.restore({ ...a.snapshot(), scenarioCursor: 1 });
+    const b = new NetSession(NET_OPENING_BALANCE, attritionSeed!);
+    b.restore({ ...b.snapshot(), scenarioCursor: 1 });
+    const ra = applyNetAction(eph, a, action, dt)!;
+    const rb = applyNetAction(eph, b, action, dt)!;
+    expect(ra.kind).toBe(rb.kind);
+    expect(ra.failedCount).toBe(rb.failedCount);
+    expect(ra.satIds).toEqual(rb.satIds);
+    // …and the SAME seed at cursor 0 (Act 1) is FORCED clean: every member deploys.
+    const gentle = new NetSession(NET_OPENING_BALANCE, attritionSeed!);
+    const rg = applyNetAction(eph, gentle, action, dt)!;
+    expect(rg.kind).toBe("sats_launched");
+    expect(rg.failedCount).toBe(0);
+  });
+
+  it("the CANONICAL log's roster at act4: attrition happened, the responses answered it, the relay flies", () => {
+    // R0 (SD-45): the canonical arc TAKES seeded attrition (2 polar no-seps + underburns) and
+    // answers it (circularize + a fill batch) — the roster at act4 is the surviving fleet:
+    // 1 GEO + 2 first-batch polars + 4 fill polars + 3 corridor ACCESS LEOs + 1 relief LEO
+    // + 1 Mars relay = 12, and the cursor reached + stopped on act4.
     const r = replayTo(act4Log(), MAX_TICK_ACT4);
-    expect(r.session.sats.length).toBe(1 + ACT2_ZERO_GAP_N + 2 + 1);
-    expect(r.session.cursor).toBe(4); // all of act1..act3b gated; the cursor reached + stopped on act4.
-    // The MARS RELAY specifically reached orbit (its presence bridges the Mars leg — the act4 win).
+    expect(r.session.sats.length).toBe(12);
+    expect(r.session.cursor).toBe(4);
     expect(r.session.sats.some((sat) => sat.id.startsWith("MARS-RELAY"))).toBe(true);
+    // The pointing state survived the arc: all three corridor beams still point at REGION-2.
+    expect(r.session.beams.get("NET-SAT-9:0")).toBe(ACT3A_CONTRACT_ID);
+    expect(r.session.beams.get("NET-SAT-10:0")).toBe(ACT3A_CONTRACT_ID);
+    expect(r.session.beams.get("NET-SAT-11:0")).toBe(ACT3A_CONTRACT_ID);
   }, 60000);
 });

@@ -169,6 +169,41 @@ export const NET_ACT3A_CORRIDOR_REGION: Region = {
   bodyId: "earth",
 };
 
+// --- ACT 3a: the SHARED-PIPE backhaul (R0/SD-45 — the squeeze under the pipe model) ---
+
+/** The Act-3a BACKHAUL contract id — the second latency-TOLERANT demand that SHARES the GEO's
+ * BROADCAST pipe with REGION-0 (under the R0 pipe model, cross-contract sharing lives on
+ * BROADCAST pipes: a floodlight carries every latency-tolerant contract in view). The id is
+ * chosen for its diurnal PHASE (~103° from REGION-0's — loadPhaseForId hash), so their peaks
+ * are genuinely non-coincident and the fair-share squeeze opens ASYMMETRIC windows. */
+export const ACT3A_BACKHAUL_CONTRACT_ID = "BACKHAUL-3";
+
+/** Longitude of the backhaul region — west of REGION-0, inside the parked GEO's footprint,
+ * reachable from GROUND-0. 6° W. */
+export const NET_ACT3A_BACKHAUL_LON_RAD = -6 * (Math.PI / 180);
+
+/** The backhaul's starting offered load — small, so the shared GEO pipe starts comfortable
+ * and the squeeze is ESCALATION-DRIVEN (both baselines grow toward the ceiling; only then do
+ * the asymmetric peak windows cut REGION-0's fair share below its floor). TUNABLE. */
+export const NET_ACT3A_BACKHAUL_LOAD = 0.4;
+
+/** The backhaul's committed bandwidth floor — low (it is the elastic bulk traffic; REGION-0's
+ * 0.6 floor is the one the squeeze bites). TUNABLE. */
+export const NET_ACT3A_BACKHAUL_SLA_BW = 0.3;
+
+/** REGION-3 — the COASTAL BACKHAUL region (lat 0, lon 6° W): a latency-tolerant bulk demand
+ * INSIDE the parked GEO's footprint, sharing its BROADCAST pipe with REGION-0. The §4.3
+ * oversubscription tension under the pipe model: two tolerant contracts on ONE floodlight
+ * pipe, peaks non-coincident — share cleverly until growth makes the windows bite. */
+export const NET_ACT3A_BACKHAUL_REGION: Region = {
+  id: ACT3A_BACKHAUL_CONTRACT_ID,
+  label: "coastal backhaul",
+  latRad: 0,
+  lonRad: NET_ACT3A_BACKHAUL_LON_RAD,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "earth",
+};
+
 // --- the authored arrival sequence ------------------------------------------------
 
 /**
@@ -332,6 +367,20 @@ const ACT3A: Beat = {
         // LEO. So REGION-2 and REGION-0 — the SAME two equatorial sats — route DIFFERENTLY (REGION-0
         // latency-class clings to the short hop; REGION-2 bandwidth-class abandons the congested one):
         // demand-shape → topology-shape, the §7.2 thesis, now LIVE instead of inert.
+        trafficClass: "bandwidth",
+      }),
+    );
+    // THE SHARED-PIPE SQUEEZE (R0/SD-45): the second latency-TOLERANT demand that rides the
+    // SAME GEO BROADCAST pipe as REGION-0. Under the pipe model a latency-active corridor can
+    // never share a floodlight, so the §4.3 oversubscription tension lives HERE: two tolerant
+    // contracts on one 1.5u pipe, phases ~103° apart, baselines growing under escalation —
+    // until an asymmetric peak window cuts REGION-0's fair share below its 0.6 floor.
+    session.addContract(
+      offerNetContract(ACT3A_BACKHAUL_CONTRACT_ID, NET_ACT3A_BACKHAUL_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity"]),
+        offeredLoad: NET_ACT3A_BACKHAUL_LOAD,
+        slaBandwidth: NET_ACT3A_BACKHAUL_SLA_BW,
+        payPerSecond: 1.2,
         trafficClass: "bandwidth",
       }),
     );

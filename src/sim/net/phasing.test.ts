@@ -195,6 +195,14 @@ describe("B2 batch launch — count>1 resolves N distinct phased orbits; count=1
     return new NetSession(undefined, undefined, [NET_ACT1_GROUND], []);
   }
 
+  /** R0: launches ride the countdown/ascent/deploy pipeline — step the session past the
+   * last member's deploy instant so the batch lands in the roster. */
+  function stepPastDeploy(session: NetSession, fromTick: number, members = 4): number {
+    const untilTick = fromTick + Math.ceil((22 + members * 2) / DT);
+    for (let tick = fromTick + 1; tick <= untilTick; tick++) session.step(eph, tick * DT, DT);
+    return untilTick;
+  }
+
   it("a batch (count=4, phaseSpreadRad=2π/4) launches 4 sats with DISTINCT, evenly-spaced m0", () => {
     const session = freshSession();
     const atTick = 40;
@@ -205,6 +213,7 @@ describe("B2 batch launch — count>1 resolves N distinct phased orbits; count=1
     const res = applyNetAction(eph, session, action, DT);
     expect(res?.kind).toBe("sats_launched");
     expect(res?.satIds?.length).toBe(4);
+    stepPastDeploy(session, atTick, 4); // R0: the batch deploys over the event pipeline.
     expect(session.sats.length).toBe(4);
     // The base orbit at the commit epoch (member 0), then each member is +i·spread in m0.
     const base = resolveOrbit(LEO_SWEEP, atTick * DT);
@@ -231,6 +240,7 @@ describe("B2 batch launch — count>1 resolves N distinct phased orbits; count=1
     // The default carries no phaseSpreadRad on the wire — the Act-1 dict shape is unchanged.
     expect(action.payload.phaseSpreadRad).toBeUndefined();
     applyNetAction(eph, session, action, DT);
+    stepPastDeploy(session, atTick, 1); // R0: the sat deploys over the event pipeline.
     expect(session.sats.length).toBe(1);
     // The committed orbit is EXACTLY the pre-Act-2 resolveOrbit (no phase term at all).
     const expected = resolveOrbit(GEO_PARK_PRESET.draft, atTick * DT);
@@ -245,6 +255,7 @@ describe("B2 batch launch — count>1 resolves N distinct phased orbits; count=1
       atTick,
     );
     applyNetAction(eph, session, action, DT);
+    stepPastDeploy(session, atTick, 3); // R0: the batch deploys over the event pipeline.
     expect(session.sats.length).toBe(3);
     const expected = resolveOrbit(LEO_SWEEP, atTick * DT);
     for (const s of session.sats) expect(s.orbit).toEqual(expected);
@@ -263,6 +274,10 @@ describe("B2 consequence-truth: the batch applier commits the EXACT orbits sugge
       atTick,
     );
     applyNetAction(eph, session, action, 0.25);
+    // R0: step past the deploy pipeline at THIS test's coarse dt (0.25 s).
+    for (let tick = atTick + 1; tick <= atTick + Math.ceil((22 + s.count * 2) / 0.25); tick++) {
+      session.step(eph, tick * 0.25, 0.25);
+    }
     expect(session.sats.length).toBe(s.count);
     // Each suggested draft, resolved at the commit epoch, equals the committed sat's orbit.
     for (let i = 0; i < s.count; i++) {

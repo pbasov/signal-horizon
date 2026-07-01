@@ -30,7 +30,8 @@
 import type { Ephemeris } from "../ephemeris";
 import type { NetSat } from "./sat";
 import type { GroundNet, RegionPoint } from "./endpoint";
-import { isPointServed, type RoutableContract } from "./router";
+import { isPointServed, type RoutableContract, type PipeContext } from "./router";
+import type { BeamMap } from "./beams";
 import { A1_LEO_PERIOD_S } from "./world";
 
 /** The trailing hand-off window length (seconds) the rolling availability spans: ONE LEO
@@ -60,18 +61,26 @@ export function windowAvailability(
   grounds: GroundNet[],
   t: number,
   faults?: ReadonlySet<string>,
+  beams?: BeamMap,
 ): number {
   if (sats.length === 0 || grounds.length === 0) return 0;
   const centre: RegionPoint = {
     latRad: contract.region.latRad,
     lonRad: contract.region.lonRad,
   };
+  // Eligibility-true sampling (m1-redesign §2.3): the window verdict must respect the
+  // beam assignments + the latency mask — an unpointed ACCESS sat holds nothing.
+  const ctx: PipeContext = {
+    regionId: contract.region.id,
+    latencyActive: contract.activeAxes?.has("latency") ?? false,
+    beams: beams ?? new Map(),
+  };
   const W = NET_AVAIL_WINDOW_S;
   const denom = NET_AVAIL_SAMPLES - 1;
   let up = 0;
   for (let k = 0; k < NET_AVAIL_SAMPLES; k++) {
     const tt = t - W + (W * k) / denom;
-    if (isPointServed(eph, centre, grounds, sats, tt, faults)) up++;
+    if (isPointServed(eph, centre, grounds, sats, tt, faults, ctx)) up++;
   }
   return up / NET_AVAIL_SAMPLES;
 }

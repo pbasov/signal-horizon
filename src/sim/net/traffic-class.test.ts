@@ -70,7 +70,7 @@ describe("P3 traffic class — demand-shape produces topology-shape (the §7.2 t
     // Two parallel equatorial LEOs, both short (latency ≈ 2 ms). SAT-A is the min-latency tie-break
     // winner; load it OVER capacity. The shared aggregate carries A's congestion.
     const sats = [equatorialLeo("SAT-A", 0), equatorialLeo("SAT-B", 3)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 2]]);
     // The LATENCY-class contract ignores congestion (w_bw = 0) ⇒ clings to the min-latency SAT-A.
     const lat = solve(eph, classed("LAT", "latency"), sats, [NET_ACT1_GROUND], 0, undefined, load);
     // The BANDWIDTH-class contract weighs the congestion term ⇒ leaves the congested SAT-A for the
@@ -83,7 +83,7 @@ describe("P3 traffic class — demand-shape produces topology-shape (the §7.2 t
 
   it("the availability class's w_stab is DORMANT: varying it never changes the pick (M1 LOCKED)", () => {
     const sats = [equatorialLeo("SAT-A", 0), equatorialLeo("SAT-B", 3)];
-    const load = new Map([["SAT-A", 99]]);
+    const load = new Map([["SAT-A:0", 99]]);
     const c0 = classed("AV", "availability");
     const c9: RoutableContract = { ...c0, prefer: { ...preferForClass("availability"), stab: 9999 } };
     const r0 = solve(eph, c0, sats, [NET_ACT1_GROUND], 0, undefined, load);

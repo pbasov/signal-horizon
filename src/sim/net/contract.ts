@@ -239,17 +239,20 @@ export interface Contract {
 
 // --- TUNING CONSTANTS — sane placeholders (tune later) ----------------------------
 
-/** € per sim-second a served Act-1 connectivity contract pays. Sane placeholder on the
- * same scale as the m2 economy so the wallet reads on one currency. */
-export const NET_DEFAULT_PAY_PER_SECOND = 3.0;
+/** € per sim-second a served Act-1 connectivity contract pays. Sized against the R0
+ * economy theorem (m1-redesign §2.5): one term's full revenue (pay × term ≈ €14.4k) is
+ * LESS than the contract's honest provisioning (~€19k launch stack) — no single contract
+ * pays for its own hardware; margins come from sharing + renewals. TUNABLE. */
+export const NET_DEFAULT_PAY_PER_SECOND = 2.0;
 
-/** € per sim-second drained while an ACTIVE contract is wholly unserved (the SLA bite).
- * Placeholder; mirrors the m2 BREACH_PENALTY_PER_SECOND scale. */
-export const NET_DEFAULT_PENALTY_PER_SECOND = 1.5;
+/** € per sim-second drained while an ACTIVE contract is wholly unserved — the 2× penalty
+ * ASYMMETRY (m1-redesign §2.5): a wrong signing is strictly worse than not signing.
+ * TUNABLE. */
+export const NET_DEFAULT_PENALTY_PER_SECOND = 4.0;
 
-/** Default contract term (sim-seconds) — long enough that serving is a sustained
- * commitment, not a blip. Placeholder (a chunk of an Act-1 sitting). */
-export const NET_DEFAULT_TERM_SECONDS = 6 * 3600.0; // 6 sim-hours.
+/** Default contract term (sim-seconds) — a sustained commitment scaled to the session
+ * (≈ 2 sim-hours; ~15 real-minutes at the 8× cruise). TUNABLE. */
+export const NET_DEFAULT_TERM_SECONDS = 2 * 3600.0; // 2 sim-hours.
 
 /** Default availability/latency/bandwidth bars carried in the struct but HIDDEN in Act 1
  * (activeAxes={connectivity}). Sane non-trivial values so Act 2/3 inherit a real bar when

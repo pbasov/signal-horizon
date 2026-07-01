@@ -22,8 +22,8 @@ import type { SatOrbit } from "../m2/roster";
 import type { SimRng } from "../rng";
 import { EARTH_MU } from "../m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "../m2/orbit";
-import type { AntennaSpec, NetSat } from "./sat";
-import { standardLoadout } from "./sat";
+import type { AntennaSpec, NetSat, BusTier } from "./sat";
+import { standardLoadout, hardwarePriceEur } from "./sat";
 import {
   type RegionPoint,
   type GroundNet,
@@ -178,10 +178,44 @@ export function resolveOrbit(
 }
 
 /** Launch cost (€): base + a small altitude-above-the-toy-surface term (heavier lift
- * for higher orbits). Pure deterministic function of the draft. */
+ * for higher orbits). Pure deterministic function of the draft.
+ * @deprecated R0 (SD-45): the live economy prices launches via {@link launchVehicleCost}
+ * + {@link launchStackCost} (mass-aware, bus-tiered). Kept for legacy readers/tests. */
 export function launchCost(p: { semiMajorM: number; costBaseEur: number }): number {
   const altM = Math.max(0, p.semiMajorM - A1_BODY_RADIUS_M);
   return p.costBaseEur + altM * 1e-3;
+}
+
+// ── R0 (SD-45) — the launch economy (m1-redesign §2.2/§2.5) ─────────────────────────
+
+/** The fixed vehicle/base price of a launch (€), before the lift term. TUNABLE. */
+export const NET_LAUNCH_BASE_EUR = 6000;
+
+/** Lift price (€ per km of altitude) by bus tier — the mass term. A comsat masses ~4.7×
+ * a smallsat but lifts at ~1.9× the €/km (economies of scale): consolidation is cheaper
+ * per unit, at the price of one fault domain in one place. TUNABLE. */
+export const NET_LIFT_EUR_PER_KM: Readonly<Record<BusTier, number>> = {
+  smallsat: 16,
+  comsat: 30,
+};
+
+/** The vehicle cost (€) of ONE launch to a target semi-major axis with a given bus tier
+ * aboard: base + lift·altKm. One launch carries the whole batch (batching rewarded). */
+export function launchVehicleCost(bus: BusTier, semiMajorM: number): number {
+  const altKm = Math.max(0, semiMajorM - A1_BODY_RADIUS_M) / 1000;
+  return NET_LAUNCH_BASE_EUR + NET_LIFT_EUR_PER_KM[bus] * altKm;
+}
+
+/** The full committed cost (€) of a launch: one vehicle + `count` × (bus + antenna
+ * cards). The SAME function the builder previews and the applier charges. Pure. */
+export function launchStackCost(
+  bus: BusTier,
+  cardIds: readonly string[],
+  semiMajorM: number,
+  count: number,
+): number {
+  const n = Math.max(1, Math.trunc(count));
+  return launchVehicleCost(bus, semiMajorM) + hardwarePriceEur(bus, cardIds) * n;
 }
 
 /**

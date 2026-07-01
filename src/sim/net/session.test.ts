@@ -9,7 +9,7 @@ import {
 import { offerNetContract } from "./contract";
 import { applyNetAction } from "./apply-action";
 import { NET_ACT1_REGION } from "./endpoint";
-import { standardLoadout, type NetSat } from "./sat";
+import { standardLoadout, BUS_SPECS, type NetSat } from "./sat";
 import { GEO_PARK, resolveOrbit } from "./world";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 import { netLaunch, netAccept, netSetPrefer, simAction } from "../action";
@@ -45,9 +45,10 @@ describe("A2 net session — accept → serve → revenue closes on the shared m
     s.launchSat(geoSat("SAT-GEO", 0));
     s.addContract(offerNetContract("REGION-0", NET_ACT1_REGION));
 
-    // Before accept: stepping accrues nothing (an offered contract earns nothing).
+    // Before accept: no contract revenue — but the launched sat's OPEX drains (R0 §2.5:
+    // owning hardware costs €/s), so the balance dips by exactly opex×dt.
     s.step(eph, 0, DT);
-    expect(s.balance).toBe(NET_OPENING_BALANCE);
+    expect(s.balance).toBeCloseTo(NET_OPENING_BALANCE - BUS_SPECS.smallsat.opexPerSecond * DT, 9);
 
     // Accept → ACTIVE, then step a stretch: it is SERVED (parked GEO) and EARNS €.
     const accepted = s.acceptContract("REGION-0");
@@ -60,9 +61,10 @@ describe("A2 net session — accept → serve → revenue closes on the shared m
     expect(c.lastServedFraction).toBe(1.0); // binary served (Act 1 connectivity axis)
     expect(c.servedSecondsAccum).toBeGreaterThan(0); // term accrues via the SHARED helper
     expect(c.earnedEur).toBeGreaterThan(0); // revenue accrues while served
-    expect(s.balance).toBeGreaterThan(NET_OPENING_BALANCE); // the wallet earns
-    // The € matches pay × served-time exactly (full service, binary fraction 1.0).
-    expect(s.balance - NET_OPENING_BALANCE).toBeCloseTo(c.earnedEur, 9);
+    // The wallet = opening + earned − the sat's opex over the stepped span (R0 §2.5).
+    const steppedS = 601 * DT; // ticks 0..600 inclusive each advanced dt.
+    const opex = BUS_SPECS.smallsat.opexPerSecond * steppedS;
+    expect(s.balance - NET_OPENING_BALANCE).toBeCloseTo(c.earnedEur - opex, 6);
     expect(c.earnedEur).toBeCloseTo(c.payPerSecond * c.servedSecondsAccum, 6);
   });
 
@@ -144,11 +146,19 @@ describe("A2 applyNetAction — the shared live==replay applier", () => {
     expect(res).not.toBeNull();
     expect(res!.kind).toBe("sats_launched");
     expect(res!.satIds!.length).toBe(1);
-    expect(s.sats.length).toBe(1);
+    // R0: the launch is an EVENT — the sat rides the countdown/ascent/deploy pipeline
+    // (~18 sim-seconds), it does NOT teleport into the roster.
+    expect(s.sats.length).toBe(0);
+    expect(s.launchEvents.length).toBe(1);
 
-    // Accept + step from the launch instant onward: the launched (epoch-correct) GEO serves.
+    // Accept + step from the launch instant onward: after the deploy instant the
+    // (epoch-correct) GEO enters the roster and serves.
     applyNetAction(eph, s, netAccept("REGION-0", launchTick), DT);
-    for (let tick = launchTick + 1; tick <= launchTick + 600; tick++) s.step(eph, tick * DT, DT);
+    const pastDeployTicks = launchTick + Math.ceil(20 / DT); // past countdown+ascent+deploy.
+    // Step well past deploy: the accepted contract bled penalty while the vehicle flew
+    // (accepting before FIRST SIGNAL costs you), then out-earns it once served.
+    for (let tick = launchTick + 1; tick <= pastDeployTicks + 3600; tick++) s.step(eph, tick * DT, DT);
+    expect(s.sats.length).toBe(1);
     const c = s.contractById("REGION-0")!;
     expect(c.lastServedFraction).toBe(1.0);
     expect(c.earnedEur).toBeGreaterThan(0);
@@ -190,9 +200,13 @@ describe("A2 applyNetAction — the shared live==replay applier", () => {
   });
 
   it("LIVE == REPLAY: step-then-post-drain reproduces a recorded launch+accept", () => {
+    // Accept AFTER the ~18 s deploy pipeline lands (tick 10 + 20 s of ticks) — accepting
+    // an unserved contract now bleeds real penalty (R0 §2.5), so the recorded intent is
+    // the sane play: launch, wait for FIRST SIGNAL, then sign.
+    const acceptTick = 10 + Math.ceil(20 / DT);
     const log = [
       netLaunch({ presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 }, 10),
-      netAccept("REGION-0", 20),
+      netAccept("REGION-0", acceptTick),
     ];
     const drive = () => {
       const s = new NetSession();
@@ -203,7 +217,7 @@ describe("A2 applyNetAction — the shared live==replay applier", () => {
         list.push(a);
         byTick.set(a.atTick, list);
       }
-      for (let tick = 0; tick <= 400; tick++) {
+      for (let tick = 0; tick <= acceptTick + 600; tick++) {
         const t = tick * DT;
         s.step(eph, t, DT); // step FIRST
         const list = byTick.get(tick);

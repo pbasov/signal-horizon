@@ -129,6 +129,17 @@ export const KIND_NET_SET_PREFER = "net_set_prefer";
  * roll; applied at `atTick` via the shared applier so live == replay.
  */
 export const KIND_NET_PLACE_CACHE = "net_place_cache";
+/**
+ * net/ R0 (SD-45) — the player POINTS a spot beam: pipe (satId, slotIdx) → regionId (empty
+ * string = unassign). Payload `{ satId, slotIdx, regionId }`. The pointing verb — instant,
+ * free, a topology change; logged so the assignment reproduces on replay.
+ */
+export const KIND_NET_ASSIGN_BEAM = "net_assign_beam";
+/**
+ * net/ R0 (SD-45) — the player pays the CIRCULARIZATION burn on an underburned sat (the
+ * common launch-failure flavor's fix). Payload `{ satId }`. Deterministic; charged.
+ */
+export const KIND_NET_CIRCULARIZE = "net_circularize";
 
 /**
  * A deterministic action. `payload` is deep-copied on construction so mutations
@@ -264,6 +275,11 @@ export function netLaunch(
     raanRad?: number;
     count?: number;
     phaseSpreadRad?: number;
+    /** R0 (SD-45): the bus tier ("smallsat" default — only emitted when non-default). */
+    bus?: string;
+    /** R0 (SD-45): the antenna-card loadout (card ids; empty/absent = the standard
+     * BROADCAST default — only emitted when non-default). */
+    loadout?: string[];
   },
   atTick = 0,
 ): SimAction {
@@ -283,6 +299,12 @@ export function netLaunch(
   // Only emit a non-zero spread — an Act-1 launch (spread 0) keeps its exact pre-Act-2 wire shape.
   if (params.phaseSpreadRad !== undefined && params.phaseSpreadRad !== 0) {
     payload.phaseSpreadRad = params.phaseSpreadRad;
+  }
+  // R0 (SD-45): the sat DESIGN on the wire — bus + antenna-card loadout. Only emitted when
+  // non-default so a default launch keeps the lean wire shape.
+  if (params.bus !== undefined && params.bus !== "smallsat") payload.bus = params.bus;
+  if (params.loadout !== undefined && params.loadout.length > 0) {
+    payload.loadout = params.loadout.slice();
   }
   return simAction(KIND_NET_LAUNCH, atTick, payload);
 }
@@ -318,6 +340,26 @@ export function netSetPrefer(
  */
 export function netPlaceCache(atTick = 0): SimAction {
   return simAction(KIND_NET_PLACE_CACHE, atTick, {});
+}
+
+/**
+ * net/ R0 (SD-45) — POINT a spot beam (pipe satId:slotIdx → regionId; "" = unassign), at a
+ * tick. The pointing verb (m1-redesign §2.3): instant, free, a logged topology change.
+ */
+export function netAssignBeam(
+  satId: string,
+  slotIdx: number,
+  regionId: string,
+  atTick = 0,
+): SimAction {
+  return simAction(KIND_NET_ASSIGN_BEAM, atTick, { satId, slotIdx, regionId });
+}
+
+/**
+ * net/ R0 (SD-45) — pay the CIRCULARIZATION burn on an underburned sat, at a tick.
+ */
+export function netCircularize(satId: string, atTick = 0): SimAction {
+  return simAction(KIND_NET_CIRCULARIZE, atTick, { satId });
 }
 
 /** Coerce an arbitrary JSON value to an integer tick (JSON ints arrive as number). */

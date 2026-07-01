@@ -1,46 +1,56 @@
 /**
- * net/ — the satellite ATOM (design §2.1). A launched sat is its orbit (the unforked
- * {@link SatOrbit}) plus a bus tier and an antenna loadout. Migrated from a1/sat.ts.
+ * net/ — the satellite ATOM v2 (m1-redesign.md §2.2/§2.4). A launched sat is its orbit
+ * (the unforked {@link SatOrbit}) plus a BUS TIER (which fixes its antenna slots) and an
+ * ANTENNA LOADOUT chosen at design time — **capacity lives in the antennas, not in a
+ * hidden constant**: each antenna card carries its own `capacityUnits` pipe rating, so
+ * loadout composition IS capacity design (the per-satellite-bandwidth directive, SD-45).
  *
- * Dropped in the migration (design §1, A0): the `A1_DISH_EIRP=1.1` "closing-lever"
- * forced-imperfection knob and its `dishLoadout`. EIRP stays a REAL antenna field
- * feeding the inverse-square link budget — never an Act-1 imperfection. Act 1 has NO
- * forced imperfection: the standard eirp 1.0 antenna covers the whole equatorial
- * region disc from the parked GEO with margin (pinned in A1).
+ * THE CARD CATALOG is the purchasable design space the vehicle builder shows:
+ *   - BROADCAST — down-only floodlight (its asymmetry identity, spec §1.2): covers every
+ *     latency-tolerant contract in its footprint, no pointing needed. The Act-1 default.
+ *   - ACCESS-S / ACCESS-L — symmetric SPOT BEAMS: must be POINTED (beam-assigned) at
+ *     exactly one region to serve it (m1-redesign.md §2.3). Small = cheap and thin;
+ *     large = headroom.
+ *   - GATEWAY — the fat symmetric pipe; also a pointable spot beam in M1 (its trunk
+ *     landing role matures with crosslink relaying, R3).
+ *   - CROSSLINK — the S-slot relay substrate. PRESENT-BUT-INERT in R0/R1 routing (the
+ *     M1-SLV relay epic consumes it); the builder shows it, the router ignores it.
  *
- * PURE: no three, no DOM, no wall-clock, no RNG. Reuses {@link SatOrbit} from the M2
- * roster as-is (NOT forked); orbit propagation is the unforked solveOrbit.
+ * PURE: no three, no DOM, no wall-clock, no RNG. Reuses {@link SatOrbit} unforked.
  *
- * Generalizes (design §2.1): more bus tiers / antenna types / slot classes drop in as
- * enum members + loadout entries; frame + pacing never change.
- *
- * @see docs/signal-horizon-m1.md Part II §2.1 (sat atom).
+ * @see docs/m1-redesign.md §2.2 (the builder), §2.4 (per-sat bandwidth); spec Part I §1.
  */
 
 import type { SatOrbit } from "../m2/roster";
 
-/** Bus tier — only one exists in Act 1 (deferred tiers 2–4 are named, not built). */
-export type BusTier = "smallsat";
+/** Bus tier — the purchasable sizes (T3/T4 are named in the spec, locked past M1). */
+export type BusTier = "smallsat" | "comsat";
 
-/** Antenna purpose. BROADCAST = the wide coverage beam; ACCESS = a directional link.
- * Both reuse the same field.ts inverse-square budget. */
-export type AntennaType = "BROADCAST" | "ACCESS";
+/** Antenna purpose (spec §1.2 — the five types; LASER is T3/T4-locked, not in M1). */
+export type AntennaType = "BROADCAST" | "ACCESS" | "GATEWAY" | "CROSSLINK";
 
-/** Antenna slot class — only "G" (general) in Act 1 (S-slots deferred). */
-export type SlotClass = "G";
+/** Antenna slot class: G (ground-facing — BROADCAST/ACCESS/GATEWAY) or S (sat-facing —
+ * CROSSLINK). The bus tier fixes how many of each a sat carries. */
+export type SlotClass = "G" | "S";
 
 /**
- * One antenna fitted to a sat. `eirp` feeds the inverse-square link budget
- * (received ∝ eirp·(rangeRefM/d)² ≥ 1) — a real antenna field, not a knob.
+ * One antenna fitted to a sat. `eirp` + `rangeRefM` feed the inverse-square link budget
+ * (real physics fields); `capacityUnits` is THIS pipe's throughput rating on the
+ * contract `offeredLoad` scale — the per-antenna capacity the router's fair-share and
+ * congestion terms are denominated in (there is NO uniform capacity constant any more).
  */
 export interface AntennaSpec {
   type: AntennaType;
+  /** The card id this antenna was built from (readout/fold; "" for legacy/standard). */
+  cardId: string;
   /** Beam cone half-angle (radians) — the footprint half-angle hint. */
   coneHalfAngleRad: number;
   /** Effective isotropic radiated power (toy units; 1.0 = the standard antenna). */
   eirp: number;
   /** Reference link distance (metres) at which the budget just closes. */
   rangeRefM: number;
+  /** THIS antenna's pipe capacity (offeredLoad units) — per-antenna, never uniform. */
+  capacityUnits: number;
 }
 
 /** A launched satellite: its orbit + bus + antenna loadout. JSON-safe. */
@@ -51,21 +61,188 @@ export interface NetSat {
   loadout: AntennaSpec[];
 }
 
-/** Standard antenna EIRP (the GEO-park default — covers the whole disc with margin). */
+/** Standard antenna EIRP (covers the whole Act-1 disc from the parked GEO with margin). */
 export const NET_STANDARD_EIRP = 1.0;
 
+// ── the bus-tier table (spec §1.1 shape; numbers TUNABLE) ───────────────────────────
+
+/** One bus tier: its slot counts, mass (drives launch cost), and hardware price. */
+export interface BusSpec {
+  tier: BusTier;
+  label: string;
+  gSlots: number;
+  sSlots: number;
+  massKg: number;
+  /** Bus hardware price (€), before antennas + launch. */
+  priceEur: number;
+  /** Per-sat operating drain (€/sim-second) — the standing cost of owning it. */
+  opexPerSecond: number;
+}
+
+/** The purchasable bus tiers. T1 SMALLSAT 1G+1S; T2 COMSAT 2G+2S (spec §1.1 LOCKED
+ * shape; masses/prices TUNABLE). The consolidate-vs-split bet lives here: a comsat
+ * carries two G pipes on one launch (cheaper per unit, one fault domain, one place at a
+ * time); two smallsats cost more but spread across phases and fault domains. */
+export const BUS_SPECS: Readonly<Record<BusTier, BusSpec>> = {
+  smallsat: {
+    tier: "smallsat",
+    label: "T1 SMALLSAT",
+    gSlots: 1,
+    sSlots: 1,
+    massKg: 150,
+    priceEur: 2000,
+    opexPerSecond: 0.1,
+  },
+  comsat: {
+    tier: "comsat",
+    label: "T2 COMSAT",
+    gSlots: 2,
+    sSlots: 2,
+    massKg: 700,
+    priceEur: 6000,
+    opexPerSecond: 0.35,
+  },
+};
+
+// ── the antenna card catalog (the builder's purchasable cards; numbers TUNABLE) ──────
+
+/** One purchasable antenna card: the slot it fits, its physics, its pipe capacity, and
+ * its price. The builder drops these into bus slots; the launch action carries card ids. */
+export interface AntennaCard {
+  id: string;
+  label: string;
+  type: AntennaType;
+  slot: SlotClass;
+  capacityUnits: number;
+  priceEur: number;
+  coneHalfAngleRad: number;
+  eirp: number;
+}
+
+const CONE_30_DEG = 30 * (Math.PI / 180);
+
+/** The M1 card catalog. Capacities are on the contract offeredLoad scale (an Act-1
+ * contract offers ~1.0 at baseline, swinging ±45% diurnally; escalation grows the
+ * baseline toward 1.4). BROADCAST is down-only (serves latency-tolerant demand with no
+ * pointing); ACCESS/GATEWAY are pointed spot beams; CROSSLINK is inert relay substrate. */
+export const ANTENNA_CARDS: readonly AntennaCard[] = [
+  {
+    id: "BROADCAST",
+    label: "BROADCAST",
+    type: "BROADCAST",
+    slot: "G",
+    capacityUnits: 1.5,
+    priceEur: 2500,
+    coneHalfAngleRad: CONE_30_DEG,
+    eirp: NET_STANDARD_EIRP,
+  },
+  {
+    id: "ACCESS_S",
+    label: "ACCESS-S",
+    type: "ACCESS",
+    slot: "G",
+    capacityUnits: 1.2,
+    priceEur: 1200,
+    coneHalfAngleRad: CONE_30_DEG,
+    eirp: NET_STANDARD_EIRP,
+  },
+  {
+    id: "ACCESS_L",
+    label: "ACCESS-L",
+    type: "ACCESS",
+    slot: "G",
+    capacityUnits: 2.4,
+    priceEur: 2800,
+    coneHalfAngleRad: CONE_30_DEG,
+    eirp: NET_STANDARD_EIRP,
+  },
+  {
+    id: "GATEWAY",
+    label: "GATEWAY",
+    type: "GATEWAY",
+    slot: "G",
+    capacityUnits: 4.0,
+    priceEur: 4500,
+    coneHalfAngleRad: CONE_30_DEG,
+    eirp: NET_STANDARD_EIRP,
+  },
+  {
+    id: "CROSSLINK",
+    label: "CROSSLINK",
+    type: "CROSSLINK",
+    slot: "S",
+    capacityUnits: 1.6,
+    priceEur: 1800,
+    coneHalfAngleRad: CONE_30_DEG,
+    eirp: NET_STANDARD_EIRP,
+  },
+];
+
+/** Look up a card by id (null when unknown — the applier falls back to the default). */
+export function antennaCardById(id: string): AntennaCard | null {
+  return ANTENNA_CARDS.find((c) => c.id === id) ?? null;
+}
+
+/** Build the {@link AntennaSpec} a card resolves to (the applier + builder share this,
+ * so the previewed loadout is byte-identical to the committed one). */
+export function antennaFromCard(card: AntennaCard, rangeRefM: number): AntennaSpec {
+  return {
+    type: card.type,
+    cardId: card.id,
+    coneHalfAngleRad: card.coneHalfAngleRad,
+    eirp: card.eirp,
+    rangeRefM,
+    capacityUnits: card.capacityUnits,
+  };
+}
+
+/** Validate a loadout (card ids) against a bus tier's slots: each G card consumes a G
+ * slot, each S card an S slot; over-filling a class rejects. Returns the offending
+ * problem string or null when valid. Pure (the builder + the applier share the rule). */
+export function validateLoadout(bus: BusTier, cardIds: readonly string[]): string | null {
+  const spec = BUS_SPECS[bus];
+  let g = 0;
+  let s = 0;
+  for (const id of cardIds) {
+    const card = antennaCardById(id);
+    if (card === null) return `unknown antenna card "${id}"`;
+    if (card.slot === "G") g++;
+    else s++;
+  }
+  if (g > spec.gSlots) return `${spec.label} carries ${spec.gSlots} G slot(s); ${g} G cards fitted`;
+  if (s > spec.sSlots) return `${spec.label} carries ${spec.sSlots} S slot(s); ${s} S cards fitted`;
+  if (g + s === 0) return "no antennas fitted — the sat would fly deaf";
+  return null;
+}
+
+/** Hardware price (€) of a sat design: the bus + every fitted card. Launch cost (mass ×
+ * altitude) is priced separately in world.ts. Pure. */
+export function hardwarePriceEur(bus: BusTier, cardIds: readonly string[]): number {
+  let sum = BUS_SPECS[bus].priceEur;
+  for (const id of cardIds) sum += antennaCardById(id)?.priceEur ?? 0;
+  return sum;
+}
+
 /**
- * The standard BROADCAST loadout — one {@link AntennaSpec} at the standard eirp. The
- * `rangeRefM` is supplied by the caller (the link-budget module's reference distance)
- * so this atom stays free of the link-budget import.
+ * The standard DEFAULT loadout — one BROADCAST card. This is what a launch action that
+ * carries no explicit loadout resolves to (back-compat: every pre-R0 recorded launch was
+ * a broadcast smallsat), and the Act-1 builder's safe suggestion. `rangeRefM` is supplied
+ * by the caller (the link-budget module's reference distance).
  */
 export function standardLoadout(rangeRefM: number): AntennaSpec[] {
-  return [
-    {
-      type: "BROADCAST",
-      coneHalfAngleRad: 30 * (Math.PI / 180),
-      eirp: NET_STANDARD_EIRP,
-      rangeRefM,
-    },
-  ];
+  const card = antennaCardById("BROADCAST");
+  return card ? [antennaFromCard(card, rangeRefM)] : [];
+}
+
+/** Resolve a loadout of card ids into {@link AntennaSpec}s (unknown ids are skipped —
+ * the applier validates first; this keeps the resolve total). Empty ⇒ the standard
+ * BROADCAST loadout, preserving the pre-R0 wire default. Pure. */
+export function resolveLoadout(cardIds: readonly string[] | undefined, rangeRefM: number): AntennaSpec[] {
+  if (!cardIds || cardIds.length === 0) return standardLoadout(rangeRefM);
+  const out: AntennaSpec[] = [];
+  for (const id of cardIds) {
+    const card = antennaCardById(id);
+    if (card !== null) out.push(antennaFromCard(card, rangeRefM));
+  }
+  return out.length > 0 ? out : standardLoadout(rangeRefM);
 }

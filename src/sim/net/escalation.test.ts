@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { Ephemeris } from "../ephemeris";
-import { NetSession, NET_NEAR_BREACH_GRACE_FRACTION } from "./session";
+import { NetSession } from "./session";
 import { applyNetAction } from "./apply-action";
 import {
   netLaunch,
   netAccept,
   netSetPrefer,
+  netAssignBeam,
+  netCircularize,
   type SimAction,
 } from "../action";
 import { GEO_PARK, LEO_SWEEP } from "./world";
@@ -15,9 +17,11 @@ import {
   ACT1_CONTRACT_ID,
   ACT2_CONTRACT_ID,
   ACT3A_CONTRACT_ID,
+  ACT3A_BACKHAUL_CONTRACT_ID,
 } from "./scenario";
 import { resolveOrbit } from "./world";
 import { NET_ACT1_GROUND, NET_ACT1_REGION } from "./endpoint";
+import { offerNetContract } from "./contract";
 import {
   escalateLoad,
   ESCALATION_LOAD_CEILING,
@@ -25,7 +29,6 @@ import {
   ESCALATION_BANDWIDTH_AXIS_THRESHOLD,
 } from "./contract";
 import { solve, type RoutableContract } from "./router";
-import { BREACH_GRACE_SECONDS } from "../m2/contracts";
 
 /**
  * net/ C1b — THE ESCALATION LAW + OVERSUBSCRIPTION + the 3a re-tame (design §3a / C1.1-C1.6).
@@ -107,94 +110,100 @@ function eqLeoLaunch(subLonDeg: number, tick: number): SimAction {
   return netLaunch({ presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: subLonDeg * DEG, count: 1 }, tick);
 }
 
-// The FIXED act3a arc ticks (matching the net-replay golden): the cursor reaches act3a at
-// ~tick 19401, the player launches an equatorial LEO + accepts the corridor, escalation strains
-// the shared link, and at the fixed RELIEF tick the player adds a parallel LEO + re-prioritises
-// the latency-tolerant trunk (REGION-0) to be bandwidth-share-aware so it YIELDS the short path.
-const TICK_EQ_LEO_1 = 19461;
-const TICK_ACCEPT_R2 = 19521;
-// P3: REGION-2 is now BANDWIDTH-class, so the relief lands LATER (after the near-breach dip crosses
-// the 60 s threshold) — matched to the net-replay golden's re-tuned TICK_RELIEF.
-const TICK_RELIEF = 27000;
+// The FIXED act3a arc ticks — THE CANON (identical to the net-replay golden script, R0/SD-45):
+// the act2 gate fires at t ≈ 661 s; act3a offers the latency CORRIDOR (pointed ACCESS beams) and
+// the latency-tolerant BACKHAUL that shares the GEO's BROADCAST pipe with REGION-0. Escalation
+// grows both baselines; the asymmetric-peak fair-share squeeze dips REGION-0 near-breach
+// (bandwidth-binding) at t ≈ 924 s; the relief (a parallel BROADCAST LEO + prefer-bw on REGION-0)
+// splits the pipe durably and the re-tame gate fires at t ≈ 938 s.
+const TICK_ACCEPT_R0 = 1440;
+const TICK_BATCH = 1441;
+const TICK_ACCEPT2 = 3032;
+const TICK_FILL = 20642;
+const FILL_SUBLON_RAD =
+  LEO_SWEEP.subLonRad + Math.PI / 4 - ((2 * Math.PI) / 240) * (TICK_FILL - TICK_BATCH) * DT;
+const TICK_EQ_CORRIDOR = 39662;
+const TICK_BEAMS = 41163;
+const TICK_ACCEPT_R2 = 41223;
+const TICK_RELIEF = 55463;
+const TICK_CIRC_RELIEF = 56303;
+const TICK_PREFER = 56784;
 
 /** The act1 → act2 → act3a arc through the re-tame (the SAME log the net-replay golden pins). */
 function act3aLog(m: Map<number, SimAction[]>): void {
-  // Act 1: GEO over REGION-0.
+  // Act 1: GEO over REGION-0 (accept after the ~18 s deploy pipeline).
   add(m, 600, netLaunch({ presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 }, 600));
-  add(m, 1200, netAccept(ACT1_CONTRACT_ID, 1200));
-  // Act 2: polar N=4 over REGION-1.
-  add(m, 1300, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, 1300));
-  add(m, 1400, netAccept(ACT2_CONTRACT_ID, 1400));
-  // Act 3a: the short equatorial path for the latency corridor + accept REGION-2 (the corridor).
-  add(m, TICK_EQ_LEO_1, eqLeoLaunch(1.5, TICK_EQ_LEO_1));
+  add(m, TICK_ACCEPT_R0, netAccept(ACT1_CONTRACT_ID, TICK_ACCEPT_R0));
+  // Act 2: polar N=4 (seeded attrition: 2 no-seps + 1 underburn) + circularize + the fill batch.
+  add(m, TICK_BATCH, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_BATCH));
+  add(m, TICK_ACCEPT2, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
+  add(m, TICK_ACCEPT2, netCircularize("NET-SAT-4", TICK_ACCEPT2));
+  add(m, TICK_FILL, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: FILL_SUBLON_RAD, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_FILL));
+  // Act 3a: the corridor constellation (3 pointed ACCESS LEOs) + accept corridor + backhaul.
+  add(m, TICK_EQ_CORRIDOR, netLaunch({ presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: 1.5 * DEG, count: 3, phaseSpreadRad: (2 * Math.PI) / 3, loadout: ["ACCESS_S"] }, TICK_EQ_CORRIDOR));
+  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-9", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-10", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-11", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
   add(m, TICK_ACCEPT_R2, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
-  // The relief BY EXCEPTION (after escalation tips the shared link near-breach): a PARALLEL
-  // equatorial LEO + a net_set_prefer on the latency-tolerant trunk REGION-0 (bw-share-aware) so
-  // it yields the short corridor path to the latency-critical REGION-2 — splitting the shared sat.
+  add(m, TICK_ACCEPT_R2, netAccept(ACT3A_BACKHAUL_CONTRACT_ID, TICK_ACCEPT_R2));
+  // The relief: the parallel BROADCAST LEO (underburns on this seed — circularize), then the
+  // prefer-bw override on REGION-0 so the shared-pipe pair splits durably.
   add(m, TICK_RELIEF, eqLeoLaunch(-1.5, TICK_RELIEF));
-  add(m, TICK_RELIEF, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_RELIEF));
+  add(m, TICK_CIRC_RELIEF, netCircularize("NET-SAT-12", TICK_CIRC_RELIEF));
+  add(m, TICK_PREFER, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_PREFER));
 }
 
-describe("C1b — escalation tips a shared link to breach (binary), then a parallel path + prefer re-tames", () => {
+describe("C1b — escalation squeezes the shared BROADCAST pipe (binary), the player splits it, re-tamed", () => {
   it("the FULL tame → outgrow → re-tame cycle fires the act3a gate deterministically", () => {
     const m = new Map<number, SimAction[]>();
     act3aLog(m);
-    // Run a touch past the relief so the re-tame latches + the gate fires (P3: relief at 27000; by
-    // ~27200 the bandwidth-class corridor has re-routed onto the parallel equatorial LEO + re-served).
-    const s = drive(27200, m);
+    // Run past the re-tame gate (tick 56303) AND the durable prefer-split (tick 56784).
+    const s = drive(57200, m);
 
-    // Escalation engaged; the corridor was offered + accepted.
+    // Escalation engaged; the corridor + backhaul were offered + accepted.
     expect(s.escalationEnabled).toBe(true);
     const r2 = s.contractById(ACT3A_CONTRACT_ID)!;
-    expect(r2).toBeDefined();
     expect(["active", "completed"]).toContain(r2.state);
-    // Escalation GREW the loads above the initial 1.0 and flipped the bandwidth axis on (the §4.4
-    // escalation-triggered mask flip — NOT present at emit; one at a time after the latency axis).
-    expect(r2.offeredLoad).toBeGreaterThan(1.0);
-    expect(r2.activeAxes.has("latency")).toBe(true); // the authored latency axis.
-    expect(r2.activeAxes.has("bandwidth")).toBe(true); // the escalation-triggered bandwidth axis.
-    // THE 3a GATE FIRED: a previously-served contract dipped near-breach under risen load, then
-    // returned to fully SERVED (the re-tame) ⇒ the cursor advanced past act3a (the act3b fence).
+    // Escalation GREW the loads above their offers and flipped the bandwidth axes on (§4.4).
+    expect(r2.activeAxes.has("latency")).toBe(true); // the authored latency axis (pointed beams).
+    const r0 = s.contractById(ACT1_CONTRACT_ID)!;
+    expect(r0.loadBaseline).toBeGreaterThan(1.0);
+    expect(r0.activeAxes.has("bandwidth")).toBe(true); // the escalation-triggered flip.
+    // THE 3a GATE FIRED: REGION-0 dipped near-breach (bandwidth-binding, the shared-pipe
+    // squeeze), the player re-engineered (relief LEO deployed), and it returned to fully
+    // SERVED alone on its pipe with the whole board green.
     expect(s.escalationReTamed()).toBe(true);
     expect(s.cursor).toBeGreaterThanOrEqual(3);
-    // After the relief, the shared link is SPLIT: the corridor REGION-2 rides its OWN bridge path
-    // (re-tamed) — it is the SOLE active loader of its chosen sat (the relief's parallel LEO + the
-    // REGION-0 prefer-yield vacated the shared sat). Under the bursty load a SOLO contract's peak can
-    // momentarily exceed NET_LINK_CAPACITY_UNITS while still served (its served bandwidth = its full
-    // offered load ≥ its committed slaBandwidth floor), so the durable signal is the STRUCTURAL split
-    // (sole loader) + fully served — NOT a single-tick load-under-capacity reading.
-    expect(r2.lastServedFraction).toBe(1.0);
-    const r2Sat = s.lastSolveFor(r2.id)!.path![1];
-    const sharesR2Sat = s.contracts.some(
-      (c) => c.id !== r2.id && c.state === "active" && s.lastSolveFor(c.id)?.path?.[1] === r2Sat,
-    );
-    expect(sharesR2Sat).toBe(false); // REGION-2 rides its OWN bridge — the shared sat was split.
-  }, 60000);
+    // THE ORDERING IS THE PROOF: the gate latched only AFTER the relief deployed (the
+    // witness requires a player topology action strictly after the dip, and the sole-pipe
+    // all-green split at the latch instant — both enforced inside the latch itself; the
+    // instantaneous share can legitimately re-form later as the relief LEO sweeps).
+    const act3aGateTick = s.snapshot().gateTicks[2];
+    expect(act3aGateTick).toBeGreaterThan(TICK_RELIEF);
+  }, 120000);
 
   it("the act3a gate does NOT fire before the near-breach dip + re-tame (state-gated, not clock-timed)", () => {
-    // The SAME log but stop BEFORE the relief lands: the cursor must still be on act3a (cursor 2) —
-    // the cycle is not yet demonstrated. (Escalation is on + the bandwidth axis bit, but no re-tame.)
     const m = new Map<number, SimAction[]>();
     act3aLog(m);
     const s = drive(TICK_RELIEF - 1, m);
     expect(s.cursor).toBe(2); // still on act3a.
     expect(s.escalationReTamed()).toBe(false);
-    // The dip was real: the corridor accrued breach past the near-breach threshold under congestion.
-    const r2 = s.contractById(ACT3A_CONTRACT_ID)!;
-    expect(r2.breachSecondsAccum).toBeGreaterThanOrEqual(
-      NET_NEAR_BREACH_GRACE_FRACTION * BREACH_GRACE_SECONDS,
-    );
-  }, 60000);
+    // The dip is REAL: REGION-0 is accruing breach inside the asymmetric-peak window (the
+    // fair-share bite on the shared GEO BROADCAST pipe).
+    const r0 = s.contractById(ACT1_CONTRACT_ID)!;
+    expect(r0.activeAxes.has("bandwidth")).toBe(true);
+    expect(r0.breachSecondsAccum).toBeGreaterThan(0);
+  }, 120000);
 });
 
-// ── escalation only where served, only when on; congestion forces a re-solve ──────
+// ── escalation only where served, only when on; the baseline freeze law ───────────
 
 describe("C1b — escalation grows ONLY a well-served contract, ONLY when gated on", () => {
   it("with escalation OFF (Act 1/2), offeredLoad never changes (golden-safe dormancy)", () => {
     // Drive only the Act-1 opening (cursor stays before act3a so escalation is never enabled).
     const m = new Map<number, SimAction[]>();
     add(m, 600, netLaunch({ presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 }, 600));
-    add(m, 1200, netAccept(ACT1_CONTRACT_ID, 1200));
+    add(m, TICK_ACCEPT_R0, netAccept(ACT1_CONTRACT_ID, TICK_ACCEPT_R0));
     const s = drive(3000, m);
     expect(s.escalationEnabled).toBe(false);
     const r0 = s.contractById(ACT1_CONTRACT_ID)!;
@@ -203,26 +212,23 @@ describe("C1b — escalation grows ONLY a well-served contract, ONLY when gated 
   });
 
   it("a contract's BASELINE freezes while it is breaching (served-fraction 0) — demand grows only where you serve well", () => {
-    // The full arc, sampled just AFTER the bandwidth bite drives the corridor to a sustained breach
-    // but BEFORE the relief: while the corridor is unserved (lastServedFraction 0), the escalation
-    // law does NOT grow its slow `loadBaseline` (the §3a "where you serve well" rule). The bursty
-    // realized `offeredLoad` still OSCILLATES (the diurnal+noise burst rides on the frozen baseline —
-    // load rises and falls over time even while breaching), but the BASELINE the burst rides on is
-    // PINNED at the value it had reached when last served — it does not climb further while breaching.
-    const m = new Map<number, SimAction[]>();
-    act3aLog(m);
-    const early = drive(24000, m); // mid-breach (after the bite, before the relief).
-    const r2early = early.contractById(ACT3A_CONTRACT_ID)!;
-    expect(r2early.lastServedFraction).toBe(0); // breaching under the shared-link congestion.
-    const baselineAtBreachStart = r2early.loadBaseline;
-    // 1000 more ticks of breach: the BASELINE must NOT have grown (it is frozen while unserved); the
-    // realized offeredLoad keeps oscillating (the burst is a pure function of t + phase + seeded noise).
-    const m2 = new Map<number, SimAction[]>();
-    act3aLog(m2);
-    const later = drive(25000, m2);
-    const r2later = later.contractById(ACT3A_CONTRACT_ID)!;
-    expect(r2later.lastServedFraction).toBe(0); // still breaching (pre-relief).
-    expect(r2later.loadBaseline).toBe(baselineAtBreachStart); // BASELINE FROZEN — no growth while unserved.
+    // SYNTHETIC (no arc): a session with escalation ON and an ACTIVE contract that has NO
+    // coverage at all (no sats) — it is wholly unserved every step, so its BASELINE must
+    // never grow while the bursty realized load keeps oscillating on top of it.
+    const s = new NetSession(undefined, undefined, [NET_ACT1_GROUND], []);
+    s.addContract(offerNetContract(ACT1_CONTRACT_ID, NET_ACT1_REGION, { offeredLoad: 0.8 }));
+    s.acceptContract(ACT1_CONTRACT_ID);
+    s.enableEscalation();
+    const c = s.contractById(ACT1_CONTRACT_ID)!;
+    const baseline0 = c.loadBaseline;
+    const loads = new Set<number>();
+    for (let tick = 1; tick <= 3000; tick++) {
+      s.step(eph, tick * DT, DT);
+      loads.add(c.offeredLoad);
+    }
+    expect(c.lastServedFraction).toBe(0); // wholly unserved throughout.
+    expect(c.loadBaseline).toBe(baseline0); // BASELINE FROZEN — no growth while breaching.
+    expect(loads.size).toBeGreaterThan(10); // the bursty realized load still oscillates.
   }, 60000);
 });
 

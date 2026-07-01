@@ -5,7 +5,7 @@ import {
   NET_ACT1_GROUND,
 } from "./endpoint";
 import { GEO_PARK, LEO_SWEEP, resolveOrbit } from "./world";
-import { standardLoadout, type NetSat } from "./sat";
+import { standardLoadout, antennaCardById, antennaFromCard, type NetSat } from "./sat";
 import { NET_REF_LINK_DISTANCE_M, NET_LINK_CAPACITY_UNITS } from "./link-budget";
 import {
   solve,
@@ -76,6 +76,19 @@ function equatorialLeo(id: string, subLonDeg: number): NetSat {
   };
 }
 
+/** R0 (SD-45): a latency-ACTIVE contract can never ride a BROADCAST floodlight (down-only
+ * asymmetry) — it needs a POINTED ACCESS beam. This swaps a sat's loadout to one ACCESS
+ * card so the latency-axis tests exercise the GEO ceiling through an eligible pipe. */
+function withAccess(sat: NetSat): NetSat {
+  const card = antennaCardById("ACCESS_S")!;
+  return { ...sat, loadout: [antennaFromCard(card, NET_REF_LINK_DISTANCE_M)] };
+}
+
+/** A beams table pointing sat slot 0 at the equatorial region (the pointing verb). */
+function beamsAt(satId: string, regionId = NET_ACT1_REGION.id): Map<string, string> {
+  return new Map([[`${satId}:0`, regionId]]);
+}
+
 describe("C1a cost-blend — the MIN-COST pick reduces to the legacy max-margin pick under defaults", () => {
   it("with default prefer + no loadBySat, the min-latency (= max-margin) sat wins: the short LEO over the long GEO", () => {
     const sats = [geoSat(), equatorialLeo("SAT-LEO", 0)];
@@ -95,7 +108,7 @@ describe("C1a cost-blend — the MIN-COST pick reduces to the legacy max-margin 
     // Heavily load SAT-A, but prefer.bw = 0 ⇒ the congestion term has zero weight ⇒ the pick is
     // still the min-latency tie-break winner (SAT-A), proving load alone never reroutes — only an
     // explicit prefer.bw does (the §7.3 "by exception" tune).
-    const load = new Map([["SAT-A", 99]]);
+    const load = new Map([["SAT-A:0", 99]]);
     const r = solve(eph, contract({ prefer: { lat: 1, bw: 0, stab: 0 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     expect(r.path?.[1]).toBe("SAT-A");
   });
@@ -106,7 +119,7 @@ describe("C1a cost-blend — congestion routes AROUND a loaded sat onto a parall
     const sats = [equatorialLeo("SAT-A", 0), equatorialLeo("SAT-B", 3)];
     // SAT-A is the default (min-latency) pick. Load it over capacity and bias toward bandwidth ⇒
     // the congestion term on SAT-A dominates ⇒ the blend reroutes onto the un-loaded parallel SAT-B.
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 2]]);
     const r = solve(eph, contract({ prefer: { lat: 1, bw: 100, stab: 0 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     expect(r.served).toBe(true);
     expect(r.path?.[1]).toBe("SAT-B"); // routed around the congested SAT-A.
@@ -114,7 +127,7 @@ describe("C1a cost-blend — congestion routes AROUND a loaded sat onto a parall
 
   it("the SAME congested sat is still chosen when there is NO parallel path (the blend can't conjure capacity)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 2]]);
     // No bandwidth axis active ⇒ still served on the only path (congestion biases the pick, but a
     // single path is the only choice; the bandwidth BITE is a separate axis, tested below).
     const r = solve(eph, contract({ prefer: { lat: 1, bw: 100, stab: 0 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
@@ -125,9 +138,11 @@ describe("C1a cost-blend — congestion routes AROUND a loaded sat onto a parall
 
 describe("C1a — the LATENCY axis (the GEO ceiling, felt; activated one at a time)", () => {
   it("a latency-active contract over a too-long GEO path breaches with bindingConstraint='latency'", () => {
-    const sats = [geoSat()];
+    // R0: the latency-active contract needs a POINTED ACCESS pipe (BROADCAST is ineligible);
+    // with the beam pointed, the path EXISTS and the GEO ceiling binds on LATENCY.
+    const sats = [withAccess(geoSat())];
     // GEO path ≈ 3.57 ms; an SLA of 3 ms can't be met by GEO.
-    const r = solve(eph, contract({ axes: ["connectivity", "latency"], slaLatencyS: 0.003 }), sats, [NET_ACT1_GROUND], 0);
+    const r = solve(eph, contract({ axes: ["connectivity", "latency"], slaLatencyS: 0.003 }), sats, [NET_ACT1_GROUND], 0, undefined, undefined, beamsAt("SAT-GEO"));
     expect(r.served).toBe(false);
     expect(r.bindingConstraint).toBe("latency");
     // The path is still reported (the bridge exists; it's the latency that fails) + a loss is stamped.
@@ -137,8 +152,8 @@ describe("C1a — the LATENCY axis (the GEO ceiling, felt; activated one at a ti
   });
 
   it("the SAME contract over a short LEO path passes the latency SLA (a shorter route cuts it)", () => {
-    const sats = [equatorialLeo("SAT-LEO", 0)];
-    const r = solve(eph, contract({ axes: ["connectivity", "latency"], slaLatencyS: 0.003 }), sats, [NET_ACT1_GROUND], 0);
+    const sats = [withAccess(equatorialLeo("SAT-LEO", 0))];
+    const r = solve(eph, contract({ axes: ["connectivity", "latency"], slaLatencyS: 0.003 }), sats, [NET_ACT1_GROUND], 0, undefined, undefined, beamsAt("SAT-LEO"));
     expect(r.served).toBe(true);
     expect(r.bindingConstraint).toBeNull();
     expect(r.latencyS).toBeLessThan(0.003);
@@ -160,7 +175,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
     // own offered load is one half (= capacity), so its PROPORTIONAL served share is
     // capacity·ownLoad/sharedLoad = capacity·cap/(2·cap) = cap/2 = 0.75 — BELOW its 1.0 committed floor.
     const sharedLoad = NET_LINK_CAPACITY_UNITS * 2;
-    const load = new Map([["SAT-A", sharedLoad]]);
+    const load = new Map([["SAT-A:0", sharedLoad]]);
     const r = solve(
       eph,
       contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS }),
@@ -178,7 +193,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
 
   it("UNDER capacity the same contract is served — the shared link honors its full offered load (≥ its floor)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 0.5]]); // shared peak under capacity.
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 0.5]]); // shared peak under capacity.
     const r = solve(
       eph,
       contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS * 0.5 }),
@@ -196,7 +211,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
     const sats = [equatorialLeo("SAT-A", 0)];
     // The bursty load peaks above capacity but the contract is the SOLE loader, so its served
     // bandwidth = its full offered load (the link honors it; no one else is contending) ≥ its floor.
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 1.2]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 1.2]]);
     const r = solve(
       eph,
       contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 0.6, offeredLoad: NET_LINK_CAPACITY_UNITS * 1.2 }),
@@ -212,7 +227,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
 
   it("with the bandwidth axis ABSENT, an over-capacity load does NOT breach (the axis is un-enforced)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 10]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 10]]);
     const r = solve(
       eph,
       contract({ axes: ["connectivity"], slaBandwidth: 1.0, offeredLoad: 5 }),
@@ -228,7 +243,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
 
   it("a bandwidth-active contract with NO slaBandwidth floor (0) never breaches on the bandwidth axis (no floor binds)", () => {
     const sats = [equatorialLeo("SAT-A", 0)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 5]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 5]]);
     const r = solve(eph, contract({ axes: ["connectivity", "bandwidth"] }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     expect(r.served).toBe(true); // slaBandwidth absent ⇒ 0 ⇒ the axis never binds.
     expect(r.bindingConstraint).toBeNull();
@@ -238,7 +253,7 @@ describe("C1a/P4 — the BANDWIDTH axis reads the contract's OWN slaBandwidth (�
 describe("C1a — the w_stab instability term is DORMANT (contributes exactly 0)", () => {
   it("varying prefer.stab with bw=0 never changes the pick, the served verdict, or the latency", () => {
     const sats = [equatorialLeo("SAT-A", 0), equatorialLeo("SAT-B", 3)];
-    const load = new Map([["SAT-A", 99]]);
+    const load = new Map([["SAT-A:0", 99]]);
     const r0 = solve(eph, contract({ prefer: { lat: 1, bw: 0, stab: 0 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     const r9 = solve(eph, contract({ prefer: { lat: 1, bw: 0, stab: 9999 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     expect(r9.path?.[1]).toBe(r0.path?.[1]);
@@ -248,7 +263,7 @@ describe("C1a — the w_stab instability term is DORMANT (contributes exactly 0)
 
   it("even with a non-zero bw weight, stab adds nothing: w_stab·instability_term = 0 regardless of stab", () => {
     const sats = [equatorialLeo("SAT-A", 0), equatorialLeo("SAT-B", 3)];
-    const load = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
+    const load = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 2]]);
     const rNoStab = solve(eph, contract({ prefer: { lat: 1, bw: 100, stab: 0 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     const rBigStab = solve(eph, contract({ prefer: { lat: 1, bw: 100, stab: 1e9 } }), sats, [NET_ACT1_GROUND], 0, undefined, load);
     expect(rBigStab.path?.[1]).toBe(rNoStab.path?.[1]);
@@ -274,7 +289,7 @@ describe("C1a — E2/E3 are signature-stable (back-compat by no-op defaults)", (
     const explicit0 = topologyKey(c, sats, undefined, 0);
     expect(explicit0).toBe(legacyDefault);
     // The legacy 3-field shape with a trailing |0 — the fingerprint a pre-Act-3 key produces.
-    expect(legacyDefault).toBe(`${c.id}|${sats.map((s) => s.id).sort().join(",")}||0`);
+    expect(legacyDefault).toBe(`${c.id}|${sats.map((s) => s.id).sort().join(",")}||0|`); // R0: + the trailing (empty) beams segment.
     // A congestion-epoch bump changes the fingerprint ⇒ forces a re-solve (the HIGH-2 fix).
     expect(topologyKey(c, sats, undefined, 1)).not.toBe(legacyDefault);
   });
@@ -285,14 +300,14 @@ describe("C1a — E2/E3 are signature-stable (back-compat by no-op defaults)", (
     // offered load is one half of the heavy shared peak below (= capacity). Epoch 0, comfortable
     // shared load (under capacity) ⇒ served (its full offered share honored ≥ its floor).
     const c = contract({ axes: ["connectivity", "bandwidth"], slaBandwidth: 1.0, offeredLoad: NET_LINK_CAPACITY_UNITS });
-    const lightLoad = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 0.5]]);
+    const lightLoad = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 0.5]]);
     const s0 = resolveTick(eph, c, sats, [NET_ACT1_GROUND], 0, null, undefined, lightLoad, 0);
     expect(s0.result.served).toBe(true);
     // The shared peak rises to 2× capacity (a coincident spike) AND the session bumps the epoch ⇒
     // topoKey flips ⇒ full re-solve through the cache ⇒ this contract's proportional share
     // (capacity·cap/(2·cap) = 0.75) falls below its 1.0 floor ⇒ the bandwidth bite refreshes the
     // cached verdict (no stale "served").
-    const heavyLoad = new Map([["SAT-A", NET_LINK_CAPACITY_UNITS * 2]]);
+    const heavyLoad = new Map([["SAT-A:0", NET_LINK_CAPACITY_UNITS * 2]]);
     const s1 = resolveTick(eph, c, sats, [NET_ACT1_GROUND], 1 / 60, s0, undefined, heavyLoad, 1);
     expect(s1.result.served).toBe(false);
     expect(s1.result.bindingConstraint).toBe("bandwidth");
