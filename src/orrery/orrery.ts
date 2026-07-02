@@ -321,6 +321,10 @@ export interface NetRenderState {
    * them so "the signal reaches there" is visible on the globe (currently not drawn). Null when no
    * launched sat serves the region. A render-only read of the SAME bridge the router uses. */
   servedLink: { regionPosM: Vec3; satPosM: Vec3; groundPosM: Vec3 } | null;
+  /** SD-45 — assigned spot beams sat→region; blind = pointed with no line of sight (red). */
+  beamPointers: { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[];
+  /** SD-45 — in-flight launch arcs (ground → first member park), progress-clipped. */
+  launchArcs: { points: Vec3[]; progress: number; lost: boolean }[];
   /**
    * P1 (GDD §5 survival condition) — THE LIVE NETWORK, DRAWN. One entry per ACTIVE served contract:
    * the router's own path `region→…→sat→…→ground` (the {@link import("../sim/net/router").SolveResult}
@@ -871,6 +875,9 @@ export class Orrery {
    * reroute made legible). Built once with a fixed segment cap; positions+colours rewritten per frame
    * from {@link NetRenderState.servedLinks} (render-only, no per-frame alloc). */
   private netServedLinks?: THREE.LineSegments;
+  private netBeamLines?: THREE.LineSegments;
+  private netBlindBeamLines?: THREE.LineSegments;
+  private netLaunchArcLines?: THREE.Line;
   /** Scratch colours reused across frames to tint the network links without per-frame Color alloc. */
   private readonly _netUtilCool = new THREE.Color(0.35, 1.0, 0.55); // headroom: cool green.
   private readonly _netUtilWarm = new THREE.Color(1.0, 0.72, 0.2); // near capacity: amber.
@@ -1114,6 +1121,34 @@ export class Orrery {
     this.netServedLinks = this.buildVertexColorLine(MAX_NET_LINKS * MAX_NET_LINK_HOPS, 0.9);
     this.netServedLinks.visible = false;
     this.netServedLinks.renderOrder = 15; // above the single draft beam so the live web reads on top.
+    // SD-45 — BEAM POINTER lines (one segment per assigned beam; red when blind) + the
+    // LAUNCH ARC polylines. Pooled Float32 line buffers, rebuilt in place per frame.
+    {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(2 * 3 * 24), 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.5, depthTest: false, depthWrite: false });
+      this.netBeamLines = new THREE.LineSegments(geo, mat);
+      this.netBeamLines.frustumCulled = false;
+      this.netBeamLines.visible = false;
+      this.netBeamLines.renderOrder = 14.5;
+      this.scene.add(this.netBeamLines);
+      const geoB = new THREE.BufferGeometry();
+      geoB.setAttribute("position", new THREE.BufferAttribute(new Float32Array(2 * 3 * 24), 3));
+      const matB = new THREE.LineBasicMaterial({ color: 0xe2604a, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false });
+      this.netBlindBeamLines = new THREE.LineSegments(geoB, matB);
+      this.netBlindBeamLines.frustumCulled = false;
+      this.netBlindBeamLines.visible = false;
+      this.netBlindBeamLines.renderOrder = 14.6;
+      this.scene.add(this.netBlindBeamLines);
+      const geoL = new THREE.BufferGeometry();
+      geoL.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 26 * 4), 3));
+      const matL = new THREE.LineBasicMaterial({ color: 0xffd27c, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false });
+      this.netLaunchArcLines = new THREE.Line(geoL, matL);
+      this.netLaunchArcLines.frustumCulled = false;
+      this.netLaunchArcLines.visible = false;
+      this.netLaunchArcLines.renderOrder = 15.5;
+      this.scene.add(this.netLaunchArcLines);
+    }
     this.scene.add(this.netServedLinks);
 
     this.attachInput();
@@ -2029,6 +2064,48 @@ export class Orrery {
    * Render-only — positions + colours rewritten in place; no per-frame allocation, no sim touch.
    */
   private updateNetLinks(focusAbs: Vec3): void {
+    // SD-45 — beam pointers + launch arcs (drawn whether or not anything serves).
+    const nsAll = this.netRenderMode ? this.netState : null;
+    const drawSegs = (obj: THREE.LineSegments | undefined, segs: { fromPosM: Vec3; toPosM: Vec3 }[]) => {
+      if (!obj) return;
+      if (segs.length === 0) {
+        obj.visible = false;
+        return;
+      }
+      const attr = obj.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = attr.array as Float32Array;
+      let w = 0;
+      const maxSegs = Math.min(segs.length, arr.length / 6);
+      for (let i = 0; i < maxSegs; i++) {
+        w = this.writeRenderPoint(arr, w, segs[i].fromPosM[0], segs[i].fromPosM[1], segs[i].fromPosM[2], focusAbs);
+        w = this.writeRenderPoint(arr, w, segs[i].toPosM[0], segs[i].toPosM[1], segs[i].toPosM[2], focusAbs);
+      }
+      obj.geometry.setDrawRange(0, maxSegs * 2);
+      attr.needsUpdate = true;
+      obj.visible = true;
+    };
+    const pointers = nsAll?.beamPointers ?? [];
+    drawSegs(this.netBeamLines, pointers.filter((p) => !p.blind));
+    drawSegs(this.netBlindBeamLines, pointers.filter((p) => p.blind));
+    const arcs = nsAll?.launchArcs ?? [];
+    if (this.netLaunchArcLines) {
+      const first = arcs[0];
+      if (!first || first.points.length < 2) {
+        this.netLaunchArcLines.visible = false;
+      } else {
+        const attr = this.netLaunchArcLines.geometry.getAttribute("position") as THREE.BufferAttribute;
+        const arr = attr.array as Float32Array;
+        let w = 0;
+        const n = Math.min(first.points.length, arr.length / 3);
+        for (let i = 0; i < n; i++) {
+          w = this.writeRenderPoint(arr, w, first.points[i][0], first.points[i][1], first.points[i][2], focusAbs);
+        }
+        this.netLaunchArcLines.geometry.setDrawRange(0, n);
+        attr.needsUpdate = true;
+        (this.netLaunchArcLines.material as THREE.LineBasicMaterial).color.setHex(first.lost ? 0xe2604a : 0xffd27c);
+        this.netLaunchArcLines.visible = true;
+      }
+    }
     const line = this.netServedLinks;
     if (!line) return;
     const ns = this.netRenderMode ? this.netState : null;

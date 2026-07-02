@@ -426,6 +426,10 @@ export function offerNetContract(
     offeredLoad?: number;
     trafficClass?: TrafficClass;
     prefer?: PreferWeights;
+    /** R3 (SD-45): the offer auto-expires this many sim-seconds after `offeredAtS`
+     * (both must be given; the shared m2 stepOfferedContract fails it past that). */
+    offerWindowS?: number;
+    offeredAtS?: number;
   },
 ): Contract {
   // The traffic class SETS the default prefer (§7.2). An explicit `prefer` opt still wins (a test /
@@ -451,7 +455,12 @@ export function offerNetContract(
     payPerSecond: opts?.payPerSecond ?? NET_DEFAULT_PAY_PER_SECOND,
     penaltyPerSecond: opts?.penaltyPerSecond ?? NET_DEFAULT_PENALTY_PER_SECOND,
     state: "offered",
-    offerExpiresAtS: Infinity, // no offer window in Act 1 (the shared offered-step never expires it).
+    // R3 (SD-45): a finite offer window when the scenario gives one (Act 2+ tenders have
+    // clocks; the Act-1 opener stays patient). The SHARED m2 expiry helper enforces it.
+    offerExpiresAtS:
+      opts?.offerWindowS !== undefined && opts?.offeredAtS !== undefined
+        ? opts.offeredAtS + opts.offerWindowS
+        : Infinity,
     termSeconds: opts?.termSeconds ?? NET_DEFAULT_TERM_SECONDS,
     servedSecondsAccum: 0,
     breachSecondsAccum: 0,
@@ -459,6 +468,40 @@ export function offerNetContract(
     lastAvailability: 0,
     earnedEur: 0,
   };
+}
+
+// --- R3 (SD-45) — RENEWALS: the sustaining loop -----------------------------------
+/** Renewal tariff growth per completed term (the escalation engine's economic face:
+ * demand grew while you served — the renewal pays more AND asks more). TUNABLE. */
+export const NET_RENEWAL_PAY_GROWTH = 1.15;
+/** The renewal's offer window (sim-seconds) — renewals have clocks (a served customer
+ * expects continuity; dawdle and the deal lapses). TUNABLE. */
+export const NET_RENEWAL_OFFER_WINDOW_S = 1800;
+
+/**
+ * Build the RENEWAL offer a COMPLETED contract spawns (m1-redesign §2.5: margins come
+ * from sharing + renewals — the term revenue never pays for the hardware, the RELATIONSHIP
+ * does). The renewal inherits the region + axes + class, carries the GROWN demand
+ * (offeredLoad = the completed term's baseline — you built for less than they now need),
+ * and pays {@link NET_RENEWAL_PAY_GROWTH}× the old tariff. Deterministic; the id appends
+ * a renewal ordinal. Pure.
+ */
+export function renewalOffer(completed: Contract, generation: number, nowS: number): Contract {
+  return offerNetContract(`${completed.id.split("+R")[0]}+R${generation}`, completed.region, {
+    label: completed.label,
+    activeAxes: new Set(completed.activeAxes),
+    payPerSecond: completed.payPerSecond * NET_RENEWAL_PAY_GROWTH,
+    penaltyPerSecond: completed.penaltyPerSecond * NET_RENEWAL_PAY_GROWTH,
+    termSeconds: completed.termSeconds,
+    slaAvail: completed.slaAvail,
+    slaLatencyS: completed.slaLatencyS,
+    slaBandwidth: completed.slaBandwidth,
+    offeredLoad: completed.loadBaseline,
+    trafficClass: completed.trafficClass,
+    prefer: { ...completed.prefer },
+    offerWindowS: NET_RENEWAL_OFFER_WINDOW_S,
+    offeredAtS: nowS,
+  });
 }
 
 /**

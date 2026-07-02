@@ -898,6 +898,8 @@ function netContractRows(t: number): NetContractRow[] {
       previewBreachAxis,
       bindingReason:
         c.state === "active" && !(solve?.served ?? false) ? (solve?.bindingConstraint ?? "connectivity") : null,
+      expiresInS:
+        c.state === "offered" && Number.isFinite(c.offerExpiresAtS) ? Math.max(0, c.offerExpiresAtS - t) : null,
     };
   });
 }
@@ -1427,6 +1429,8 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       // P1 — the live network: even with no current teaching contract, draw any OTHER active served
       // contract's path (e.g. an Act-3a corridor contract while the teaching cursor is elsewhere).
       servedLinks: netServedLinksSlice(t, add),
+      beamPointers: netBeamPointersSlice(t, add),
+      launchArcs: netLaunchArcsSlice(t, add),
     };
   }
 
@@ -1464,7 +1468,18 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // ground, coloured by the bridging sat's utilisation + flashed on a re-route (the self-healing
   // reroute made legible). The single `servedLink` above stays for the planner draft beam.
   const servedLinks = netServedLinksSlice(t, add);
-  return { body, region, footprints, availability, mars: netMarsSlice(t), draft, servedLink, servedLinks };
+  return {
+    body,
+    region,
+    footprints,
+    availability,
+    mars: netMarsSlice(t),
+    draft,
+    servedLink,
+    servedLinks,
+    beamPointers: netBeamPointersSlice(t, add),
+    launchArcs: netLaunchArcsSlice(t, add),
+  };
 }
 
 /**
@@ -1618,6 +1633,74 @@ const NET_REROUTE_DECAY = 0.04;
  * Mars-body contracts are skipped (the Act-4 crawler renders the interplanetary leg; a toy-frame beam
  * at 1 AU would be geometrically meaningless). A render-only read of the live session; no golden.
  */
+/** SD-45 — BEAM POINTERS: every ASSIGNED spot beam drawn sat → target region, so the
+ * pointing state is visible ON the globe. A beam whose sat currently has NO line of
+ * sight to its target draws BLIND (red) — the pointer that would have saved the €74k
+ * four-comsats session. (The SERVING path is drawn separately by servedLinks.) */
+/** SD-45 — LAUNCH ARCS: each in-flight launch event drawn as a rising arc from the
+ * ground site toward the first member's park position, parameterized by the event's
+ * sim-time progress (countdown holds at the pad; ascent climbs; deploys pop members). */
+function netLaunchArcsSlice(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): { points: Vec3[]; progress: number; lost: boolean }[] {
+  const out: { points: Vec3[]; progress: number; lost: boolean }[] = [];
+  const g = netSession.grounds[0];
+  if (g === undefined) return out;
+  for (const ev of netSession.launchEvents) {
+    const first = ev.members[0];
+    if (first === undefined) continue;
+    const p0 = ev.liftoffAtS;
+    const p1 = first.deployAtS;
+    const progress = t <= p0 ? 0 : t >= p1 ? 1 : (t - p0) / Math.max(1e-6, p1 - p0);
+    const lost = ev.lost === 1 && t >= ev.lostAtS;
+    // Arc samples: ground site surface point → the member's park position, lifted along a
+    // simple outward bow (progress-clipped so the tip climbs with the event).
+    const from = surfacePointRelative(g.latRad, g.lonRad, t);
+    const to = solveOrbit(first.sat.orbit, t);
+    const N = 24;
+    const upto = Math.max(2, Math.ceil(N * progress));
+    const pts: Vec3[] = [];
+    for (let k = 0; k < upto; k++) {
+      const f = (k / (N - 1)) * progress;
+      const lift = 1 + 0.35 * Math.sin(Math.PI * f); // outward bow.
+      pts.push(
+        add([
+          (from[0] + (to[0] - from[0]) * f) * lift,
+          (from[1] + (to[1] - from[1]) * f) * lift,
+          (from[2] + (to[2] - from[2]) * f) * lift,
+        ]),
+      );
+    }
+    out.push({ points: pts, progress, lost });
+  }
+  return out;
+}
+
+function netBeamPointersSlice(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[] {
+  const out: { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[] = [];
+  const grounds = [...netSession.grounds];
+  for (const sat of netSession.sats) {
+    for (let slot = 0; slot < sat.loadout.length; slot++) {
+      const target = netSession.beams.get(beamPipeKey(sat.id, slot));
+      if (target === undefined || target === "") continue;
+      const c = netSession.contracts.find((x) => x.region.id === target);
+      if (!c || c.region.bodyId !== "earth") continue;
+      const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
+      const sees = grounds.length > 0 && bridgeForPoint(eph, point, grounds, [sat], t).satId !== null;
+      out.push({
+        fromPosM: add(satPositionRelative(eph, sat, t)),
+        toPosM: add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
+        blind: !sees,
+      });
+    }
+  }
+  return out;
+}
+
 function netServedLinksSlice(
   t: number,
   add: (rel: Vec3) => Vec3,
@@ -1641,8 +1724,10 @@ function netServedLinksSlice(
       add(satPositionRelative(eph, sat, t)),
     ];
     if (ground !== undefined) points.push(add(surfacePointRelative(ground.latRad, ground.lonRad, t)));
-    // §4.3 utilisation of the bridging sat (shared load / capacity) — green headroom → red over-cap.
-    const util = netSession.loadOnSat(satId) / NET_LINK_CAPACITY_UNITS;
+    // §4.3 utilisation of the serving PIPE (its own capacity, R0) — green headroom → red over-cap.
+    const pipe = solve.pipe;
+    const cap = pipe !== null ? netSession.pipeCapacity(pipe) : 0;
+    const util = pipe !== null && cap > 0 ? netSession.loadOnPipe(pipe) / cap : 0;
     // RE-ROUTE detection: the bridging sat changed since the last served frame ⇒ flash the new path.
     live.add(c.id);
     const prevSat = netLinkLastSat.get(c.id);

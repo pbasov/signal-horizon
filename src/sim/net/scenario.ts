@@ -270,9 +270,12 @@ const ACT1: Beat = {
  *       instantaneous breach==0. Over-build still completes; the surplus is silently logged.
  * fallback: co-phasing specificity in CONSTELLATION terms (the onboarding fallback).
  */
+/** R3 (SD-45): the Act-2+ tender offer window (sim-seconds) — offers carry clocks. */
+export const NET_OFFER_WINDOW_S = 3600;
+
 const ACT2: Beat = {
   id: "act2",
-  emit(session: NetSession): void {
+  emit(session: NetSession, t: number): void {
     // The SECOND demand: availability ACTIVE + VISIBLE (the axis the player meets for the first
     // time). The axis is flipped ON purely via activeAxes — NO struct reshape; slaAvail already
     // exists on the contract. Idempotent (the session de-dupes by id).
@@ -280,6 +283,8 @@ const ACT2: Beat = {
       offerNetContract(ACT2_CONTRACT_ID, NET_ACT2_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity", "availability"]),
         slaAvail: ACT2_SLA_AVAIL,
+        offerWindowS: NET_OFFER_WINDOW_S,
+        offeredAtS: t,
         // §7.2 — the polar coverage metro is AVAILABILITY-class: it leans OFF latency (a low w_lat)
         // toward stability (w_stab present but DORMANT in M1, contributing 0). It does not chase the
         // absolute-shortest hop; any bridging polar sat that HOLDS the region serves it (the
@@ -349,7 +354,7 @@ const ACT2: Beat = {
  */
 const ACT3A: Beat = {
   id: "act3a",
-  emit(session: NetSession): void {
+  emit(session: NetSession, t: number): void {
     // Enable the escalation generator (the §3 emit contract: flip a flag, never touch physics).
     session.enableEscalation();
     // The latency corridor demand: latency ACTIVE + VISIBLE for the first time (the §4.4 latency
@@ -360,6 +365,8 @@ const ACT3A: Beat = {
       offerNetContract(ACT3A_CONTRACT_ID, NET_ACT3A_CORRIDOR_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity", "latency"]),
         slaLatencyS: NET_ACT3A_LOW_LATENCY_S,
+        offerWindowS: NET_OFFER_WINDOW_S,
+        offeredAtS: t,
         // §7.2 — the corridor trunk is BANDWIDTH-class: w_lat KEPT 1 (so an un-congested corridor
         // still picks the SHORT equatorial LEO to meet its low latency SLA — the GEO ceiling felt),
         // PLUS a heavy w_bw so once the SHARED equatorial sat's congestion_term rises (the escalation
@@ -378,6 +385,8 @@ const ACT3A: Beat = {
     session.addContract(
       offerNetContract(ACT3A_BACKHAUL_CONTRACT_ID, NET_ACT3A_BACKHAUL_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity"]),
+        offerWindowS: NET_OFFER_WINDOW_S,
+        offeredAtS: t,
         offeredLoad: NET_ACT3A_BACKHAUL_LOAD,
         slaBandwidth: NET_ACT3A_BACKHAUL_SLA_BW,
         payPerSecond: 1.2,

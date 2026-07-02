@@ -101,6 +101,8 @@ export interface NetContractRow {
   /** TRIAGE: for an ACTIVE but UNSERVED contract, the binding axis the router says is failing right now
    * — so the OVERVIEW board can say WHY it's at risk ("no path" / "over-cap" / …). null when served/offered. */
   bindingReason: string | null;
+  /** R3 (SD-45): sim-seconds until an OFFERED tender lapses (null = no clock / not offered). */
+  expiresInS: number | null;
 }
 
 /** The Act-1 contract readout (the one offered REGION-0 demand). */

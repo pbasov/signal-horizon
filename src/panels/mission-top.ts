@@ -329,7 +329,9 @@ export class MissionTop implements PanelHandle {
         t.state === "active"
           ? `${t.served ? "carrying" : "DARK"} · served ${(t.servedFraction * 100).toFixed(0)}% · term ${(t.progressFraction * 100).toFixed(0)}% · €${Math.round(t.earnedEur).toLocaleString("en-US")}`
           : t.state === "offered"
-            ? ""
+            ? t.expiresInS !== null
+              ? `tender lapses in ${Math.floor(t.expiresInS / 60)}m ${Math.floor(t.expiresInS % 60)}s`
+              : ""
             : `€${Math.round(t.earnedEur).toLocaleString("en-US")}`;
     }
   }

@@ -48,6 +48,7 @@ import {
   type Contract,
   type SlaAxis,
   SLA_AXIS_ORDINAL,
+  renewalOffer,
   netRevenueRatePerSecond,
   recordNetEarned,
   cloneNetContract,
@@ -1358,7 +1359,19 @@ export class NetSession {
       recordNetEarned(c, earned);
       // The IMPORTED m2 transition (servedFraction, dt) — NO net/ copy. It advances the
       // served/breach accums + completes on term / fails past the IMPORTED grace.
+      const wasActive = c.state === "active";
       stepActiveContract(c, frac, dtSeconds);
+      // R3 (SD-45) — RENEWALS: a COMPLETED term immediately spawns its renewal offer (the
+      // grown demand at a richer tariff, on a clock). Deterministic: keyed to the completion
+      // transition inside the step; the renewal generation counts prior renewals of the id.
+      if (wasActive && (c.state as ContractState) === "completed" && c.region.bodyId === "earth") {
+        const baseId = c.id.split("+R")[0];
+        let gen = 1;
+        for (const other of this.contractList) {
+          if (other.id.startsWith(`${baseId}+R`)) gen++;
+        }
+        this.addContract(renewalOffer(c, gen, t));
+      }
       // THE act3a RE-TAME WITNESS (design §3a / onboarding line 120) — only while escalation is on.
       // FIRST half: a contract whose breach window crossed the near-breach threshold (it dipped
       // near-breach under risen load). SECOND half: a witnessed contract back to fully SERVED
