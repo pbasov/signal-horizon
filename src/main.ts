@@ -1442,6 +1442,8 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     centerPosM: center,
     radiusRad: c.region.radiusRad,
     served,
+    // R2 (SD-45): a SIGNED-and-dark region is bleeding — the orrery pulses its queue ring.
+    active: c.state === "active",
   };
   // THE HAND-OFF RENDER (design §6): one footprint disc per sat currently COVERING the region,
   // each parked over the sat's own nadir so the discs SWEEP with the constellation. With a lone
@@ -1860,6 +1862,16 @@ function pushAvailHistory(contractId: string, value: number): number[] {
 function netBuildRenderState(): BuildRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
+  // R2 (SD-45) — freshly-deployed sats pulse for a beat (the deploy payoff): ids whose
+  // member deployed within the last 3 sim-seconds (read off the lingering launch events).
+  netFreshDeployIds.clear();
+  for (const ev of netSession.launchEvents) {
+    for (const m of ev.members) {
+      if (m.deployed === 1 && m.outcome !== "no_sep" && clock.seconds - m.deployAtS < 3) {
+        netFreshDeployIds.add(m.sat.id);
+      }
+    }
+  }
   // net/ Act-3b — the faulting-sat set (amber-pulse on the orrery): the ids the live NetSession
   // reports as carrying an ACTIVE fault this step (degradation / transient / telegraphed). A pure
   // read of the session's folded fault state; the orrery pulses those markers amber.
@@ -1868,7 +1880,15 @@ function netBuildRenderState(): BuildRenderState {
     const rel = solveOrbit(s.orbit, t);
     const posM: Vec3 = [earth[0] + rel[0], earth[1] + rel[1], earth[2] + rel[2]];
     const eirp = s.loadout.reduce((m, a) => Math.max(m, a.eirp), 0);
-    return { id: s.id, kind: "sat" as const, posM, eirp, orbit: s.orbit, faulting: faultingIds.has(s.id) };
+    return {
+      id: s.id,
+      kind: "sat" as const,
+      posM,
+      eirp,
+      orbit: s.orbit,
+      faulting: faultingIds.has(s.id),
+      fresh: netFreshDeployIds.has(s.id),
+    };
   });
   return {
     assets,
@@ -1960,6 +1980,33 @@ function netAccept(contractId?: string): void {
       entity: "NET-CONTRACT",
       value: id,
       msg: `accepted ${id} — serve it to EARN (the wallet ticks while served)`,
+    });
+  }
+}
+
+/** R3 (SD-45) — the act-4 verb: LAUNCH THE DEEP-SPACE RELAY (the same net_launch, the
+ * MARS_RELAY preset — its presence bridges the Mars leg). One click on the Mars tender. */
+const netFreshDeployIds = new Set<string>();
+
+function netLaunchMarsRelay(): void {
+  const action = netLaunchAction(
+    {
+      presetId: MARS_RELAY_PRESET.id,
+      semiMajorM: MARS_RELAY_PRESET.draft.semiMajorM,
+      incRad: MARS_RELAY_PRESET.draft.incRad,
+      subLonRad: MARS_RELAY_PRESET.draft.subLonRad,
+      count: 1,
+    },
+    clock.tick,
+  );
+  const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "sats_launched") {
+    log.append({
+      tSim: clock.seconds,
+      sev: "info",
+      entity: "PAD",
+      value: `−€${Math.round(res.costEur)}`,
+      msg: "deep-space relay committed — from Mars, every signal crawls for minutes",
     });
   }
 }
@@ -2309,6 +2356,15 @@ const orrery = new Orrery({
 // so the toy globe (sized to A1_BODY_RADIUS_M) is visible and the parked GEO holds station.
 // OFF for the M1-cache mode (every existing framing is byte-identical to before this flag).
 orrery.netRenderMode = netMode;
+// R2 (SD-45) — DRAG-TO-AIM (the real launch interaction; typed fields stay for precision):
+// with the pad open, dragging on the globe aims the draft AT the surface point under the
+// cursor — sub-longitude follows, and inclination rises to REACH the latitude you point at.
+orrery.onNetAim = netMode
+  ? (latRad: number, lonRad: number) => {
+      netDraft = { ...netDraft, subLonRad: lonRad, incRad: Math.abs(latRad) };
+      r1Armed = false;
+    }
+  : null;
 
 const log = new SystemLog();
 const telemetry = new Telemetry();
@@ -2425,6 +2481,8 @@ const missionTopPanel = new MissionTop({
   onArm: () => {
     r1Armed = !r1Armed;
   },
+  onRoute: (contractId, pos) => netSetPrefer(contractId, pos),
+  onMarsRelay: () => netLaunchMarsRelay(),
   onLaunch: () => {
     if (!r1Armed || validateLoadout(r1Bus, r1Cards) !== null) return;
     netLaunch();
@@ -2702,8 +2760,10 @@ function setWmPreset(i: number): void {
     // so frame Earth as a clear central hero with room for the constellation around it; CONNECTIVITY
     // (where you launch) frames it a touch larger so the regions/footprints read. ROUTING stays pulled
     // back (fill 0) so the live links read across the whole constellation.
-    // R1 (SD-45): MISSION is the one primary desktop — the globe is always the hero there.
-    if (wmPresetName === "MISSION") orrery.setNetHeroFraming(0.38);
+    // R1 (SD-45): MISSION is the one primary desktop — the globe is the hero there, framed
+    // so a full GEO ring (≈2.8× the globe radius) FITS with margin: fill 0.24 ⇒ ring
+    // diameter ≈ 0.67 of the pane height (user report: 0.38 clipped the orbits off-screen).
+    if (wmPresetName === "MISSION") orrery.setNetHeroFraming(0.24);
     else orrery.setNetHeroFraming(0);
   }
   // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run

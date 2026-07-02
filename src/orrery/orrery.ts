@@ -219,6 +219,8 @@ export interface NetRenderState {
     radiusRad: number;
     /** True the instant router.solve reports the region SERVED (lit); false ⇒ dim. */
     served: boolean;
+    /** R2 (SD-45): signed-and-dark ⇒ the queue ring pulses (bleeding, not just dim). */
+    active?: boolean;
   } | null;
   /**
    * Act-2 — the HAND-OFF render (design §6, the make-or-break "footprint snaps over the
@@ -805,6 +807,7 @@ export class Orrery {
    * and LIT (signal-green, bright) the instant the router reports it served — the single
    * legible Act-1 state change. Built once + hidden; shown only in net render mode. */
   private netRegionMesh?: THREE.Mesh;
+  private netQueueRing?: THREE.Mesh;
   /** Act-2 — a POOL of footprint discs (one per covering sat), parked over the region (the
    * cover→paid beat, generalized to a hand-off: several discs sweep so one slides on as
    * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
@@ -891,6 +894,12 @@ export class Orrery {
    * constant-screen-size billboard. Built once + hidden; shown only in net render mode, positioned +
    * sized + sun-lit per frame from the {@link NetRenderState.body} slice (the body's id + radius). */
   private netBodySphere?: THREE.Mesh;
+  /** R2 (SD-45) — DRAG-TO-AIM: while the pad is open, dragging ON the globe aims the
+   * draft (body-fixed lat/lon under the cursor). Set by main.ts; null = aiming off. */
+  onNetAim: ((latRad: number, lonRad: number) => void) | null = null;
+  private aimDragging = false;
+  private readonly aimRaycaster = new THREE.Raycaster();
+  private readonly aimNdc = new THREE.Vector2();
   /** A faint lat/lon GRATICULE child of the sphere (its own LineSegments over the unit sphere) that
    * ROTATES with the body spin θ(t) so the globe visibly turns. Built once; spun per frame. */
   private netBodyGraticule?: THREE.LineSegments;
@@ -1025,6 +1034,12 @@ export class Orrery {
     // all in (coastline 6 .. markers 10), so back-to-front draw order is deterministic every frame.
     this.netRegionMesh.renderOrder = 6.2; // base: the demand region, under all coverage patches.
     this.scene.add(this.netRegionMesh);
+    // R2 (SD-45) — THE QUEUE RING: a pulsing halo around a SIGNED-and-dark region ("someone
+    // is waiting and you are bleeding"), billboard-sized so it reads at any framing.
+    this.netQueueRing = this.buildHaloDisc([1.0, 0.45, 0.35]);
+    this.netQueueRing.visible = false;
+    this.netQueueRing.renderOrder = 6.1;
+    this.scene.add(this.netQueueRing);
     // Act-2 — a POOL of cool-cyan footprint SURFACE discs (one per covering sat). The hand-off render:
     // with a constellation several sweep so the region stays lit as one slides off + the next on.
     for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
@@ -1567,8 +1582,24 @@ export class Orrery {
         focusAbs,
       );
       region.visible = true;
+      // The queue ring: pulse ONLY when signed-and-dark (offered regions sit dim, calm).
+      const ring = this.netQueueRing;
+      if (ring) {
+        const bleeding = ns.region.active === true && !ns.region.served;
+        if (bleeding) {
+          ring.position.setFromMatrixPosition(region.matrix);
+          const tSim = this.ctx.now();
+          const pulse = 0.5 + 0.5 * Math.sin(tSim * 2.6);
+          this.sizeBillboard(ring, 30 + pulse * 26, worldPerPx);
+          ((ring.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color).setRGB(1.0, 0.35 + 0.25 * pulse, 0.3);
+          ring.visible = true;
+        } else {
+          ring.visible = false;
+        }
+      }
     } else {
       region.visible = false;
+      if (this.netQueueRing) this.netQueueRing.visible = false;
     }
 
     // The footprint patches over the region (the hand-off beat): one cool-cyan surface disc per
@@ -2907,10 +2938,14 @@ export class Orrery {
       m.position.copy(this._rp);
       // Ground stations read a hair smaller than launched sats (the §8 size cue).
       this.sizeBillboard(m, a.kind === "ground" ? 7 : 9, worldPerPx);
-      // A FAULTING sat pulses AMBER (green ↔ amber); a healthy asset stays signal-green.
+      // A FAULTING sat pulses AMBER (green ↔ amber); a healthy asset stays signal-green;
+      // a FRESHLY-DEPLOYED sat flashes bright for its first seconds (the deploy payoff).
       const col = (m.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color;
       if (a.faulting) col.copy(this._buildGreen).lerp(this._amber, pulse);
-      else col.copy(this._buildGreen);
+      else if ((a as { fresh?: boolean }).fresh) {
+        col.setRGB(0.75 + 0.25 * pulse, 1.0, 0.85);
+        this.sizeBillboard(m, 9 + 5 * pulse, worldPerPx);
+      } else col.copy(this._buildGreen);
       m.visible = true;
       slot++;
     }
@@ -3363,14 +3398,64 @@ export class Orrery {
    * (pick) from a DRAG (orbit the camera). A click is a press with < a few px travel. */
   private dragTravelPx = 0;
 
+  /** R2 (SD-45) — raycast the pointer against the operated-body sphere; returns the
+   * BODY-FIXED lat/lon under the cursor (accounting for the spin θ(t)), or null. */
+  private aimHit(clientX: number, clientY: number): { latRad: number; lonRad: number } | null {
+    const sphere = this.netBodySphere;
+    if (!sphere || !sphere.visible) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    this.aimNdc.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -(((clientY - rect.top) / rect.height) * 2 - 1),
+    );
+    this.aimRaycaster.setFromCamera(this.aimNdc, this.camera);
+    const hits = this.aimRaycaster.intersectObject(sphere, false);
+    if (hits.length === 0) return null;
+    const p = hits[0].point;
+    // Direction from the sphere centre in THREE axes → ecliptic (x_e = x, y_e = −z, z_e = y).
+    const dx = p.x - sphere.position.x;
+    const dy = p.y - sphere.position.y;
+    const dz = p.z - sphere.position.z;
+    const mlen = Math.hypot(dx, dy, dz) || 1;
+    const xe = dx / mlen;
+    const ye = -dz / mlen;
+    const ze = dy / mlen;
+    const latRad = Math.asin(Math.max(-1, Math.min(1, ze)));
+    const inertialLon = Math.atan2(ye, xe);
+    // Body-fixed longitude: subtract the spin angle (net toy: ω = 2π / 240 s).
+    const theta = ((2 * Math.PI) / 240) * this.ctx.now();
+    let lon = inertialLon - theta;
+    const TAU2 = Math.PI * 2;
+    lon = ((lon % TAU2) + TAU2) % TAU2;
+    if (lon > Math.PI) lon -= TAU2;
+    return { latRad, lonRad: lon };
+  }
+
   private attachInput(): void {
     this.canvas.addEventListener("pointerdown", (e) => {
+      // R2 (SD-45) — DRAG-TO-AIM: with the pad open, a press ON the globe grabs the AIM
+      // (the draft follows the cursor's surface point); a press off-globe orbits the camera.
+      const aiming = this.onNetAim !== null && (this.netState?.body?.plannerActive ?? false);
+      if (aiming) {
+        const hit = this.aimHit(e.clientX, e.clientY);
+        if (hit !== null) {
+          this.aimDragging = true;
+          this.onNetAim!(hit.latRad, hit.lonRad);
+          this.canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       this.dragging = true;
       this.lastPtr = { x: e.clientX, y: e.clientY };
       this.dragTravelPx = 0;
       this.canvas.setPointerCapture(e.pointerId);
     });
     this.canvas.addEventListener("pointermove", (e) => {
+      if (this.aimDragging) {
+        const hit = this.aimHit(e.clientX, e.clientY);
+        if (hit !== null) this.onNetAim?.(hit.latRad, hit.lonRad);
+        return;
+      }
       if (!this.dragging) return;
       const dx = e.clientX - this.lastPtr.x;
       const dy = e.clientY - this.lastPtr.y;
@@ -3388,6 +3473,7 @@ export class Orrery {
         this.handleClick(e.clientX - rect.left, e.clientY - rect.top);
       }
       this.dragging = false;
+      this.aimDragging = false;
       try {
         this.canvas.releasePointerCapture(e.pointerId);
       } catch {

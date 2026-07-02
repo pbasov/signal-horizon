@@ -60,6 +60,11 @@ export interface MissionTopState {
 export interface MissionTopActions {
   onMode(mode: "book" | "pad"): void;
   onAccept(contractId: string): void;
+  /** §7.3 — route bias for an ACTIVE tender: pos 0 = shortest path, 0.5 = spread around
+   * congestion. The first thing the player tunes. */
+  onRoute(contractId: string, pos: number): void;
+  /** Act 4 — commit the deep-space relay toward the Mars tender (one verb, one click). */
+  onMarsRelay(): void;
   onBus(bus: BusTier): void;
   onToggleCard(cardId: string): void;
   onCount(delta: number): void;
@@ -311,10 +316,30 @@ export class MissionTop implements PanelHandle {
         const served = el("div", "mission-tender-served", "");
         row.appendChild(served);
         if (t.state === "offered") {
+          if (t.id.startsWith("MARS")) {
+            const relay = btn("LAUNCH DEEP-SPACE RELAY", "net-btn mission-accept", () => this.actions.onMarsRelay());
+            relay.setAttribute("data-net", "mars-relay");
+            relay.title = "Commits a relay vehicle toward Mars. Its signal will take minutes each way — watch it crawl.";
+            row.appendChild(relay);
+          }
           const accept = btn("SIGN", "net-btn mission-accept", () => this.actions.onAccept(t.id));
           accept.setAttribute("data-net", "accept");
           accept.setAttribute("data-contract", t.id);
           row.appendChild(accept);
+        }
+        if (t.state === "active") {
+          const routeRow = el("div", "mission-route");
+          routeRow.title =
+            "Route bias for this tender's traffic: SHORT chases the lowest-latency pipe; SPREAD leaves a congested pipe for a parallel one. A fact of preference — the solver still picks the path.";
+          routeRow.appendChild(el("span", "mission-param-label", "ROUTE"));
+          const short = btn("SHORT", "net-btn mission-route-btn", () => this.actions.onRoute(t.id, 0));
+          short.setAttribute("data-net", "route-short");
+          short.setAttribute("data-contract", t.id);
+          const spread = btn("SPREAD", "net-btn mission-route-btn", () => this.actions.onRoute(t.id, 0.5));
+          spread.setAttribute("data-net", "route-spread");
+          spread.setAttribute("data-contract", t.id);
+          routeRow.append(short, spread);
+          row.appendChild(routeRow);
         }
         this.tendersHost.appendChild(row);
         this.tenderEls.set(t.id, { state, served });
