@@ -1654,18 +1654,21 @@ function netLaunchArcsSlice(
     if (first === undefined) continue;
     const p0 = ev.liftoffAtS;
     const p1 = first.deployAtS;
+    // The arc LIVES from commit to shortly after the FIRST deploy, then vanishes — it must
+    // never chase the orbiting sat after separation ("wtf is with the launch trajectories").
+    if (t > p1 + 2) continue;
     const progress = t <= p0 ? 0 : t >= p1 ? 1 : (t - p0) / Math.max(1e-6, p1 - p0);
     const lost = ev.lost === 1 && t >= ev.lostAtS;
-    // Arc samples: ground site surface point → the member's park position, lifted along a
-    // simple outward bow (progress-clipped so the tip climbs with the event).
+    // Arc samples: ground site surface point → the member's DEPLOY-TIME park position (a
+    // FIXED endpoint — the insertion point), lifted along a gentle outward bow.
     const from = surfacePointRelative(g.latRad, g.lonRad, t);
-    const to = solveOrbit(first.sat.orbit, t);
+    const to = solveOrbit(first.sat.orbit, p1);
     const N = 24;
     const upto = Math.max(2, Math.ceil(N * progress));
     const pts: Vec3[] = [];
     for (let k = 0; k < upto; k++) {
       const f = (k / (N - 1)) * progress;
-      const lift = 1 + 0.35 * Math.sin(Math.PI * f); // outward bow.
+      const lift = 1 + 0.12 * Math.sin(Math.PI * f); // a gentle outward bow.
       pts.push(
         add([
           (from[0] + (to[0] - from[0]) * f) * lift,
@@ -2361,7 +2364,38 @@ orrery.netRenderMode = netMode;
 // cursor — sub-longitude follows, and inclination rises to REACH the latitude you point at.
 orrery.onNetAim = netMode
   ? (latRad: number, lonRad: number) => {
-      netDraft = { ...netDraft, subLonRad: lonRad, incRad: Math.abs(latRad) };
+      // R2d (SD-45) — AIM ASSIST ("dragging is brutal, very hard to aim"): the raw raycast
+      // is damped and MAGNETIC. Targets: every live demand region is a magnet (within ~6°
+      // the aim clicks exactly onto the customer); the equator snaps inclination to 0
+      // (within 7°) and the poles to 90 (past 80°) so clean regimes are easy to hold.
+      const DEG_R = Math.PI / 180;
+      let tgtLat = latRad;
+      let tgtLon = lonRad;
+      for (const c of netSession.contracts) {
+        if (c.region.bodyId !== "earth") continue;
+        if (c.state !== "offered" && c.state !== "active") continue;
+        const dLat = Math.abs(latRad - c.region.latRad);
+        let dLon = Math.abs(lonRad - c.region.lonRad);
+        if (dLon > Math.PI) dLon = 2 * Math.PI - dLon;
+        if (dLat < 6 * DEG_R && dLon < 6 * DEG_R) {
+          tgtLat = c.region.latRad;
+          tgtLon = c.region.lonRad;
+          break;
+        }
+      }
+      let tgtInc = Math.abs(tgtLat);
+      if (tgtInc < 7 * DEG_R) tgtInc = 0;
+      else if (tgtInc > 80 * DEG_R) tgtInc = Math.PI / 2;
+      // Damping: ease the draft toward the target (~35%/event) so the aim glides, not jumps.
+      const K = 0.35;
+      let dLon2 = tgtLon - netDraft.subLonRad;
+      if (dLon2 > Math.PI) dLon2 -= 2 * Math.PI;
+      if (dLon2 < -Math.PI) dLon2 += 2 * Math.PI;
+      netDraft = {
+        ...netDraft,
+        subLonRad: netDraft.subLonRad + dLon2 * K,
+        incRad: netDraft.incRad + (tgtInc - netDraft.incRad) * K,
+      };
       r1Armed = false;
     }
   : null;
@@ -2664,6 +2698,7 @@ function ledgerFleetState(): LedgerFleetState {
 
 // DEV probe (SD-45 flicker hunt): sample the live serve verdict from the console.
 (window as unknown as Record<string, unknown>).__discDebug = () => orrery.__discDebug();
+(window as unknown as Record<string, unknown>).__aimProbe = (x: number, y: number) => orrery.__aimProbe(x, y);
 (window as unknown as Record<string, unknown>).__netDebug = () => {
   const c = netSession.contracts.find((x) => x.state === "active") ?? netSession.contracts[0];
   const solve = c ? netSession.lastSolveFor(c.id) : null;

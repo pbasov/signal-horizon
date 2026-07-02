@@ -2333,6 +2333,11 @@ export class Orrery {
    * dolly glides in/out via the same smoothing the planner close-up uses, so SWITCHING desktops
    * pans the camera smoothly. Net-mode only (the off-mode camera is untouched). Call from setWmPreset.
    */
+  /** DEV probe: raycast a client point → body-fixed lat/lon (aim calibration). */
+  __aimProbe(clientX: number, clientY: number): { latRad: number; lonRad: number } | null {
+    return this.aimHit(clientX, clientY);
+  }
+
   /** DEV probe (SD-45 flicker hunt): per-frame mesh states of the net surface discs. */
   __discDebug(): Record<string, unknown> {
 
