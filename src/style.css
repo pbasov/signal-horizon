@@ -1047,7 +1047,7 @@ body {
 .mission-input { width: 90px; background: #0b0b12; color: #e8eef7; border: 1px solid #2a3646; font: inherit; padding: 2px 4px; text-align: right; }
 .mission-count { min-width: 26px; text-align: center; color: #49d7c8; font-weight: 700; }
 .mission-step { width: 26px; }
-.mission-comb { width: 100%; height: 18px; image-rendering: pixelated; border: 1px solid #2a3646; }
+.mission-comb { width: 100%; height: 34px; image-rendering: pixelated; border: 1px solid #2a3646; }
 .mission-stack { font-size: 11px; margin: 3px 0; }
 .mission-problem { color: #e2b04a; font-size: 10px; margin: 2px 0; }
 .mission-arm { margin: 3px 4px 3px 0; }

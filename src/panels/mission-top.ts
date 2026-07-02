@@ -48,6 +48,8 @@ export interface MissionTopState {
   /** Physics facts of the draft (period; parks flag; one-way latency to the comb region). */
   facts: { periodS: number; parks: boolean; latencyMs: number | null };
   comb: { windows: boolean[]; duty: number } | null;
+  /** The FLEET's live windows over the same span (null = no fleet yet) — the gaps row. */
+  combFleet: { windows: boolean[]; duty: number } | null;
   combRegionLabel: string;
   armed: boolean;
   /** Loadout validation problem (null = valid). */
@@ -247,9 +249,10 @@ export class MissionTop implements PanelHandle {
     combGroup.appendChild(this.vCombLabel);
     this.combCanvas = document.createElement("canvas");
     this.combCanvas.className = "mission-comb";
-    this.combCanvas.title = "The coverage comb: one orbit of THIS draft (whole batch), left to right. Lit cells = the target region has line-of-sight through the design at that moment. Solid = parks over it; striped = passes.";
+    this.combCanvas.title =
+      "The coverage comb, one draft-orbit left to right. TOP row: your CURRENT fleet's line-of-sight windows over the target (the gaps are the dark cells). BOTTOM row: fleet + THIS launch together — aim until the bottom row is solid where the top row gapped.";
     this.combCanvas.width = 288;
-    this.combCanvas.height = 18;
+    this.combCanvas.height = 34;
     combGroup.appendChild(this.combCanvas);
     this.vFacts = el("div", "mission-hint", "");
     this.vFacts.title = "Physics of the draft: how much of one orbit the target sees it, the orbital period, whether it PARKS (period == day), and the one-way light time to the target.";
@@ -388,18 +391,31 @@ export class MissionTop implements PanelHandle {
       const w = this.combCanvas.width;
       const h = this.combCanvas.height;
       ctx.clearRect(0, 0, w, h);
-      const n = s.comb.windows.length;
-      const cell = w / n;
-      for (let i = 0; i < n; i++) {
-        ctx.fillStyle = s.comb.windows[i] ? "#49d7c8" : "#1a2430";
-        ctx.fillRect(i * cell, 2, Math.ceil(cell) - 1, h - 4);
-      }
+      const rowH = (h - 6) / 2;
+      const drawRow = (windows: boolean[] | null, y: number, onColor: string) => {
+        if (windows === null) {
+          ctx.fillStyle = "#141b26";
+          ctx.fillRect(0, y, w, rowH);
+          return;
+        }
+        const n = windows.length;
+        const cell = w / n;
+        for (let i = 0; i < n; i++) {
+          ctx.fillStyle = windows[i] ? onColor : "#1a2430";
+          ctx.fillRect(i * cell, y, Math.ceil(cell) - 1, rowH);
+        }
+      };
+      // TOP: the fleet as it stands (dim cyan — the gaps are the dark cells).
+      drawRow(s.combFleet?.windows ?? null, 2, "#2a7d8f");
+      // BOTTOM: fleet + this launch (bright — aim until it fills the top row's gaps).
+      drawRow(s.comb.windows, 4 + rowH, "#49d7c8");
     } else if (ctx) {
       ctx.clearRect(0, 0, this.combCanvas.width, this.combCanvas.height);
     }
     const dutyPct = s.comb ? Math.round(s.comb.duty * 100) : 0;
+    const fleetPct = s.combFleet ? `fleet holds ${Math.round(s.combFleet.duty * 100)}% · ` : "";
     const lat = s.facts.latencyMs === null ? "—" : `${s.facts.latencyMs.toFixed(1)} ms`;
-    this.vFacts.textContent = `in view ${dutyPct}% of the orbit · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat}`;
+    this.vFacts.textContent = `${fleetPct}with this launch ${dutyPct}% · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat}`;
 
     this.vStack.textContent = `vehicle €${Math.round(s.stack.vehicleEur).toLocaleString("en-US")} + hardware €${Math.round(s.stack.hardwareEur).toLocaleString("en-US")} × ${s.count} = €${Math.round(s.stack.totalEur).toLocaleString("en-US")} · wallet €${Math.round(s.balanceEur).toLocaleString("en-US")}`;
     this.vStack.classList.toggle("over", s.stack.totalEur > s.balanceEur);

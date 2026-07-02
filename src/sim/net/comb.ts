@@ -38,6 +38,46 @@ export const NET_COMB_SAMPLES = 48;
  * whether the would-be sat carries region→ground at that instant — permissive on
  * eligibility (the comb is geometry truth; pointing happens after launch).
  */
+/** The raw window row: does ANY of `sats` bridge region→ground at each of the
+ * NET_COMB_SAMPLES instants across [t0, t0+spanS)? The building block both comb rows
+ * share (one time axis ⇒ a fleet gap and its draft fill line up visually). */
+export function combWindows(
+  eph: Ephemeris,
+  region: Region,
+  grounds: GroundNet[],
+  sats: import("./sat").NetSat[],
+  t0: number,
+  spanS: number,
+): { windows: boolean[]; duty: number } {
+  const centre: RegionPoint = { latRad: region.latRad, lonRad: region.lonRad };
+  const windows: boolean[] = [];
+  let up = 0;
+  for (let k = 0; k < NET_COMB_SAMPLES; k++) {
+    const t = t0 + (spanS * k) / NET_COMB_SAMPLES;
+    const bridged = sats.length > 0 && bridgeForPoint(eph, centre, grounds, sats, t).satId !== null;
+    windows.push(bridged);
+    if (bridged) up++;
+  }
+  return { windows, duty: up / NET_COMB_SAMPLES };
+}
+
+/** Resolve a draft (+batch) into its preview member sats at commit-time t0. */
+export function draftMembers(
+  draft: LaunchDraft,
+  t0: number,
+  count = 1,
+  phaseSpreadRad = 0,
+): import("./sat").NetSat[] {
+  const n = Math.max(1, Math.trunc(count));
+  const sats = [];
+  for (let i = 0; i < n; i++) {
+    const sat = draftToSat(draft, t0, `PREVIEW-${i}`);
+    sat.orbit.m0Rad += i * phaseSpreadRad;
+    sats.push(sat);
+  }
+  return sats;
+}
+
 export function coverageComb(
   eph: Ephemeris,
   region: Region,
@@ -50,23 +90,9 @@ export function coverageComb(
   // The WHOLE BATCH combs together (the union): member i rides the same plane phase-shifted
   // by i·spread — the fact that makes a stacked batch (spread 0) legible as "no better than
   // one sat" BEFORE the money is spent.
-  const n = Math.max(1, Math.trunc(count));
-  const sats = [];
-  for (let i = 0; i < n; i++) {
-    const sat = draftToSat(draft, t0, `PREVIEW-${i}`);
-    sat.orbit.m0Rad += i * phaseSpreadRad;
-    sats.push(sat);
-  }
+  const sats = draftMembers(draft, t0, count, phaseSpreadRad);
   const periodS = orbitPeriodSeconds(sats[0].orbit);
   const spanS = periodS > 0 ? periodS : A1_GEO_PERIOD_S;
-  const centre: RegionPoint = { latRad: region.latRad, lonRad: region.lonRad };
-  const windows: boolean[] = [];
-  let up = 0;
-  for (let k = 0; k < NET_COMB_SAMPLES; k++) {
-    const t = t0 + (spanS * k) / NET_COMB_SAMPLES;
-    const bridged = bridgeForPoint(eph, centre, grounds, sats, t).satId !== null;
-    windows.push(bridged);
-    if (bridged) up++;
-  }
-  return { windows, spanS, duty: up / NET_COMB_SAMPLES };
+  const row = combWindows(eph, region, grounds, sats, t0, spanS);
+  return { windows: row.windows, spanS, duty: row.duty };
 }

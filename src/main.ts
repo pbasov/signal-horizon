@@ -108,7 +108,7 @@ import {
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
 } from "./panels/copy";
-import { coverageComb } from "./sim/net/comb";
+import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, type BusTier } from "./sim/net/sat";
 import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
 import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
@@ -2595,6 +2595,7 @@ function missionTopState(): MissionTopState {
   const t = clock.seconds;
   const target = r1TargetRegion();
   let comb: { windows: boolean[]; duty: number } | null = null;
+  let combFleet: { windows: boolean[]; duty: number } | null = null;
   let latencyMs: number | null = null;
   let periodS = 0;
   let parks = false;
@@ -2603,15 +2604,16 @@ function missionTopState(): MissionTopState {
     periodS = preview.periodS;
     parks = Math.abs(preview.periodS - A1_GEO_PERIOD_S) < 1;
     if (target) {
-      comb = coverageComb(
-        eph,
-        target.region,
-        netSession.grounds.slice(),
-        netDraft,
-        t,
-        netDraft.count,
-        netDraft.count > 1 ? r1PhaseSpreadRad : 0,
-      );
+      // R2f (SD-45, "how do i aim into the first satellite's gap if i can't see current
+      // coverage"): TWO comb rows on ONE time axis — the FLEET's live windows (where the
+      // gaps ARE) and the fleet ∪ draft union (does THIS launch fill them?).
+      const grounds = netSession.grounds.slice();
+      const members = draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0);
+      const spanS = orbitPeriodSeconds(members[0].orbit) > 0 ? orbitPeriodSeconds(members[0].orbit) : A1_GEO_PERIOD_S;
+      const fleet = [...netSession.sats];
+      combFleet = fleet.length > 0 ? combWindows(eph, target.region, grounds, fleet, t, spanS) : null;
+      const union = combWindows(eph, target.region, grounds, [...fleet, ...members], t, spanS);
+      comb = { windows: union.windows, duty: union.duty };
       const cp = preview.contracts.find((x) => x.contractId === target.region.id);
       latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
     }
@@ -2640,6 +2642,7 @@ function missionTopState(): MissionTopState {
     },
     facts: { periodS, parks, latencyMs },
     comb,
+    combFleet,
     combRegionLabel: target?.label ?? "no demand yet",
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
