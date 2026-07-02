@@ -87,6 +87,16 @@ export const NET_ACT1_REGION: Region = {
   bodyId: "earth",
 };
 
+/** R2e (SD-45) — THE LAUNCH SITE (render + launch-arc origin; NOT a comms endpoint):
+ * Cape Canaveral, 28.4° N, 80.6° W. Rockets rise from here; the comms ground network
+ * below is a separate concern (real-world split: launch pads ≠ ground stations). */
+export const NET_LAUNCH_SITE = {
+  id: "CANAVERAL",
+  label: "CAPE CANAVERAL",
+  latRad: 28.4 * DEG_RAD,
+  lonRad: -80.6 * DEG_RAD,
+};
+
 /** The Act-1 ground-network endpoint (design §5): equatorial, same meridian as the
  * region, with a modest antenna altitude so the local horizon clears. */
 export const NET_ACT1_GROUND: GroundNet = {

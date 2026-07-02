@@ -325,8 +325,10 @@ export interface NetRenderState {
   servedLink: { regionPosM: Vec3; satPosM: Vec3; groundPosM: Vec3 } | null;
   /** SD-45 — assigned spot beams sat→region; blind = pointed with no line of sight (red). */
   beamPointers: { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[];
-  /** SD-45 — in-flight launch arcs (ground → first member park), progress-clipped. */
+  /** SD-45 — in-flight launch arcs (pad → first member park), progress-clipped. */
   launchArcs: { points: Vec3[]; progress: number; lost: boolean }[];
+  /** R2e (SD-45) — ground stations + the launch pad, drawn + labeled on the globe. */
+  sites: { id: string; label: string; kind: "ground" | "pad"; posM: Vec3 }[];
   /**
    * P1 (GDD §5 survival condition) — THE LIVE NETWORK, DRAWN. One entry per ACTIVE served contract:
    * the router's own path `region→…→sat→…→ground` (the {@link import("../sim/net/router").SolveResult}
@@ -808,6 +810,7 @@ export class Orrery {
    * legible Act-1 state change. Built once + hidden; shown only in net render mode. */
   private netRegionMesh?: THREE.Mesh;
   private netQueueRing?: THREE.Mesh;
+  private netSiteMarkers: THREE.Mesh[] = [];
   /** Act-2 — a POOL of footprint discs (one per covering sat), parked over the region (the
    * cover→paid beat, generalized to a hand-off: several discs sweep so one slides on as
    * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
@@ -914,6 +917,10 @@ export class Orrery {
    * radius is tiny). 0 = no hero dolly (use the preset dist, e.g. the pulled-back ROUTING orbits view).
    * The planner close-up still overrides to {@link NET_PLANNER_SPHERE_FILL} while it is open. */
   private netHeroFill = 0;
+  /** R2e (SD-45) — user wheel-zoom multiplier over the hero/planner FILL distance (the
+   * fill used to fully override the wheel: "mouse zoom still doesn't work"). 1 = the
+   * framed default; wheel scales it; reset on framing change / R. */
+  private netZoomMul = 1;
   private readonly _netBodyDark = new THREE.Color(0.5, 0.56, 0.7); // dim slate globe tint.
   private _sphereSunDir = new THREE.Vector3();
   /** Surface-coverage patch scratch: a basis (centre normal + two tangents) reused to orient a
@@ -1040,6 +1047,18 @@ export class Orrery {
     this.netQueueRing.visible = false;
     this.netQueueRing.renderOrder = 6.1;
     this.scene.add(this.netQueueRing);
+    // R2e (SD-45) — GROUND SITES: dish glyphs for the comms ground stations (violet-cyan)
+    // and a warm triangle-read halo for the launch pad, each with a DOM label.
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(
+        this.quad,
+        new THREE.MeshBasicMaterial({ color: 0x7cc7e8, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false }),
+      );
+      m.visible = false;
+      m.renderOrder = 10.5;
+      this.scene.add(m);
+      this.netSiteMarkers.push(m);
+    }
     // Act-2 — a POOL of cool-cyan footprint SURFACE discs (one per covering sat). The hand-off render:
     // with a constellation several sweep so the region stays lit as one slides off + the next on.
     for (let i = 0; i < MAX_NET_FOOTPRINTS; i++) {
@@ -1554,6 +1573,10 @@ export class Orrery {
     if (ns === null) {
       region.visible = false;
       for (const m of this.netFootprintMeshes) m.visible = false;
+      for (let i = 0; i < this.netSiteMarkers.length; i++) {
+        this.netSiteMarkers[i].visible = false;
+        this.labelFor(`site:${i}`).style.display = "none";
+      }
       this.paintNetAvailability(null);
       return;
     }
@@ -1600,6 +1623,36 @@ export class Orrery {
     } else {
       region.visible = false;
       if (this.netQueueRing) this.netQueueRing.visible = false;
+    }
+
+    // R2e (SD-45) — the ground stations + the launch pad, visible + labeled ("you can't
+    // see GROUND-0 properly"). Billboards sized to read at any framing; labels ride the
+    // shared DOM label layer.
+    const sites = ns.sites ?? [];
+    for (let i = 0; i < this.netSiteMarkers.length; i++) {
+      const m = this.netSiteMarkers[i];
+      const site = sites[i];
+      const label = this.labelFor(`site:${i}`);
+      if (site === undefined || body === null) {
+        m.visible = false;
+        label.style.display = "none";
+        continue;
+      }
+      this.renderInto(m.position, site.posM, focusAbs);
+      this.sizeBillboard(m, site.kind === "pad" ? 8 : 7, worldPerPx);
+      (m.material as THREE.MeshBasicMaterial).color.setHex(site.kind === "pad" ? 0xffb057 : 0x7cc7e8);
+      m.visible = true;
+      // Label just right of the marker, matching the body-label convention.
+      this.tmpV.copy(m.position).project(this.camera);
+      if (this.tmpV.z > 1 || this.tmpV.z < -1) {
+        label.style.display = "none";
+      } else {
+        label.style.display = "block";
+        label.style.left = `${(this.tmpV.x * 0.5 + 0.5) * this.w + 8}px`;
+        label.style.top = `${(-this.tmpV.y * 0.5 + 0.5) * this.h}px`;
+        label.style.color = site.kind === "pad" ? "#ffb057" : "#7cc7e8";
+        label.textContent = site.kind === "pad" ? `▲ ${site.label}` : `⌾ ${site.label}`;
+      }
     }
 
     // The footprint patches over the region (the hand-off beat): one cool-cyan surface disc per
@@ -2378,6 +2431,7 @@ export class Orrery {
 
   setNetHeroFraming(fill: number): void {
     this.netHeroFill = this._netRenderMode ? Math.max(0, fill) : 0;
+    this.netZoomMul = 1; // a new framing resets the user zoom.
   }
 
   setPreset(i: number): void {
@@ -3139,7 +3193,7 @@ export class Orrery {
     const fill = body?.plannerActive ? NET_PLANNER_SPHERE_FILL : this.netHeroFill;
     if (f > 1e-3 && body !== null && focusAbs && fill > 0) {
       const halfFov = (fov * DEG) / 2;
-      const fillDist = sceneR / (fill * Math.tan(halfFov));
+      const fillDist = (sceneR / (fill * Math.tan(halfFov))) * this.netZoomMul;
       // Blend toward the fill distance by the smoothed close-up amount (glides in/out of the close-up).
       dist = fovDist * (1 - f) + fillDist * f;
     }
@@ -3491,7 +3545,17 @@ export class Orrery {
       "wheel",
       (e) => {
         e.preventDefault();
-        this.tgt.dist = Math.max(0.4, Math.min(60, this.tgt.dist * (1 + Math.sign(e.deltaY) * 0.08)));
+        const k = 1 + Math.sign(e.deltaY) * 0.08;
+        // R2e (SD-45): while a hero/planner FILL drives the dolly, the wheel scales the
+        // fill distance (netZoomMul) — otherwise the fill silently overrode every wheel
+        // event ("mouse zoom still doesn't work"). Off-fill, the classic dist zoom.
+        const fillActive =
+          this._netRenderMode && (this.netHeroFill > 0 || (this.netState?.body?.plannerActive ?? false));
+        if (fillActive) {
+          this.netZoomMul = Math.max(0.35, Math.min(4, this.netZoomMul * k));
+        } else {
+          this.tgt.dist = Math.max(0.4, Math.min(60, this.tgt.dist * k));
+        }
       },
       { passive: false },
     );

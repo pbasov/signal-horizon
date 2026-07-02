@@ -87,7 +87,7 @@ import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
 import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond } from "./sim/net/contract";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
-import { ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
+import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
@@ -187,13 +187,28 @@ app.append(topbar, wmCanvas, status.element);
 // watchdog that also heals silent drift (then relayouts the WM off the fresh rect).
 let shellRef: Shell | null = null;
 function syncViewport(): void {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  // Prefer visualViewport metrics — on buggy fractional-scaling stacks (Wayland/Chromium)
+  // innerWidth can report a stale layout viewport while visualViewport tracks the truth.
+  const vv = window.visualViewport;
+  const w = Math.round(vv?.width ?? window.innerWidth);
+  const h = Math.round(vv?.height ?? window.innerHeight);
   if (app.style.width !== `${w}px` || app.style.height !== `${h}px`) {
     app.style.width = `${w}px`;
     app.style.height = `${h}px`;
   }
 }
+// Diagnostics for the fill-the-window bug (paste `__viewport()` in the console).
+(window as unknown as Record<string, unknown>).__viewport = () => ({
+  innerW: window.innerWidth,
+  innerH: window.innerHeight,
+  vvW: window.visualViewport?.width ?? null,
+  vvH: window.visualViewport?.height ?? null,
+  vvScale: window.visualViewport?.scale ?? null,
+  dpr: window.devicePixelRatio,
+  appRect: app.getBoundingClientRect().toJSON(),
+  docW: document.documentElement.clientWidth,
+  docH: document.documentElement.clientHeight,
+});
 syncViewport();
 window.addEventListener("resize", syncViewport);
 window.visualViewport?.addEventListener("resize", syncViewport);
@@ -1431,6 +1446,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       servedLinks: netServedLinksSlice(t, add),
       beamPointers: netBeamPointersSlice(t, add),
       launchArcs: netLaunchArcsSlice(t, add),
+      sites: netSitesSlice(t, add),
     };
   }
 
@@ -1481,6 +1497,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     servedLinks,
     beamPointers: netBeamPointersSlice(t, add),
     launchArcs: netLaunchArcsSlice(t, add),
+    sites: netSitesSlice(t, add),
   };
 }
 
@@ -1639,6 +1656,30 @@ const NET_REROUTE_DECAY = 0.04;
  * pointing state is visible ON the globe. A beam whose sat currently has NO line of
  * sight to its target draws BLIND (red) — the pointer that would have saved the €74k
  * four-comsats session. (The SERVING path is drawn separately by servedLinks.) */
+/** R2e (SD-45) — GROUND SITES: the comms ground stations (dish glyphs + labels) and the
+ * launch pad (triangle + label) drawn ON the globe — "you can't see GROUND-0 properly". */
+function netSitesSlice(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): { id: string; label: string; kind: "ground" | "pad"; posM: Vec3 }[] {
+  const out: { id: string; label: string; kind: "ground" | "pad"; posM: Vec3 }[] = [];
+  for (const g of netSession.grounds) {
+    out.push({
+      id: g.id,
+      label: g.id,
+      kind: "ground",
+      posM: add(surfacePointRelative(g.latRad, g.lonRad, t)),
+    });
+  }
+  out.push({
+    id: NET_LAUNCH_SITE.id,
+    label: NET_LAUNCH_SITE.label,
+    kind: "pad",
+    posM: add(surfacePointRelative(NET_LAUNCH_SITE.latRad, NET_LAUNCH_SITE.lonRad, t)),
+  });
+  return out;
+}
+
 /** SD-45 — LAUNCH ARCS: each in-flight launch event drawn as a rising arc from the
  * ground site toward the first member's park position, parameterized by the event's
  * sim-time progress (countdown holds at the pad; ascent climbs; deploys pop members). */
@@ -1647,8 +1688,7 @@ function netLaunchArcsSlice(
   add: (rel: Vec3) => Vec3,
 ): { points: Vec3[]; progress: number; lost: boolean }[] {
   const out: { points: Vec3[]; progress: number; lost: boolean }[] = [];
-  const g = netSession.grounds[0];
-  if (g === undefined) return out;
+  const site = NET_LAUNCH_SITE;
   for (const ev of netSession.launchEvents) {
     const first = ev.members[0];
     if (first === undefined) continue;
@@ -1661,7 +1701,7 @@ function netLaunchArcsSlice(
     const lost = ev.lost === 1 && t >= ev.lostAtS;
     // Arc samples: ground site surface point → the member's DEPLOY-TIME park position (a
     // FIXED endpoint — the insertion point), lifted along a gentle outward bow.
-    const from = surfacePointRelative(g.latRad, g.lonRad, t);
+    const from = surfacePointRelative(site.latRad, site.lonRad, t);
     const to = solveOrbit(first.sat.orbit, p1);
     const N = 24;
     const upto = Math.max(2, Math.ceil(N * progress));

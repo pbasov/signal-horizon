@@ -69,6 +69,10 @@ body {
 #app {
   position: fixed;
   inset: 0;
+  /* SD-45 viewport-fill fallback: some fractional-scaling stacks mis-size fixed-inset
+     elements; explicit viewport units + the JS sync (main.ts) belt-and-braces it. */
+  width: 100vw;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
