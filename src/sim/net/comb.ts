@@ -44,16 +44,27 @@ export function coverageComb(
   grounds: GroundNet[],
   draft: LaunchDraft,
   t0: number,
+  count = 1,
+  phaseSpreadRad = 0,
 ): CoverageComb {
-  const sat = draftToSat(draft, t0);
-  const periodS = orbitPeriodSeconds(sat.orbit);
+  // The WHOLE BATCH combs together (the union): member i rides the same plane phase-shifted
+  // by i·spread — the fact that makes a stacked batch (spread 0) legible as "no better than
+  // one sat" BEFORE the money is spent.
+  const n = Math.max(1, Math.trunc(count));
+  const sats = [];
+  for (let i = 0; i < n; i++) {
+    const sat = draftToSat(draft, t0, `PREVIEW-${i}`);
+    sat.orbit.m0Rad += i * phaseSpreadRad;
+    sats.push(sat);
+  }
+  const periodS = orbitPeriodSeconds(sats[0].orbit);
   const spanS = periodS > 0 ? periodS : A1_GEO_PERIOD_S;
   const centre: RegionPoint = { latRad: region.latRad, lonRad: region.lonRad };
   const windows: boolean[] = [];
   let up = 0;
   for (let k = 0; k < NET_COMB_SAMPLES; k++) {
     const t = t0 + (spanS * k) / NET_COMB_SAMPLES;
-    const bridged = bridgeForPoint(eph, centre, grounds, [sat], t).satId !== null;
+    const bridged = bridgeForPoint(eph, centre, grounds, sats, t).satId !== null;
     windows.push(bridged);
     if (bridged) up++;
   }

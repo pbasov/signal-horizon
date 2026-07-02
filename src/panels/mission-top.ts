@@ -52,6 +52,9 @@ export interface MissionTopState {
   armed: boolean;
   /** Loadout validation problem (null = valid). */
   problem: string | null;
+  /** A physics/eligibility RULES FACT about the current design vs the target tender
+   * (LAW 1: facts the player needs, never solved answers). Null = nothing to say. */
+  padFact: string | null;
 }
 
 export interface MissionTopActions {
@@ -80,6 +83,25 @@ function btn(label: string, cls: string, onClick: () => void): HTMLButtonElement
   b.addEventListener("click", onClick);
   return b;
 }
+
+const CARD_TIPS: Record<string, string> = {
+  BROADCAST:
+    "BROADCAST — a down-only floodlight: serves EVERY latency-tolerant tender inside its footprint, no pointing needed. Cannot carry a latency SLA. Pipe capacity is shared by all riders.",
+  ACCESS_S:
+    "ACCESS-S — a small spot beam: serves EXACTLY ONE region and must be POINTED at it after deploy (fleet strip). Carries latency SLAs.",
+  ACCESS_L:
+    "ACCESS-L — a large spot beam: one region at a time, pointed after deploy. Twice the pipe of ACCESS-S.",
+  GATEWAY: "GATEWAY — the fat symmetric pipe. Pointed like a spot beam; the biggest single pipe you can fly.",
+  CROSSLINK: "CROSSLINK — sat-to-sat relay hardware (S slot). Inert for now; relay routing arrives with the solver depth.",
+};
+
+const PARAM_TIPS: Record<string, string> = {
+  altKm: "Altitude above the toy surface. Low = small fast-moving footprint, short light path. High (535 km = GEO) = huge footprint that PARKS over one longitude, longer light path.",
+  incDeg: "Orbital tilt. 0° stays over the equator; higher inclinations reach higher latitudes.",
+  subLonDeg: "The longitude the orbit is anchored over at commit (a parked GEO stays there). THE aim.",
+  raanDeg: "Rotates the orbital plane around the pole — slides where an inclined ground-track crosses.",
+  phaseSpreadDeg: "How far apart batch members ride along the SAME orbit. 0° stacks them uselessly; 360°/count spaces them evenly for hand-offs.",
+};
 
 const AXIS_PIPS: { key: "latency" | "availability" | "bandwidth"; glyph: string }[] = [
   { key: "latency", glyph: "LAT" },
@@ -114,6 +136,7 @@ export class MissionTop implements PanelHandle {
   private readonly vFacts: HTMLElement;
   private readonly vStack: HTMLElement;
   private readonly vProblem: HTMLElement;
+  private readonly vPadFact: HTMLElement;
   private readonly armBtn: HTMLButtonElement;
   private readonly launchBtn: HTMLButtonElement;
 
@@ -151,6 +174,10 @@ export class MissionTop implements PanelHandle {
       const b = btn(`${spec.label} ${spec.gSlots}G+${spec.sSlots}S €${spec.priceEur}`, "net-btn mission-bus", () =>
         this.actions.onBus(tier),
       );
+      b.title =
+        tier === "smallsat"
+          ? "T1 SMALLSAT — one ground-facing (G) slot, one sat-facing (S) slot. Cheap, one pipe, one place."
+          : "T2 COMSAT — two G slots + two S slots. More pipes on one launch (cheaper per unit), but one orbit position and one fault domain.";
       b.setAttribute("data-net", `bus-${tier}`);
       this.busBtns.set(tier, b);
       busRow.appendChild(b);
@@ -170,6 +197,7 @@ export class MissionTop implements PanelHandle {
         () => this.actions.onToggleCard(card.id),
       );
       row.setAttribute("data-net", `card-${card.id}`);
+      row.title = CARD_TIPS[card.id] ?? "";
       this.cardBtns.set(card.id, row);
       cardsGrid.appendChild(row);
     }
@@ -183,6 +211,8 @@ export class MissionTop implements PanelHandle {
       row.appendChild(el("span", "mission-param-label", label));
       const input = document.createElement("input");
       input.type = "number";
+      input.title = PARAM_TIPS[name] ?? "";
+      row.title = PARAM_TIPS[name] ?? "";
       input.step = String(step);
       input.className = "mission-input";
       input.setAttribute("data-net", `param-${name}`);
@@ -212,21 +242,25 @@ export class MissionTop implements PanelHandle {
     combGroup.appendChild(this.vCombLabel);
     this.combCanvas = document.createElement("canvas");
     this.combCanvas.className = "mission-comb";
+    this.combCanvas.title = "The coverage comb: one orbit of THIS draft (whole batch), left to right. Lit cells = the target region has line-of-sight through the design at that moment. Solid = parks over it; striped = passes.";
     this.combCanvas.width = 288;
     this.combCanvas.height = 18;
     combGroup.appendChild(this.combCanvas);
     this.vFacts = el("div", "mission-hint", "");
+    this.vFacts.title = "Physics of the draft: how much of one orbit the target sees it, the orbital period, whether it PARKS (period == day), and the one-way light time to the target.";
     combGroup.appendChild(this.vFacts);
     this.padFace.appendChild(combGroup);
 
     const commitGroup = el("div", "group");
     this.vStack = el("div", "mission-stack", "");
     this.vProblem = el("div", "mission-problem", "");
+    this.vPadFact = el("div", "mission-fact", "");
     this.armBtn = btn("ARM", "net-btn mission-arm", () => this.actions.onArm());
     this.armBtn.setAttribute("data-net", "arm");
+    this.armBtn.title = "Two-step commit: ARM, then LAUNCH. The stack price is charged win or lose.";
     this.launchBtn = btn("LAUNCH", "net-btn mission-launch", () => this.actions.onLaunch());
     this.launchBtn.setAttribute("data-net", "launch");
-    commitGroup.append(this.vStack, this.vProblem, this.armBtn, this.launchBtn);
+    commitGroup.append(this.vStack, this.vPadFact, this.vProblem, this.armBtn, this.launchBtn);
     this.padFace.appendChild(commitGroup);
 
     this.content.appendChild(this.padFace);
@@ -264,6 +298,7 @@ export class MissionTop implements PanelHandle {
         head.appendChild(state);
         row.appendChild(head);
         const pips = el("div", "mission-pips");
+        pips.title = "SLA axes this tender enforces: LAT = a latency ceiling · AVL = held continuously as sats move · BW = a committed bandwidth floor on a shared pipe.";
         for (const p of AXIS_PIPS) {
           const on = t.terms.toLowerCase().includes(p.key === "latency" ? "ms" : p.key === "availability" ? "avail" : "bps");
           pips.appendChild(el("span", `mission-pip${on ? " on" : ""}`, p.glyph));
@@ -339,9 +374,12 @@ export class MissionTop implements PanelHandle {
     const lat = s.facts.latencyMs === null ? "—" : `${s.facts.latencyMs.toFixed(1)} ms`;
     this.vFacts.textContent = `in view ${dutyPct}% of the orbit · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat}`;
 
-    this.vStack.textContent = `vehicle €${Math.round(s.stack.vehicleEur).toLocaleString("en-US")} + hardware €${Math.round(s.stack.hardwareEur).toLocaleString("en-US")} × ${s.count} = €${Math.round(s.stack.totalEur).toLocaleString("en-US")}`;
+    this.vStack.textContent = `vehicle €${Math.round(s.stack.vehicleEur).toLocaleString("en-US")} + hardware €${Math.round(s.stack.hardwareEur).toLocaleString("en-US")} × ${s.count} = €${Math.round(s.stack.totalEur).toLocaleString("en-US")} · wallet €${Math.round(s.balanceEur).toLocaleString("en-US")}`;
+    this.vStack.classList.toggle("over", s.stack.totalEur > s.balanceEur);
     this.vProblem.textContent = s.problem ?? "";
     this.vProblem.style.display = s.problem ? "" : "none";
+    this.vPadFact.textContent = s.padFact ?? "";
+    this.vPadFact.style.display = s.padFact ? "" : "none";
     this.armBtn.classList.toggle("active", s.armed);
     this.armBtn.textContent = s.armed ? "ARMED" : "ARM";
     const ready = s.armed && s.problem === null;

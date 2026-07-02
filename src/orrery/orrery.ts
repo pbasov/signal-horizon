@@ -308,6 +308,8 @@ export interface NetRenderState {
      * plane). Drawn through the SAME de-squash/log-fold the launched-sat rings use, so the preview
      * ring lands exactly where the committed sat's ring will. Empty until a draft exists. */
     orbitRing: Vec3[];
+    /** Every batch member's park position at commit (N markers; a 0° spread stacks them). */
+    memberPosM: Vec3[];
     /** The draft sat's CURRENT position on that ring (the phase marker — moves as PHASE changes), an
      * earth-relative world point. Null until a draft exists. */
     satPosM: Vec3 | null;
@@ -581,8 +583,14 @@ const SPHERE_FRAG = /* glsl */ `
     float bright = mix(0.06, 0.42, lambert) * uDim;
     ivec2 ip = ivec2(mod(gl_FragCoord.xy / uCell, 4.0));
     float threshold = (BAYER[ip.y * 4 + ip.x] + 0.5) / 16.0;
-    if (bright < threshold) discard;
-    fragColor = vec4(uColor, 1.0);
+    // SD-45 FLICKER FIX — SOFT ordered dither on a SOLID globe. The old binary discard
+    // popped whole cells whenever sub-pixel motion (floating-origin jitter / rotation)
+    // nudged a cell across its threshold — the perceived "flickering". Each cell now
+    // FADES across a one-Bayer-step band, and nothing is discarded (no depth holes):
+    // between-dots pixels paint the near-black globe base, so the body stays solid.
+    float mask = smoothstep(threshold - 0.05, threshold + 0.05, bright);
+    vec3 base = vec3(0.030, 0.032, 0.050);
+    fragColor = vec4(mix(base, uColor, mask), 1.0);
   }
 `;
 
@@ -611,10 +619,16 @@ const SURFACE_DISC_FRAG = /* glsl */ `
     if (r > 1.0) discard;
     // Bright interior with a soft dithered rim so the patch reads as a crisp coverage spot.
     float bright = mix(1.0, 0.35, smoothstep(0.65, 1.0, r)) * uAlpha;
+    // SD-45 FLICKER FIX — SOFT screen-locked dither. The old binary discard popped whole
+    // cells under sub-pixel motion (the "region keeps flickering" report). Screen-locked
+    // cells keep the dots stationary while the patch slides beneath; the soft one-step
+    // threshold band makes each dot FADE in/out instead of popping. Alpha-blended (the
+    // discs are already transparent + renderOrder-stacked).
     ivec2 ip = ivec2(mod(gl_FragCoord.xy / uCell, 4.0));
     float threshold = (BAYER[ip.y * 4 + ip.x] + 0.5) / 16.0;
-    if (bright < threshold) discard;
-    fragColor = vec4(uColor, 1.0);
+    float mask = smoothstep(threshold - 0.05, threshold + 0.05, bright);
+    if (mask <= 0.004) discard;
+    fragColor = vec4(uColor, mask);
   }
 `;
 
@@ -846,6 +860,7 @@ export class Orrery {
    * positions rewritten each frame from the draft slice (same de-squash/fold the launched rings use). */
   private netDraftRing?: THREE.LineSegments;
   private netDraftSat?: THREE.Mesh;
+  private netDraftMembers: THREE.Mesh[] = [];
   /** Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam (a bright green dashed
    * segment set through the three world points), drawn when a launched sat bridges the region. */
   private netServedLink?: THREE.LineSegments;
@@ -1075,6 +1090,18 @@ export class Orrery {
     this.netDraftSat.visible = false;
     this.netDraftSat.frustumCulled = false;
     this.netDraftSat.renderOrder = 12; // the draft sat dot, above the ring + discs.
+    // SD-45 — BATCH MEMBER markers: one small dot per would-be batch member (max 6), so a
+    // stacked batch (0° spread) is VISIBLY one pile before commit.
+    for (let i = 0; i < 6; i++) {
+      const m = new THREE.Mesh(
+        this.quad,
+        new THREE.MeshBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false }),
+      );
+      m.visible = false;
+      m.renderOrder = 11.8;
+      this.scene.add(m);
+      this.netDraftMembers.push(m);
+    }
     this.scene.add(this.netDraftSat);
     this.netServedLink = this.buildPolyline(2, 0x8dffc6, 0.85); // green served beam (region→sat→ground).
     this.netServedLink.visible = false;
@@ -1951,6 +1978,18 @@ export class Orrery {
     } else if (ring) {
       ring.visible = false;
     }
+    // Batch member park markers (SD-45): visible while the pad is open.
+    const members = draft?.memberPosM ?? [];
+    for (let i = 0; i < this.netDraftMembers.length; i++) {
+      const mm = this.netDraftMembers[i];
+      if (i < members.length && draft) {
+        this.renderInto(mm.position, members[i], focusAbs);
+        this.sizeBillboard(mm, 5, worldPerPx);
+        mm.visible = true;
+      } else {
+        mm.visible = false;
+      }
+    }
     if (dsat && draft?.satPosM) {
       this.renderInto(dsat.position, draft.satPosM, focusAbs);
       this.sizeBillboard(dsat, 5, worldPerPx);
@@ -2186,6 +2225,44 @@ export class Orrery {
    * dolly glides in/out via the same smoothing the planner close-up uses, so SWITCHING desktops
    * pans the camera smoothly. Net-mode only (the off-mode camera is untouched). Call from setWmPreset.
    */
+  /** DEV probe (SD-45 flicker hunt): per-frame mesh states of the net surface discs. */
+  __discDebug(): Record<string, unknown> {
+
+    const m = (mesh: THREE.Mesh | null) =>
+      mesh === null
+        ? null
+        : {
+            vis: mesh.visible,
+            color: ((mesh.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color).getHexString(),
+            alpha: (mesh.material as THREE.ShaderMaterial).uniforms.uAlpha?.value ?? null,
+            mtx: [12, 13, 14].map((i) => Math.round(mesh.matrix.elements[i] * 1e6) / 1e6),
+            mscale: Math.round(Math.hypot(mesh.matrix.elements[0], mesh.matrix.elements[1], mesh.matrix.elements[2]) * 1e6) / 1e6,
+          };
+    const reg = this.netState?.region ?? null;
+    let dM = null as number | null;
+    if (reg) {
+      const f = this.ctx.eph.position(this.focusId, this.ctx.now());
+      dM = Math.hypot(reg.centerPosM[0] - f[0], reg.centerPosM[1] - f[1], reg.centerPosM[2] - f[2]);
+    }
+    return {
+      dM,
+      cur: {
+        band: this.cur.orbitBandM,
+        logK: this.cur.logK,
+        logScale: this.cur.logScale,
+        dist: this.cur.dist,
+        focus: this.focusId,
+        hero: this.netHeroFill,
+      },
+      region: m(this.netRegionMesh ?? null),
+      gapDark: m(this.netGapDark ?? null),
+      gapCov: m(this.netGapCovered ?? null),
+      draftFp: m(this.netDraftFootprint ?? null),
+      fp0: m(this.netFootprintMeshes[0] ?? null),
+      fp0Order: this.netFootprintMeshes[0]?.renderOrder ?? null,
+    };
+  }
+
   setNetHeroFraming(fill: number): void {
     this.netHeroFill = this._netRenderMode ? Math.max(0, fill) : 0;
   }
@@ -2548,14 +2625,20 @@ export class Orrery {
     focusAbs: Vec3,
     liftMul = 1,
   ): void {
-    // Rebase the surface point + the body centre to scene space.
-    this.renderInto(this._surfN, surfacePosM, focusAbs); // reuse _surfN as the surface scene point.
-    const sx = this._surfN.x, sy = this._surfN.y, sz = this._surfN.z;
-    this.renderInto(this._rp2, bodyCenterPosM, focusAbs);
-    // Normal = centre → surface (the outward surface normal in scene space).
-    this._surfN.set(sx - this._rp2.x, sy - this._rp2.y, sz - this._rp2.z);
-    if (this._surfN.lengthSq() < 1e-12) this._surfN.set(0, 1, 0);
-    this._surfN.normalize();
+    // SD-45 FLICKER FIX — place the disc BY CONSTRUCTION on the rendered sphere instead of
+    // pushing a surface point through the radial remap (whose surface-adjacent behaviour is
+    // ULP-sensitive): direction = the f64 surface direction (axis-swapped), position = body
+    // scene centre + direction · bodySceneR. Exact, cheap, and immune to rebase noise.
+    this.renderInto(this._rp2, bodyCenterPosM, focusAbs); // the body's scene centre.
+    const ux = surfacePosM[0] - bodyCenterPosM[0];
+    const uy = surfacePosM[1] - bodyCenterPosM[1];
+    const uz = surfacePosM[2] - bodyCenterPosM[2];
+    const um = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1;
+    // ecliptic (x, y, z=north) → three (x, up=z, −y): the renderInto axis swap.
+    this._surfN.set(ux / um, uz / um, -uy / um);
+    const sx = this._rp2.x + this._surfN.x * bodySceneR;
+    const sy = this._rp2.y + this._surfN.y * bodySceneR;
+    const sz = this._rp2.z + this._surfN.z * bodySceneR;
     // Two tangents orthogonal to the normal (pick a reference not parallel to N).
     const ref = Math.abs(this._surfN.y) < 0.9 ? this.tmpV.set(0, 1, 0) : this.tmpV.set(1, 0, 0);
     this._surfT.crossVectors(ref, this._surfN).normalize();

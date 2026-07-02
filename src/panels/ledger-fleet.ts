@@ -19,6 +19,9 @@ export interface FleetBeamRow {
   /** Pipe load vs capacity (display units). */
   loadU: number;
   capU: number;
+  /** GEOMETRY FACT for a pointed beam: does this sat currently see its target region
+   * (line-of-sight + budget, this instant)? null = not applicable (unaimed/floodlight). */
+  sight: boolean | null;
 }
 
 export interface FleetChip {
@@ -26,6 +29,8 @@ export interface FleetChip {
   tier: string;
   altKm: number;
   incDeg: number;
+  /** Current parked sub-longitude (deg) for a GEO-period sat — its AIM. Null = not parked. */
+  parkedLonDeg: number | null;
   underburned: boolean;
   beams: FleetBeamRow[];
 }
@@ -66,6 +71,7 @@ export class LedgerFleet implements PanelHandle {
     ledger.appendChild(el("div", "legend", "LEDGER"));
     this.vWallet = el("div", "lf-wallet", "");
     this.vRate = el("div", "lf-rate", "");
+    this.vRate.title = "Net cash flow: contract revenue minus penalties minus per-satellite operating cost.";
     ledger.append(this.vWallet, this.vRate);
     this.content.appendChild(ledger);
     const fleet = el("div", "group");
@@ -96,7 +102,16 @@ export class LedgerFleet implements PanelHandle {
         const chip = el("div", "lf-chip");
         const head = el("div", "lf-chip-head");
         head.appendChild(el("span", "lf-chip-id", c.id));
-        head.appendChild(el("span", "lf-chip-orbit", `${c.tier} · ${Math.round(c.altKm)} km · ${Math.round(c.incDeg)}°`));
+        const orbitTxt =
+          c.parkedLonDeg !== null
+            ? `${c.tier} · parked over lon ${Math.round(c.parkedLonDeg)}° · ${Math.round(c.altKm)} km`
+            : `${c.tier} · ${Math.round(c.altKm)} km · ${Math.round(c.incDeg)}° incl`;
+        const orbitEl = el("span", "lf-chip-orbit", orbitTxt);
+        orbitEl.title =
+          c.parkedLonDeg !== null
+            ? "This satellite's period matches the day — it PARKS over one longitude. That longitude IS its aim."
+            : "A moving orbit: altitude + inclination decide which latitudes its footprint sweeps.";
+        head.appendChild(orbitEl);
         chip.appendChild(head);
         if (c.underburned) {
           const fix = document.createElement("button");
@@ -121,7 +136,12 @@ export class LedgerFleet implements PanelHandle {
             chip.appendChild(beamBtn);
             beamsMap.set(b.slot, beamBtn);
           } else {
-            chip.appendChild(el("div", "lf-beam-fixed", ""));
+            const fixedEl = el("div", "lf-beam-fixed", "");
+            fixedEl.title =
+              b.type === "BROADCAST"
+                ? "A floodlight: serves every latency-tolerant demand in its footprint automatically; its pipe is shared by all riders."
+                : "Sat-to-sat relay hardware — inert until relay routing arrives.";
+            chip.appendChild(fixedEl);
             // Non-pointable pipes still render their live load below (via the update pass on
             // the button map being absent — the fixed row is refreshed from the sig rebuild).
           }
@@ -137,10 +157,15 @@ export class LedgerFleet implements PanelHandle {
       for (const b of c.beams) {
         const beamBtn = entry.beams.get(b.slot);
         if (!beamBtn) continue;
+        const sightTxt = b.sight === null ? "" : b.sight ? " · in view" : " · NO LINE OF SIGHT";
         const target = b.target === "" ? "· unaimed ·" : `→ ${b.target}`;
-        beamBtn.textContent = `${b.type} ${target} · ${b.loadU.toFixed(2)}/${b.capU.toFixed(1)}u`;
+        beamBtn.textContent = `${b.type} ${target}${sightTxt} · ${b.loadU.toFixed(2)}/${b.capU.toFixed(1)}u`;
         beamBtn.classList.toggle("hot", b.capU > 0 && b.loadU / b.capU >= 0.8);
         beamBtn.classList.toggle("unaimed", b.target === "");
+        beamBtn.classList.toggle("blind", b.sight === false);
+        beamBtn.title =
+          "A spot beam serves ONE region. Clicking cycles its target across the live demands (and unaimed). " +
+          "'NO LINE OF SIGHT' means the beam is pointed at a region this satellite cannot currently reach — pointing does not bend physics.";
       }
     }
     // Fixed (non-pointable) pipes: repaint their text in place by walking the chips once.

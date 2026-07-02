@@ -178,6 +178,35 @@ const status = new StatusStrip(netMode);
 
 app.append(topbar, wmCanvas, status.element);
 
+// ── SD-45 — VIEWPORT SYNC (the "GUI doesn't fill the browser" bug) ─────────────────
+// On some Linux/fractional-scaling setups the fixed-inset #app ends up sized to a stale
+// layout viewport (the app renders smaller than the window with dead space beyond it,
+// and CSS `position: fixed; inset: 0` never recovers). Belt-and-braces: pin #app to the
+// live innerWidth/innerHeight explicitly, re-sync on every resize signal the platform
+// offers (window resize, visualViewport resize/scale, DPR change), and run a 1 s
+// watchdog that also heals silent drift (then relayouts the WM off the fresh rect).
+let shellRef: Shell | null = null;
+function syncViewport(): void {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (app.style.width !== `${w}px` || app.style.height !== `${h}px`) {
+    app.style.width = `${w}px`;
+    app.style.height = `${h}px`;
+  }
+}
+syncViewport();
+window.addEventListener("resize", syncViewport);
+window.visualViewport?.addEventListener("resize", syncViewport);
+window.visualViewport?.addEventListener("scroll", syncViewport);
+matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener?.("change", syncViewport);
+window.setInterval(() => {
+  const r = app.getBoundingClientRect();
+  if (Math.abs(r.width - window.innerWidth) > 1 || Math.abs(r.height - window.innerHeight) > 1) {
+    syncViewport();
+    shellRef?.relayout();
+  }
+}, 1000);
+
 // --- sim --------------------------------------------------------------------
 const eph = loadEphemeris();
 const clock = new SimClock();
@@ -1497,6 +1526,15 @@ function netDraftSlice(
     orbitRing.push(add(solveOrbit(sat.orbit, t + (periodS * k) / NET_DRAFT_RING_SAMPLES)));
   }
   const satPosM = r > 0 ? add(satRel) : null;
+  // BATCH MEMBER PARK MARKERS (SD-45 legibility): where EVERY member of the batch will ride
+  // at commit — a 0°-spread batch reads as N stacked markers (the €74k lesson, visible
+  // before the money is spent); an even spread reads as a necklace.
+  const memberPosM: Vec3[] = [];
+  for (let i = 0; i < Math.max(1, netDraft.count); i++) {
+    const m = draftToSat(netDraft, t, `PREVIEW-${i}`);
+    m.orbit.m0Rad += i * (netDraft.count > 1 ? r1PhaseSpreadRad : 0);
+    memberPosM.push(add(solveOrbit(m.orbit, t)));
+  }
   const footprint =
     r > 0
       ? {
@@ -1524,7 +1562,7 @@ function netDraftSlice(
             preview.contracts.find((pc) => pc.contractId === c.id)?.coveredFraction ?? 0,
         }
       : null;
-  return { footprint, groundTrack, gap, orbitRing, satPosM };
+  return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM };
 }
 
 /**
@@ -2315,6 +2353,18 @@ const ledgerFleetPanel = new LedgerFleet({
   onCircularize: (satId) => r1Circularize(satId),
 });
 
+/** Current body-fixed sub-longitude (deg) of a live sat (the parked-GEO aim readout). */
+function netSatSubLonDeg(sat: (typeof netSession.sats)[number], t: number): number {
+  const pos = solveOrbit(sat.orbit, t);
+  const theta = ((2 * Math.PI) / 240) * t;
+  const inertialLon = Math.atan2(pos[1], pos[0]);
+  let lon = inertialLon - theta;
+  const TAU2 = Math.PI * 2;
+  lon = ((lon % TAU2) + TAU2) % TAU2;
+  if (lon > Math.PI) lon -= TAU2;
+  return lon * (180 / Math.PI);
+}
+
 /** The comb/aim TARGET region: the first OFFERED Earth demand, else the first ACTIVE one. */
 function r1TargetRegion(): { region: import("./sim/net/endpoint").Region; label: string } | null {
   const c =
@@ -2336,7 +2386,15 @@ function missionTopState(): MissionTopState {
     periodS = preview.periodS;
     parks = Math.abs(preview.periodS - A1_GEO_PERIOD_S) < 1;
     if (target) {
-      comb = coverageComb(eph, target.region, netSession.grounds.slice(), netDraft, t);
+      comb = coverageComb(
+        eph,
+        target.region,
+        netSession.grounds.slice(),
+        netDraft,
+        t,
+        netDraft.count,
+        netDraft.count > 1 ? r1PhaseSpreadRad : 0,
+      );
       const cp = preview.contracts.find((x) => x.contractId === target.region.id);
       latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
     }
@@ -2368,7 +2426,31 @@ function missionTopState(): MissionTopState {
     combRegionLabel: target?.label ?? "no demand yet",
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
+    padFact: r1PadFact(),
   };
+}
+
+/** RULES FACT for the pad (LAW 1: facts, never verdicts): physics/eligibility truths the
+ * player must know to judge the design — e.g. a floodlight can never carry a low-latency
+ * SLA. Computed against the TARGET tender; null when nothing needs saying. */
+function r1PadFact(): string | null {
+  const c =
+    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
+    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
+    null;
+  if (c === null) return null;
+  const hasPointed = r1Cards.some((id) => id.startsWith("ACCESS") || id === "GATEWAY");
+  const hasBroadcast = r1Cards.includes("BROADCAST");
+  if (c.activeAxes.has("latency") && !hasPointed) {
+    return `${c.label} enforces a latency SLA — a BROADCAST floodlight cannot carry it; only a pointed ACCESS/GATEWAY spot beam can.`;
+  }
+  if (hasPointed && !hasBroadcast) {
+    return `spot beams serve ONE region each and start UNAIMED — after deploy, each must be pointed (the fleet strip is where beams aim).`;
+  }
+  if (netDraft.count > 1 && r1PhaseSpreadRad === 0) {
+    return `a batch with 0° phase spread stacks every member at the same spot — the comb shows the union is no better than one sat.`;
+  }
+  return null;
 }
 
 /** Smoothed €/min flow (wallet delta across a rolling ~2 s window). */
@@ -2386,21 +2468,42 @@ function r1FlowRate(): number {
 }
 
 function ledgerFleetState(): LedgerFleetState {
-  const chips: FleetChip[] = netSession.sats.map((sat) => ({
-    id: sat.id,
-    tier: BUS_SPECS[sat.bus].label,
-    altKm: (sat.orbit.aM - A1_BODY_RADIUS_M) / 1000,
-    incDeg: sat.orbit.incRad * (180 / Math.PI),
-    underburned: netSession.underburnFor(sat.id) !== null,
-    beams: sat.loadout.map((a, slot) => ({
-      slot,
-      type: a.type,
-      target: netSession.beams.get(beamPipeKey(sat.id, slot)) ?? "",
-      pointable: isPointable(a),
-      loadU: netSession.loadOnPipe(beamPipeKey(sat.id, slot)),
-      capU: a.capacityUnits,
-    })),
-  }));
+  const t = clock.seconds;
+  const grounds = [...netSession.grounds];
+  /** GEOMETRY FACT for a pointed beam: does THIS sat see its target region right now? */
+  const beamSight = (sat: (typeof netSession.sats)[number], targetRegionId: string): boolean => {
+    const c = netSession.contracts.find((x) => x.region.id === targetRegionId);
+    if (!c || grounds.length === 0) return false;
+    const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
+    return bridgeForPoint(eph, point, grounds, [sat], t).satId !== null;
+  };
+  const chips: FleetChip[] = netSession.sats.map((sat) => {
+    // A PARKED sat's current sub-longitude IS its aim — surface it (the €74k
+    // four-comsats-at-the-wrong-longitude session had no way to see this).
+    const periodS = orbitPeriodSeconds(sat.orbit);
+    const parked = Math.abs(periodS - A1_GEO_PERIOD_S) < 1;
+    const sub = netSatSubLonDeg(sat, t);
+    return {
+      id: sat.id,
+      tier: BUS_SPECS[sat.bus].label,
+      altKm: (sat.orbit.aM - A1_BODY_RADIUS_M) / 1000,
+      incDeg: sat.orbit.incRad * (180 / Math.PI),
+      parkedLonDeg: parked ? sub : null,
+      underburned: netSession.underburnFor(sat.id) !== null,
+      beams: sat.loadout.map((a, slot) => {
+        const target = netSession.beams.get(beamPipeKey(sat.id, slot)) ?? "";
+        return {
+          slot,
+          type: a.type,
+          target,
+          pointable: isPointable(a),
+          loadU: netSession.loadOnPipe(beamPipeKey(sat.id, slot)),
+          capU: a.capacityUnits,
+          sight: isPointable(a) && target !== "" ? beamSight(sat, target) : null,
+        };
+      }),
+    };
+  });
   const pending = netSession.launchEvents.map((ev) => {
     const t = clock.seconds;
     const phase =
@@ -2415,6 +2518,33 @@ function ledgerFleetState(): LedgerFleetState {
   });
   return { balanceEur: netSession.balance, ratePerMin: r1FlowRate(), chips, pending };
 }
+
+// DEV probe (SD-45 flicker hunt): sample the live serve verdict from the console.
+(window as unknown as Record<string, unknown>).__discDebug = () => orrery.__discDebug();
+(window as unknown as Record<string, unknown>).__netDebug = () => {
+  const c = netSession.contracts.find((x) => x.state === "active") ?? netSession.contracts[0];
+  const solve = c ? netSession.lastSolveFor(c.id) : null;
+  return {
+    t: clock.seconds,
+    id: c?.id ?? null,
+    state: c?.state ?? null,
+    served: solve?.served ?? null,
+    pipe: solve?.pipe ?? null,
+    binding: solve?.bindingConstraint ?? null,
+    lastFrac: c?.lastServedFraction ?? null,
+    foots: c ? coveringFootprints(c, clock.seconds, (r) => r).length : -1,
+    cnc: currentNetContract()?.id ?? null,
+    slice: (() => {
+      const ns = netRenderState();
+      return {
+        rid: ns.region?.id ?? null,
+        rserved: ns.region?.served ?? null,
+        fpN: ns.footprints.length,
+        center: ns.region ? ns.region.centerPosM.map((v) => Math.round(v / 1e3)) : null,
+      };
+    })(),
+  };
+};
 
 const orreryHandle: PanelHandle = {
   title: "ORRERY",
@@ -2446,6 +2576,7 @@ if (netMode) {
 }
 
 const shell = new Shell(wmCanvas, registry);
+shellRef = shell; // viewport watchdog can now heal + relayout.
 
 // THE WINDOW-SUMMON RAIL — the right-edge vertical button rail that summons any panel
 // into the focused tile LIVE (the owner's core ask). Built once; it wires itself to

@@ -68,9 +68,15 @@ export function orbitRenderRadius(d: number, s: OrbitRenderScale): number {
   if (d >= s.bandOuterM) return d; // identity outside the near band — system scale intact.
   const A = s.bandOuterM - s.surfaceM; // the true altitude span the band covers.
   const a = d - s.surfaceM; // this point's true altitude above the surface.
-  // Concave map: lift the shell by surfaceLiftM, then spread the remaining visual span
-  // (A − lift) by (a/A)^p. At a==0 → surface+lift; at a==A → surface+A == bandOuterM
-  // (so it is continuous with the identity region beyond). Monotonic for p > 0.
-  const visualAlt = s.surfaceLiftM + (A - s.surfaceLiftM) * Math.pow(a / A, s.altExponent);
+  // SD-45 FLICKER FIX — the lift must RAMP, not step. The old map jumped from `d` (identity
+  // at the surface) to `surface + lift` one ULP above it: a surface-anchored point whose
+  // rebased radius wobbles ±1 ULP under the floating origin teleported across that cliff
+  // every few frames (the region-disc flicker). The lift now ramps in linearly over the
+  // first ~0.1% of the band (a0 ≫ any float noise, ≪ any real orbit altitude), so the map
+  // is CONTINUOUS at the surface while every actual orbit (LEO and up) sees the exact same
+  // lift as before. Monotonic as before.
+  const a0 = Math.max(1, 0.001 * A);
+  const liftRamp = s.surfaceLiftM * Math.min(1, a / a0);
+  const visualAlt = liftRamp + (A - s.surfaceLiftM) * Math.pow(a / A, s.altExponent);
   return s.surfaceM + visualAlt;
 }
