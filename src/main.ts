@@ -112,7 +112,7 @@ import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, type BusTier } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
-import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
+import { launchStackCost, launchVehicleCost, footprintRadiusRad, A1_GEO_PERIOD_S } from "./sim/net/world";
 import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -1596,9 +1596,10 @@ function netDraftSlice(
             (satRel[1] * A1_BODY_RADIUS_M) / r,
             (satRel[2] * A1_BODY_RADIUS_M) / r,
           ]),
-          // The disc size hint: the active region's angular radius (matches coveringFootprints'
-          // sizing), so the draft footprint reads at the same scale as a committed footprint.
-          radiusRad: (c?.region.radiusRad ?? 0.4) * 1.15,
+          // FL-05 — the disc is sized off the DRAFTED ANTENNAS, not the region: BROADCAST
+          // reads its full LoS horizon cap (the sky it can floodlight); a spot-beam fit
+          // reads its cone (a much smaller, honest promise). Same gate the budget closes.
+          radiusRad: footprintRadiusRad(sat.loadout, r - A1_BODY_RADIUS_M),
         }
       : null;
   // The ground-track arc: previewLaunch's body-fixed sub-points lifted to earth-relative surface
@@ -1890,7 +1891,9 @@ function coveringFootprints(
     const k = A1_BODY_RADIUS_M / r;
     out.push({
       centerPosM: add([satRel[0] * k, satRel[1] * k, satRel[2] * k]),
-      radiusRad: c.region.radiusRad * 1.15,
+      // FL-05 — committed sats read the same antenna truth the draft previews: a floodlight's
+      // disc is its horizon cap; a spot beam's serving disc is its cone, never region-sized.
+      radiusRad: footprintRadiusRad(s.loadout, r - A1_BODY_RADIUS_M),
     });
   }
   return out;

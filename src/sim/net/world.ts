@@ -29,6 +29,7 @@ import {
   type GroundNet,
   type Region,
   NET_SPACE_SAMPLES,
+  NET_MIN_ELEVATION_RAD,
   coveredFraction,
 } from "./endpoint";
 // Source the link-budget reference distance from the LEAF coverage/field (NOT the
@@ -419,6 +420,33 @@ function wrapPi(a: number): number {
 function draftCardIds(draft: LaunchDraft): string[] {
   const ids = draft.loadout.map((a) => a.cardId).filter((id) => id.length > 0);
   return ids.length > 0 ? ids : [...DEFAULT_LOADOUT_CARD_IDS];
+}
+
+// ── FL-05 — the antenna-truthful FOOTPRINT (the sky a fit can actually reach) ──────
+
+/** The LoS horizon reach (surface central angle, radians) of a sat at `altM` above the
+ * toy body, gated at the net elevation floor ({@link NET_MIN_ELEVATION_RAD}) — the SAME
+ * gate the link budget closes against, so the disc never promises sky it can't serve.
+ * Derived: the cap half-angle subtended where the surface→sat ray meets the elevation
+ * floor. Pure. */
+export function horizonReachRad(altM: number): number {
+  const rM = A1_BODY_RADIUS_M + Math.max(0, altM);
+  const ratio = (A1_BODY_RADIUS_M / rM) * Math.cos(NET_MIN_ELEVATION_RAD);
+  return Math.acos(Math.min(1, ratio)) - NET_MIN_ELEVATION_RAD;
+}
+
+/** The footprint radius (radians) of an antenna FIT at `altM`: a BROADCAST floods the
+ * whole reachable sky (the horizon cap); spot beams (ACCESS/GATEWAY) cover their
+ * cone, clipped by the horizon; an S-only fit (relay) has no surface footprint story and
+ * reads horizon-capped (its reach is sat-to-sat, drawn elsewhere). Pure. */
+export function footprintRadiusRad(loadout: readonly AntennaSpec[], altM: number): number {
+  const horizon = horizonReachRad(altM);
+  if (loadout.some((a) => a.type === "BROADCAST")) return horizon;
+  const cones = loadout
+    .filter((a) => a.type === "ACCESS" || a.type === "GATEWAY")
+    .map((a) => a.coneHalfAngleRad);
+  if (cones.length === 0) return horizon;
+  return Math.min(horizon, Math.max(...cones));
 }
 
 /**
