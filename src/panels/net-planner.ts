@@ -103,6 +103,19 @@ export interface NetContractRow {
   bindingReason: string | null;
   /** R3 (SD-45): sim-seconds until an OFFERED tender lapses (null = no clock / not offered). */
   expiresInS: number | null;
+  /** FL-07/08 (SD-47): the pay the board would FREEZE at if signed NOW, € per sim-hour
+   * (decayed). Equals rewardPerHr for flat tenders. */
+  boardPayPerHr: number;
+  /** FL-07/08: the sign-on bonus (€) still on the table (null = none/lapsed). */
+  bonusEur: number | null;
+  /** FL-07/08: sim-seconds until the sign-on bonus lapses (null = none/lapsed). */
+  bonusLapsesInS: number | null;
+  /** FL-07/08: the pay-decay half-life fact in sim-seconds (null = flat tender). */
+  decayHalvingS: number | null;
+  /** FL-08: the breach grace (sim-s) on the terms — the dark-straight-time before a breach
+   * counts (from the SHARED BREACH_GRACE_SECONDS constant; same deal for everyone, but the
+   * player must SEE it to price risk). */
+  graceS: number;
 }
 
 /** The Act-1 contract readout (the one offered REGION-0 demand). */

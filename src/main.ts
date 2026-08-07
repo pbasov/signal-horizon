@@ -60,7 +60,7 @@ import { BuildSession } from "./sim/m2/session";
 // net/ Act-1 — the connectivity game (design §5/§6). NetSession is the live mutable world
 // (roster + REGION-0 contract + wallet + scenario cursor); applyNetAction is the SHARED
 // applier live + replay use; the world planner gives the truthful consequence preview.
-import { NetSession, NET_RNG_SEED } from "./sim/net/session";
+import { NetSession, NET_RNG_SEED, BREACH_GRACE_SECONDS } from "./sim/net/session";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
@@ -85,7 +85,7 @@ import { windowAvailability } from "./sim/net/availability";
 import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
-import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond } from "./sim/net/contract";
+import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS } from "./sim/net/contract";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
 import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
@@ -934,6 +934,15 @@ function netContractRows(t: number): NetContractRow[] {
         c.state === "active" && !(solve?.served ?? false) ? (solve?.bindingConstraint ?? "connectivity") : null,
       expiresInS:
         c.state === "offered" && Number.isFinite(c.offerExpiresAtS) ? Math.max(0, c.offerExpiresAtS - t) : null,
+      // FL-07/08 — the tender's LIVE texture (facts only): the frozen price if signed now,
+      // the bonus still on the table, the decay tempo, and the shared breach grace.
+      boardPayPerHr: decayedPayAtS(c, t) * 3600,
+      bonusEur: c.state === "offered" && signOnBonusAtS(c, t) > 0 ? c.signOnBonusEur : null,
+      bonusLapsesInS:
+        c.state === "offered" && signOnBonusAtS(c, t) > 0 ? Math.max(0, c.signOnBonusUntilS - t) : null,
+      decayHalvingS:
+        c.state === "offered" && Number.isFinite(c.payHalvingS) ? c.payHalvingS : null,
+      graceS: BREACH_GRACE_SECONDS,
     };
   });
 }

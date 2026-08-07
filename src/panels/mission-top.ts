@@ -21,7 +21,8 @@
 import type { PanelHandle } from "../wm/shell";
 import type { NetContractRow } from "./net-planner";
 import { ANTENNA_CARDS, BUS_SPECS, type BusTier } from "../sim/net/sat";
-import { MISSION_OBJECTIVES, TENDER_BET, SLOT_G_LABEL, SLOT_S_LABEL } from "./copy";
+import { MISSION_OBJECTIVES, TENDER_BET, TENDER_SIGNON_BONUS, TENDER_PAY_DECAY, TENDER_BREACH_GRACE, STACK_BATCH_DISCOUNT, SLOT_G_LABEL, SLOT_S_LABEL } from "./copy";
+import { NET_BATCH_MEMBER_DISCOUNT } from "../sim/net/world";
 
 /** The typed orbit numbers (display units; main.ts owns SI/radians). */
 export interface PadDraftReadout {
@@ -136,7 +137,7 @@ export class MissionTop implements PanelHandle {
   private readonly vObjDetail: HTMLElement;
   private readonly tendersHost: HTMLElement;
   private tenderSig = "";
-  private tenderEls = new Map<string, { state: HTMLElement; served: HTMLElement }>();
+  private tenderEls = new Map<string, { state: HTMLElement; served: HTMLElement; facts: HTMLElement; bet: HTMLElement }>();
 
   // PAD face
   private readonly padFace: HTMLElement;
@@ -388,9 +389,15 @@ export class MissionTop implements PanelHandle {
         }
         pips.appendChild(el("span", "mission-terms", t.terms));
         row.appendChild(pips);
-        row.appendChild(
-          el("div", "mission-tender-bet", TENDER_BET(`€${Math.round(t.rewardPerHr).toLocaleString("en-US")}/hr`, `€${Math.round(t.penaltyPerHr).toLocaleString("en-US")}/hr`)),
-        );
+        // FL-08: an offered tender shows the BOARD price (the pay a signature would
+        // freeze at NOW — decayed, live) not the full-fat headline.
+        const bet = el("div", "mission-tender-bet", "");
+        row.appendChild(bet);
+        // FL-08 — the tender FACTS row (bonus countdown / decay tempo / breach grace).
+        // Facts only (LAW 1); updated live (the bonus clock ticks) so it survives the
+        // signature-gated rebuild as an in-place text refresh.
+        const facts = el("div", "mission-tender-facts", "");
+        row.appendChild(facts);
         const served = el("div", "mission-tender-served", "");
         row.appendChild(served);
         if (t.state === "offered") {
@@ -420,7 +427,7 @@ export class MissionTop implements PanelHandle {
           row.appendChild(routeRow);
         }
         this.tendersHost.appendChild(row);
-        this.tenderEls.set(t.id, { state, served });
+        this.tenderEls.set(t.id, { state, served, facts, bet });
       }
     }
     for (const t of s.tenders) {
@@ -436,6 +443,22 @@ export class MissionTop implements PanelHandle {
               ? `tender lapses in ${Math.floor(t.expiresInS / 60)}m ${Math.floor(t.expiresInS % 60)}s`
               : ""
             : `€${Math.round(t.earnedEur).toLocaleString("en-US")}`;
+      // FL-08 — facts + board price live-update per frame (the bonus clock + decay tick).
+      els.bet.textContent = TENDER_BET(
+        `€${Math.round(t.state === "offered" ? t.boardPayPerHr : t.rewardPerHr).toLocaleString("en-US")}/hr`,
+        `€${Math.round(t.penaltyPerHr).toLocaleString("en-US")}/hr`,
+      );
+      if (t.state === "offered") {
+        const mmss = (sec: number) => `${Math.floor(sec / 60)}m ${String(Math.floor(sec % 60)).padStart(2, "0")}s`;
+        const parts: string[] = [];
+        if (t.bonusEur !== null && t.bonusLapsesInS !== null)
+          parts.push(TENDER_SIGNON_BONUS(Math.round(t.bonusEur).toLocaleString("en-US"), mmss(t.bonusLapsesInS)));
+        if (t.decayHalvingS !== null) parts.push(TENDER_PAY_DECAY(mmss(t.decayHalvingS)));
+        parts.push(TENDER_BREACH_GRACE(mmss(t.graceS)));
+        els.facts.textContent = parts.join("  ·  ");
+      } else {
+        els.facts.textContent = "";
+      }
     }
   }
 
@@ -491,6 +514,9 @@ export class MissionTop implements PanelHandle {
     this.vFacts.textContent = `${fleetPct}with this launch ${dutyPct}% · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat}`;
 
     this.vStack.textContent = `vehicle €${Math.round(s.stack.vehicleEur).toLocaleString("en-US")} + hardware €${Math.round(s.stack.hardwareEur).toLocaleString("en-US")} × ${s.count} = €${Math.round(s.stack.totalEur).toLocaleString("en-US")} · wallet €${Math.round(s.balanceEur).toLocaleString("en-US")}`;
+    // FL-11 — the manifest discount is a fact on the stack when batching.
+    if (s.count > 1)
+      this.vStack.textContent += ` · ${STACK_BATCH_DISCOUNT(`${Math.round(NET_BATCH_MEMBER_DISCOUNT * 100)}%`)}`;
     this.vStack.classList.toggle("over", s.stack.totalEur > s.balanceEur);
     this.vProblem.textContent = s.problem ?? "";
     this.vProblem.style.display = s.problem ? "" : "none";

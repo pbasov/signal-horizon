@@ -1096,3 +1096,7 @@ body {
 .mission-stack.over { color: #e2604a; }
 .mission-route { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
 .mission-route-btn { font-size: 9px; padding: 1px 6px; }
+
+/* FL-08 — the tender facts row (bonus countdown / decay / breach grace): facts, dim, dense. */
+.mission-tender-facts { font-size: 10px; color: var(--fg-dim); margin: 1px 0; line-height: 1.35; }
+.mission-tender-facts:empty { display: none; }
