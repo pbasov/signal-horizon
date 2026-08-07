@@ -28,9 +28,9 @@ const HOWTO_CARDS: HowtoCard[] = [
     title: "1 · SERVE A REGION — & THE BET",
     lines: [
       "Keep regions connected and get paid. Every contract is a WAGER: a reward/hr staked against a penalty/hr it bleeds if you breach its SLA.",
-      "On CONNECTIVITY (2) aim the orbit until the preview reads WILL SERVE, press L to launch. Then ACCEPT on BUSINESS (4) — the card tells you whether your current fleet can actually hold it before you commit.",
+      "Aim the orbit until the preview reads WILL SERVE, then launch. The co-op's deal waits on the contracts board — it pays only while signal actually reaches them.",
     ],
-    xref: "CONNECTIVITY (2) → BUSINESS (4) · OVERVIEW (1) flags what's at risk",
+    xref: "the launch pad ↔ the contracts board · the overview flags what's at risk",
   },
   {
     cursor: 1,

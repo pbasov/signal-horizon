@@ -658,7 +658,7 @@ export class NetPlanner implements PanelHandle {
       }
       this.hint.className = "net-hint";
     } else if (c && c.state === "offered") {
-      setText(this.hint, "sat is up — press ACCEPT to start earning from REGION-0");
+      setText(this.hint, "sat is up — the deal starts paying once the co-op's signature lands on the contracts board");
       this.hint.className = "net-hint";
     } else if (this.servedNow) {
       setText(this.hint, "REGION-0 SERVED · revenue ticking — Act 1 complete");
@@ -1026,7 +1026,7 @@ export class NetLaunch implements PanelHandle {
       }
       this.hint.className = "net-hint";
     } else if (c && c.state === "offered") {
-      setText(this.hint, "sat is up — open CONTRACTS (key 4) and ACCEPT to start earning");
+      setText(this.hint, "sat is up — the deal starts paying once the co-op's signature lands on the contracts board");
       this.hint.className = "net-hint";
     } else if (this.servedNow) {
       setText(this.hint, "REGION-0 SERVED · revenue ticking — Act 1 complete");

@@ -587,3 +587,5 @@ A first-hand Playwright playtest confirmed the verdict with specifics: **zero de
 - Tests: `src/sim/net/apply-action.test.ts` (absent-empty-vs-priced: the exploit-pinning regression, batch-discount arithmetic pins). 732 green.
 
 **SD-50 RECORDED AS PROPOSED (not built):** a satellite power budget (bus power vs card draw) is the loadout editor's natural third trade-off axis — `BusSpec.massKg` is dead data, no power field exists. AGENTS.md §1 bars building it without user approval; the proposal is parked in `docs/first-light-integrated-plan.md` §3. Awaiting user decision.
+
+**FL-02 SHIPPED (2026-08-07) — law coverage, not new law.** The copy-lint (LAW 2) now covers EVERY panel file that can render player-facing copy (17 files; the retired SD-44 panels included — they still mount in ?mode=cache; two live violations there were reworded, not exempted). A second lint bans new hardcoded hex colours in panels (tokens-only per DD-1) with a shrink-only allowlist seeded from mission-top.ts's 4 comb-canvas fills — FL-15a must empty it, nothing may grow it. 763 tests green; smoke + boot clean.

@@ -22,7 +22,27 @@ const BANNED: { name: string; re: RegExp }[] = [
   { name: "the X button", re: /\b[A-Z]{2,}\s+button\b/ },
 ];
 
-const FILES = ["copy.ts", "mission-top.ts", "ledger-fleet.ts"];
+const FILES = [
+  // FL-02: the lint covers EVERY panel that can render player-facing copy — the retired
+  // SD-44 panels included (they still mount in ?mode=cache). Add new panels HERE.
+  "copy.ts",
+  "mission-top.ts",
+  "ledger-fleet.ts",
+  "howto.ts",
+  "onboarding.ts",
+  "status-board.ts",
+  "coverage-roster.ts",
+  "link-load.ts",
+  "net-planner.ts",
+  "contracts.ts",
+  "finance.ts",
+  "fleet.ts",
+  "log.ts",
+  "log-format.ts",
+  "parse.ts",
+  "status.ts",
+  "telemetry.ts",
+];
 
 describe("R1 — copy lint: goals, never instructions", () => {
   for (const f of FILES) {
@@ -34,6 +54,33 @@ describe("R1 — copy lint: goals, never instructions", () => {
         const m = noComments.match(b.re);
         expect(m === null ? "" : `${f}: banned pattern "${b.name}" near "${m![0]}"`).toBe("");
       }
+    });
+  }
+});
+
+// ── FL-02 — the TOKENS-ONLY chrome law (GDD §8 / DD-1): panels never hardcode a hex
+// colour; tone lives in style.css custom properties (--cyan, --amber, …). The allowlist
+// below is the day-one baseline of pre-existing violations — FL-15a shrinks it to EMPTY;
+// any NEW hardcoded hex fails the build. ──
+const HEX_RE = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g;
+/** file → exact hex literals grandfathered in (FL-15a must empty this, never grow it). */
+const HEX_ALLOWLIST: Record<string, string[]> = {
+  // mission-top.ts comb canvas fills (signal cyan + dark cells) — tokenize in FL-15a.
+  "mission-top.ts": ["#141b26", "#1a2430", "#2a7d8f", "#49d7c8"],
+};
+
+describe("FL-02 — chrome colour lint: panels use tokens, never hardcoded hex", () => {
+  for (const f of FILES) {
+    it(`${f} introduces no new hardcoded hex colours`, () => {
+      const src = readFileSync(join(here, f), "utf8");
+      const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+      const found = (noComments.match(HEX_RE) ?? []).map((h) => h.toLowerCase());
+      const allowed = new Set(HEX_ALLOWLIST[f] ?? []);
+      const novel = found.filter((h) => !allowed.has(h.toLowerCase()));
+      expect(novel.length === 0 ? "" : `${f}: new hardcoded hex ${novel.join(", ")} — use a --* token`).toBe("");
+      // The allowlist may only SHRINK: entries that are gone from the file fail too.
+      const stale = [...allowed].filter((h) => !found.includes(h) && !found.includes(h.toLowerCase()));
+      expect(stale.length === 0 ? "" : `${f}: allowlist entries no longer present — remove them: ${stale.join(", ")}`).toBe("");
     });
   }
 });

@@ -60,3 +60,25 @@ export const WIRE_UNDERBURN = (satId: string): string =>
 export const WIRE_VEHICLE_LOST = (id: string): string => `${id} VEHICLE LOST — range safety`;
 export const WIRE_FIRST_SIGNAL = (satId: string, regionLabel: string): string =>
   `${satId} first signal — ${regionLabel} lit`;
+
+// ── FL-02 copy surface (SD-46/47/49) — the fragments the verb rebuild renders. All
+// FACTS about terms/physics, never verdicts, never instructions (LAW 1 + LAW 2). ──
+
+/** FL-07 — a tender's sign-on bonus (the priced WHEN, not a "sign now!"). */
+export const TENDER_SIGNON_BONUS = (amountEur: string, windowText: string): string =>
+  `sign-on +€${amountEur} — the window closes in ${windowText}`;
+/** FL-07 — a tender's decaying pay (the market bids while you wait). */
+export const TENDER_PAY_DECAY = (halfLifeText: string): string =>
+  `the pay halves every ${halfLifeText} the offer sits unsigned`;
+/** FL-07/FL-08 — the breach grace on the terms, printed as a fact. */
+export const TENDER_BREACH_GRACE = (graceText: string): string =>
+  `pays only while served · a breach counts once you've been dark ${graceText} straight`;
+/** FL-10 — the launch risk band on the PAD (absent in Act 1, where failure is silent-zero). */
+export const PAD_RISK_BAND = (vehiclePct: string, perSatPct: string): string =>
+  `launch risk — vehicle loss ${vehiclePct} · per-sat failure ${perSatPct}`;
+/** FL-11 — the manifest discount on the PAD stack line. */
+export const STACK_BATCH_DISCOUNT = (pct: string): string =>
+  `2nd+ satellite on the same vehicle −${pct} hardware`;
+/** FL-04 — slot-class labels for the bus silhouette (redundant with the slot glyphs). */
+export const SLOT_G_LABEL = "GROUND-FACING";
+export const SLOT_S_LABEL = "SAT-FACING";
