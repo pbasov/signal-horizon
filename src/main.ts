@@ -109,7 +109,9 @@ import {
   WIRE_FIRST_SIGNAL,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
-import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, type BusTier } from "./sim/net/sat";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, antennaCardById, resolveLoadout, type BusTier } from "./sim/net/sat";
+import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
+import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
 import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
 import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
@@ -316,10 +318,23 @@ let netDraft: LaunchDraft = cloneDraft(NET_PLANNER_PRESETS[0].draft);
 // starting points; aim is never preset.
 let r1Mode: "book" | "pad" = "book";
 let r1Bus: BusTier = "smallsat";
-let r1Cards: string[] = ["BROADCAST"];
+// FL-03 (SD-46): the sat fit is SLOT-INDEXED state (panels/loadout-state.ts — G slots then
+// S slots, duplicates legal, bus switches re-slot + truncate legally); r1Cards is the flat
+// VIEW derived from it by syncR1Loadout(), never the source of truth.
+let r1Loadout: LoadoutState = fromCards("smallsat", ["BROADCAST"]);
+let r1Cards: string[] = cardsOf(r1Loadout);
 let r1Armed = false;
 let r1PhaseSpreadRad = 0;
 if (APP_MODE === "net") netDraft.subLonRad = -Math.PI / 2;
+
+/** FL-03 — after any bus/card edit: re-derive the flat card view AND sync the live draft
+ * (bus + resolved antennas) so previewLaunch/comb/footprint react to the ANTENNA choice,
+ * not just the orbit (render-only; the wire still carries card ids at commit). */
+function syncR1Loadout(): void {
+  r1Cards = cardsOf(r1Loadout);
+  const eff = r1Cards.length > 0 ? r1Cards : [...DEFAULT_LOADOUT_CARD_IDS];
+  netDraft = { ...netDraft, bus: r1Bus, loadout: resolveLoadout(eff, NET_REF_LINK_DISTANCE_M) };
+}
 
 /** Typed-param edit (display units → SI/radians), clamped sanely. Facts follow live. */
 function r1SetParam(name: keyof PadDraftReadout, value: number): void {
@@ -350,6 +365,7 @@ function cloneDraft(d: LaunchDraft): LaunchDraft {
     incRad: d.incRad,
     subLonRad: d.subLonRad,
     raanRad: d.raanRad,
+    bus: d.bus,
     loadout: d.loadout.map((a) => ({ ...a })),
     count: d.count,
   };
@@ -367,6 +383,9 @@ function netSelectPreset(presetId: string): void {
   if (i < 0) return;
   netPresetCursor = i;
   netDraft = cloneDraft(NET_PLANNER_PRESETS[i].draft);
+  // FL-03: a preset re-seeds the ORBIT, never the sat DESIGN — the slot editor owns the
+  // loadout; re-apply it so selecting a preset doesn't silently revert the cards.
+  syncR1Loadout();
 }
 
 /** §3.1 — EDIT one draft parameter (a slider set or an arrow-key nudge). The value is clamped to the
@@ -2536,11 +2555,35 @@ const missionTopPanel = new MissionTop({
   onAccept: (id) => netAccept(id),
   onBus: (b) => {
     r1Bus = b;
-    if (validateLoadout(b, r1Cards) !== null) r1Cards = ["BROADCAST"];
+    r1Loadout = withBus(r1Loadout, b);
+    syncR1Loadout();
     r1Armed = false;
   },
   onToggleCard: (id) => {
-    r1Cards = r1Cards.includes(id) ? r1Cards.filter((c) => c !== id) : [...r1Cards, id];
+    const cur = cardsOf(r1Loadout);
+    if (cur.includes(id)) {
+      // Remove the FIRST occurrence (duplicates are legal — one click clears one slot).
+      const idx = r1Loadout.slots.findIndex((c) => c === id);
+      const next = setSlot(r1Loadout, idx, null);
+      if (next !== null) r1Loadout = next;
+    } else {
+      // Fill the first EMPTY slot of the card's class; a full class ignores the toggle
+      // (the FL-04 slot chooser picks the slot explicitly).
+      const card = antennaCardById(id);
+      if (card !== null) {
+        const spec = BUS_SPECS[r1Bus];
+        const lo = card.slot === "G" ? 0 : spec.gSlots;
+        const hi = card.slot === "G" ? spec.gSlots : spec.gSlots + spec.sSlots;
+        for (let i = lo; i < hi; i++) {
+          if (r1Loadout.slots[i] === null) {
+            const next = setSlot(r1Loadout, i, id);
+            if (next !== null) r1Loadout = next;
+            break;
+          }
+        }
+      }
+    }
+    syncR1Loadout();
     r1Armed = false;
   },
   onCount: (d) => {
