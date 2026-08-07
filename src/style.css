@@ -1040,6 +1040,15 @@ body {
 .mission-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .mission-bus, .mission-card { display: block; width: 100%; text-align: left; margin: 1px 0; opacity: 0.75; padding: 2px 5px; }
 .mission-bus.active, .mission-card.active { opacity: 1; outline: 1px solid #49d7c8; color: #49d7c8; background: #0b0b12 !important; }
+/* FL-04 — the bus SILHOUETTE: named slots (G1/G2/S1/S2) as fitted/empty boxes. Shape
+   (▣/▢) + label carry the state; colour only reinforces (CVD-safe). Token colours. */
+.mission-slots { display: flex; gap: 4px; margin: 3px 0 1px; }
+.mission-slot { flex: 1 1 auto; font-size: 10px; letter-spacing: 0.04em; }
+.mission-slot.filled { color: var(--fg); border-color: var(--line); }
+.mission-slot:not(.filled) { color: var(--grey); border-style: dashed; }
+.mission-slot.sel { color: var(--cyan); border-color: var(--cyan); border-style: solid; }
+.mission-slotchooser { display: flex; gap: 3px; flex-wrap: wrap; margin: 2px 0 3px; }
+.mission-slotchooser:empty { display: none; }
 .mission-cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; }
 .mission-hint { color: #7f8ea3; font-size: 10px; margin-top: 3px; }
 .mission-param { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0; }

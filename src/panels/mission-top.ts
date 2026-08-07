@@ -21,7 +21,7 @@
 import type { PanelHandle } from "../wm/shell";
 import type { NetContractRow } from "./net-planner";
 import { ANTENNA_CARDS, BUS_SPECS, type BusTier } from "../sim/net/sat";
-import { MISSION_OBJECTIVES, TENDER_BET } from "./copy";
+import { MISSION_OBJECTIVES, TENDER_BET, SLOT_G_LABEL, SLOT_S_LABEL } from "./copy";
 
 /** The typed orbit numbers (display units; main.ts owns SI/radians). */
 export interface PadDraftReadout {
@@ -41,6 +41,8 @@ export interface MissionTopState {
   // --- PAD ---
   bus: BusTier;
   cards: string[];
+  /** FL-04 — the slot-indexed fit (G slots first, then S): what the silhouette renders. */
+  slots: readonly (string | null)[];
   count: number;
   draft: PadDraftReadout;
   /** Itemized stack: one vehicle + count × hardware. */
@@ -68,7 +70,9 @@ export interface MissionTopActions {
   /** Act 4 — commit the deep-space relay toward the Mars tender (one verb, one click). */
   onMarsRelay(): void;
   onBus(bus: BusTier): void;
-  onToggleCard(cardId: string): void;
+  /** FL-04 — write (or clear, cardId=null) ONE named slot of the bus silhouette. The
+   * flat toggle set is gone: capacity design is slot assignment, visibly physical. */
+  onSlotCard(slot: number, cardId: string | null): void;
   onCount(delta: number): void;
   onParam(name: keyof PadDraftReadout, value: number): void;
   onArm(): void;
@@ -134,8 +138,13 @@ export class MissionTop implements PanelHandle {
   // PAD face
   private readonly padFace: HTMLElement;
   private busBtns = new Map<BusTier, HTMLButtonElement>();
-  private cardBtns = new Map<string, HTMLButtonElement>();
-  private readonly vSlots: HTMLElement;
+  /** FL-04 — the bus silhouette: one button per SLOT (up to 4 across the two buses),
+   * plus the per-slot chooser row rendered under them for the selected slot. */
+  private slotBtns: HTMLButtonElement[] = [];
+  private readonly slotClassLegend: HTMLElement;
+  private readonly slotChooser: HTMLElement;
+  /** UI-only: which slot the chooser is open for (−1 = closed). */
+  private selectedSlot = -1;
   private readonly vCount: HTMLElement;
   private paramInputs = new Map<string, HTMLInputElement>();
   private readonly combCanvas: HTMLCanvasElement;
@@ -190,26 +199,23 @@ export class MissionTop implements PanelHandle {
       busRow.appendChild(b);
     }
     busGroup.appendChild(busRow);
-    this.vSlots = el("div", "mission-hint", "");
-    busGroup.appendChild(this.vSlots);
-    this.padFace.appendChild(busGroup);
-
-    const cardsGroup = el("div", "group");
-    cardsGroup.appendChild(el("div", "legend", "ANTENNA CARDS"));
-    const cardsGrid = el("div", "mission-cards-grid");
-    for (const card of ANTENNA_CARDS) {
-      const row = btn(
-        `${card.label} ${card.capacityUnits.toFixed(1)}u €${card.priceEur}`,
-        "net-btn mission-card",
-        () => this.actions.onToggleCard(card.id),
-      );
-      row.setAttribute("data-net", `card-${card.id}`);
-      row.title = CARD_TIPS[card.id] ?? "";
-      this.cardBtns.set(card.id, row);
-      cardsGrid.appendChild(row);
+    // FL-04 — THE SILHOUETTE: named slots (G1 … S2) you write cards into. A click on a slot
+    // opens the chooser for that slot's class; a card click assigns it THERE (duplicates
+    // across slots are legal — two ACCESS-S is a design). Occupied slots read ▣, empty ▢ —
+    // shape + label, never colour alone (§8 CVD).
+    const slotRow = el("div", "mission-slots");
+    for (let i = 0; i < 4; i++) {
+      const b = btn("", "net-btn mission-slot", () => this.pickSlot(i));
+      b.setAttribute("data-net", `slot-${i}`);
+      this.slotBtns.push(b);
+      slotRow.appendChild(b);
     }
-    cardsGroup.appendChild(cardsGrid);
-    this.padFace.appendChild(cardsGroup);
+    busGroup.appendChild(slotRow);
+    this.slotClassLegend = el("div", "mission-hint", "");
+    busGroup.appendChild(this.slotClassLegend);
+    this.slotChooser = el("div", "mission-slotchooser");
+    busGroup.appendChild(this.slotChooser);
+    this.padFace.appendChild(busGroup);
 
     const orbitGroup = el("div", "group");
     orbitGroup.appendChild(el("div", "legend", "ORBIT · TYPED"));
@@ -275,6 +281,65 @@ export class MissionTop implements PanelHandle {
   }
 
   private lastMode: "book" | "pad" = "book";
+
+  /** FL-04 — (de)select a slot: reselect closes the chooser; select opens its class menu.
+   * UI-only state; the slot write goes through actions.onSlotCard. */
+  private pickSlot(i: number): void {
+    this.selectedSlot = this.selectedSlot === i ? -1 : i;
+    this.rebuildSlotChrome();
+  }
+
+  /** Rebuild the slot buttons + the (possibly closed) chooser from the last pad state. */
+  private rebuildSlotChrome(): void {
+    if (!this.lastPad) return;
+    const s = this.lastPad;
+    const spec = BUS_SPECS[s.bus];
+    const n = spec.gSlots + spec.sSlots;
+    this.slotBtns.forEach((b, i) => {
+      if (i >= n) {
+        b.style.display = "none";
+        return;
+      }
+      b.style.display = "";
+      const cls = i < spec.gSlots ? "G" : "S";
+      const cardId = s.slots[i] ?? null;
+      const card = cardId === null ? null : ANTENNA_CARDS.find((c) => c.id === cardId) ?? null;
+      b.textContent = `${cls}${(i < spec.gSlots ? i : i - spec.gSlots) + 1} ${card ? "▣ " + card.label : "▢ —"}`;
+      b.title =
+        (cls === "G" ? SLOT_G_LABEL : SLOT_S_LABEL) +
+        " slot" +
+        (card ? ` — fitted: ${card.label}. ${CARD_TIPS[card.id] ?? ""}` : " — empty. An unfitted sat flies the standard BROADCAST (charged for it).");
+      b.classList.toggle("filled", card !== null);
+      b.classList.toggle("sel", this.selectedSlot === i);
+    });
+    this.slotClassLegend.textContent = `${spec.label} · ${spec.gSlots} ${SLOT_G_LABEL} · ${spec.sSlots} ${SLOT_S_LABEL}`;
+    // The chooser for the selected slot's class (or none).
+    this.slotChooser.textContent = "";
+    if (this.selectedSlot >= 0 && this.selectedSlot < n) {
+      const cls = this.selectedSlot < spec.gSlots ? "G" : "S";
+      for (const card of ANTENNA_CARDS.filter((c) => c.slot === cls)) {
+        const b = btn(
+          `${card.label} ${card.capacityUnits.toFixed(1)}u €${card.priceEur}`,
+          "net-btn mission-card",
+          () => {
+            this.actions.onSlotCard(this.selectedSlot, card.id);
+          },
+        );
+        b.setAttribute("data-net", `card-${card.id}`);
+        b.title = CARD_TIPS[card.id] ?? "";
+        b.classList.toggle("active", s.slots[this.selectedSlot] === card.id);
+        this.slotChooser.appendChild(b);
+      }
+      const clear = btn("EMPTY", "net-btn mission-card", () => {
+        this.actions.onSlotCard(this.selectedSlot, null);
+      });
+      clear.setAttribute("data-net", "card-clear");
+      this.slotChooser.appendChild(clear);
+    }
+  }
+
+  /** The last pad state (the chooser re-renders off it after a slot pick). */
+  private lastPad: MissionTopState | null = null;
 
   render(s: MissionTopState): void {
     this.lastMode = s.mode;
@@ -365,12 +430,10 @@ export class MissionTop implements PanelHandle {
   }
 
   private renderPad(s: MissionTopState): void {
+    this.lastPad = s;
     for (const [tier, b] of this.busBtns) b.classList.toggle("active", tier === s.bus);
-    const spec = BUS_SPECS[s.bus];
-    const gUsed = s.cards.filter((c) => ANTENNA_CARDS.find((k) => k.id === c)?.slot === "G").length;
-    const sUsed = s.cards.length - gUsed;
-    this.vSlots.textContent = `slots — G ${gUsed}/${spec.gSlots} · S ${sUsed}/${spec.sSlots}`;
-    for (const [id, b] of this.cardBtns) b.classList.toggle("active", s.cards.includes(id));
+    if (this.selectedSlot >= s.slots.length) this.selectedSlot = -1; // a bus switch shrank the silhouette
+    this.rebuildSlotChrome();
 
     this.vCount.textContent = String(s.count);
     const d = s.draft;

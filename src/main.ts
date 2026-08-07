@@ -109,7 +109,7 @@ import {
   WIRE_FIRST_SIGNAL,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
-import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, antennaCardById, resolveLoadout, type BusTier } from "./sim/net/sat";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, type BusTier } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
 import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
@@ -2559,30 +2559,11 @@ const missionTopPanel = new MissionTop({
     syncR1Loadout();
     r1Armed = false;
   },
-  onToggleCard: (id) => {
-    const cur = cardsOf(r1Loadout);
-    if (cur.includes(id)) {
-      // Remove the FIRST occurrence (duplicates are legal — one click clears one slot).
-      const idx = r1Loadout.slots.findIndex((c) => c === id);
-      const next = setSlot(r1Loadout, idx, null);
-      if (next !== null) r1Loadout = next;
-    } else {
-      // Fill the first EMPTY slot of the card's class; a full class ignores the toggle
-      // (the FL-04 slot chooser picks the slot explicitly).
-      const card = antennaCardById(id);
-      if (card !== null) {
-        const spec = BUS_SPECS[r1Bus];
-        const lo = card.slot === "G" ? 0 : spec.gSlots;
-        const hi = card.slot === "G" ? spec.gSlots : spec.gSlots + spec.sSlots;
-        for (let i = lo; i < hi; i++) {
-          if (r1Loadout.slots[i] === null) {
-            const next = setSlot(r1Loadout, i, id);
-            if (next !== null) r1Loadout = next;
-            break;
-          }
-        }
-      }
-    }
+  onSlotCard: (slot, cardId) => {
+    // FL-04 — write ONE silhouette slot (the chooser picked it; class legality is enforced
+    // by setSlot, the shape by the reducer tests).
+    const next = setSlot(r1Loadout, slot, cardId);
+    if (next !== null) r1Loadout = next;
     syncR1Loadout();
     r1Armed = false;
   },
@@ -2674,6 +2655,7 @@ function missionTopState(): MissionTopState {
     balanceEur: netSession.balance,
     bus: r1Bus,
     cards: r1Cards,
+    slots: r1Loadout.slots,
     count: netDraft.count,
     draft: {
       altKm: (netDraft.semiMajorM - A1_BODY_RADIUS_M) / 1000,

@@ -106,7 +106,7 @@
 - [x] **FL-11** batch manifest discount −15% hardware members 2+; preview == applier single price function (`launchStackCost`; `launchDraftCost` deprecated). RODE FL-01's re-pin per plan deviation. PAD "−15%" fact row OWED to FL-08. (P4-C2 merged)
 - [x] **FL-02** copy-lint coverage + hardcoded-hex lint: copy.ts fragments (tender bonus/decay/grace, risk band, discount row, slot labels); panels hex allowlist lint. (P1-C2)
 - [x] **FL-03** slot-indexed loadout state `(string|null)[]` + `netDraft.loadout` sync (un-stales the comb); duplicates legal. (P2-C1)
-- [ ] **FL-04** PAD silhouette slot editor (G1/S1 named slots replace the flat card grid); Playwright dup-fill script; redundant shape encoding. (P2-C2)
+- [x] **FL-04** PAD silhouette slot editor (G1/S1 named slots replace the flat card grid); Playwright dup-fill script; redundant shape encoding. (P2-C2)
 - [ ] **FL-05** antenna-truthful preview: `footprintRadiusRad(card, altM)`; `draftToSat(bus, loadout)` [bus half-done in FL-01 commits]; draft disc sized by antenna; consequence-truth invariant × comsat+ACCESS. Golden-clean. (P2-C3)
 - [ ] **FL-06** `suggestLoadout` — viable, never optimal (greedy legal fit per contract axes); FIT button on PAD. (P2-C4)
 - [ ] **FL-07** contract fields + ACT1 multi-tender: `offeredAtS/signOnBonusEur/signOnBonusUntilS/payDecayHalfLifeS` + accept-freeze pricing; ACT1 2h window + REGION-0 €2k/900s sign-on + REGION-C (1.6×, 1200s half-life); fold mix after offerExpiresAtS · net-golden re-pin #2 + lapse-replay test + economy theorem re-verified under decay. (P3-C1)
