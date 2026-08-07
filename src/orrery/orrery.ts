@@ -134,6 +134,10 @@ export interface BuildAssetRender {
    * transient outage, or a telegraphed countdown): the marker PULSES AMBER (the §8 "a working
    * node is degrading" cue). Render-only — driven from the live NetSession's `faults`. */
   faulting?: boolean;
+  /** FL-14 (SD-49) — sim-seconds since this sat DEPLOYED (present only while < 3 s): the
+   * deploy POP — a one-shot expanding flash at separation, decaying quadratically (the
+   * launch payoff, per member). Undefined = no pop. */
+  freshAgeS?: number;
 }
 
 /** M3a — one placed ORBITAL DATACENTER's render descriptor (GDD §4.5): a distinct §8 node on
@@ -872,6 +876,8 @@ export class Orrery {
    * inclination tilts it, RAAN rotates the plane, phase slides the marker). Built once + hidden;
    * positions rewritten each frame from the draft slice (same de-squash/fold the launched rings use). */
   private netDraftRing?: THREE.LineSegments;
+  /** FL-14 — the ring-pinned draft readout chip (DOM, fed per frame by main). */
+  private netDraftChip?: HTMLElement;
   private netDraftSat?: THREE.Mesh;
   private netDraftMembers: THREE.Mesh[] = [];
   /** Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam (a bright green dashed
@@ -887,6 +893,8 @@ export class Orrery {
   private netBeamLines?: THREE.LineSegments;
   private netBlindBeamLines?: THREE.LineSegments;
   private netLaunchArcLines?: THREE.Line;
+  /** FL-14 — the pooled launch-arc lines (one LIVE arc per launch event). */
+  private netLaunchArcPool: THREE.Line[] = [];
   /** Scratch colours reused across frames to tint the network links without per-frame Color alloc. */
   private readonly _netUtilCool = new THREE.Color(0.35, 1.0, 0.55); // headroom: cool green.
   private readonly _netUtilWarm = new THREE.Color(1.0, 0.72, 0.2); // near capacity: amber.
@@ -957,6 +965,12 @@ export class Orrery {
     this.buildOverlayCorners();
     this.buildCameraButtons(); // on-canvas clickable camera-preset buttons (§8 1-bit chrome)
     this.buildReadout(); // builds the block + caches its sub-nodes (no field needed)
+    // FL-14 (SD-49) — the ring-pinned DRAFT READOUT chip: cost · period · time-to-service,
+    // pinned bottom-right of the pad's consequence view (facts only, fed per frame by main).
+    this.netDraftChip = document.createElement("div");
+    this.netDraftChip.className = "net-draft-chip";
+    this.netDraftChip.style.display = "none";
+    this.labelLayer.appendChild(this.netDraftChip);
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: false });
     this.renderer.setClearColor(0x0b0b12, 1);
@@ -1189,13 +1203,23 @@ export class Orrery {
       this.netBlindBeamLines.visible = false;
       this.netBlindBeamLines.renderOrder = 14.6;
       this.scene.add(this.netBlindBeamLines);
-      const geoL = new THREE.BufferGeometry();
-      geoL.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 26 * 4), 3));
-      const matL = new THREE.LineBasicMaterial({ color: 0xffd27c, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false });
-      this.netLaunchArcLines = new THREE.Line(geoL, matL);
-      this.netLaunchArcLines.frustumCulled = false;
-      this.netLaunchArcLines.visible = false;
-      this.netLaunchArcLines.renderOrder = 15.5;
+      // FL-14 (SD-49) — launch arcs are POOLED, one Line per concurrent launch event (the
+      // bundled launch + an interleaved fill batch both show — the theatre isn't capped at
+      // one arc). Pool of 4 (the launch pipeline never overlaps more than that in M1; extras
+      // degrade to the newest 4 silently).
+      this.netLaunchArcPool = [];
+      for (let pi = 0; pi < 4; pi++) {
+        const geoL = new THREE.BufferGeometry();
+        geoL.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 26 * 4), 3));
+        const matL = new THREE.LineBasicMaterial({ color: 0xffd27c, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false });
+        const line = new THREE.Line(geoL, matL);
+        line.frustumCulled = false;
+        line.visible = false;
+        line.renderOrder = 15.5;
+        this.scene.add(line);
+        this.netLaunchArcPool.push(line);
+      }
+      this.netLaunchArcLines = this.netLaunchArcPool[0];
       this.scene.add(this.netLaunchArcLines);
     }
     this.scene.add(this.netServedLinks);
@@ -2187,23 +2211,25 @@ export class Orrery {
     drawSegs(this.netBeamLines, pointers.filter((p) => !p.blind));
     drawSegs(this.netBlindBeamLines, pointers.filter((p) => p.blind));
     const arcs = nsAll?.launchArcs ?? [];
-    if (this.netLaunchArcLines) {
-      const first = arcs[0];
-      if (!first || first.points.length < 2) {
-        this.netLaunchArcLines.visible = false;
-      } else {
-        const attr = this.netLaunchArcLines.geometry.getAttribute("position") as THREE.BufferAttribute;
-        const arr = attr.array as Float32Array;
-        let w = 0;
-        const n = Math.min(first.points.length, arr.length / 3);
-        for (let i = 0; i < n; i++) {
-          w = this.writeRenderPoint(arr, w, first.points[i][0], first.points[i][1], first.points[i][2], focusAbs);
-        }
-        this.netLaunchArcLines.geometry.setDrawRange(0, n);
-        attr.needsUpdate = true;
-        (this.netLaunchArcLines.material as THREE.LineBasicMaterial).color.setHex(first.lost ? 0xe2604a : 0xffd27c);
-        this.netLaunchArcLines.visible = true;
+    // FL-14 — every concurrent launch gets its own pooled arc line (no more arcs[0]-only).
+    for (let pi = 0; pi < this.netLaunchArcPool.length; pi++) {
+      const line0 = this.netLaunchArcPool[pi];
+      const arc = arcs[pi];
+      if (!arc || arc.points.length < 2) {
+        line0.visible = false;
+        continue;
       }
+      const attr = line0.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = attr.array as Float32Array;
+      let w = 0;
+      const n = Math.min(arc.points.length, arr.length / 3);
+      for (let i = 0; i < n; i++) {
+        w = this.writeRenderPoint(arr, w, arc.points[i][0], arc.points[i][1], arc.points[i][2], focusAbs);
+      }
+      line0.geometry.setDrawRange(0, n);
+      attr.needsUpdate = true;
+      (line0.material as THREE.LineBasicMaterial).color.setHex(arc.lost ? 0xe2604a : 0xffd27c);
+      line0.visible = true;
     }
     const line = this.netServedLinks;
     if (!line) return;
@@ -3016,9 +3042,11 @@ export class Orrery {
       // a FRESHLY-DEPLOYED sat flashes bright for its first seconds (the deploy payoff).
       const col = (m.material as THREE.ShaderMaterial).uniforms.uColor.value as THREE.Color;
       if (a.faulting) col.copy(this._buildGreen).lerp(this._amber, pulse);
-      else if ((a as { fresh?: boolean }).fresh) {
-        col.setRGB(0.75 + 0.25 * pulse, 1.0, 0.85);
-        this.sizeBillboard(m, 9 + 5 * pulse, worldPerPx);
+      else if (a.freshAgeS !== undefined) {
+        // FL-14 — the DEPLOY POP: peaks at separation, decays as (1 − age/2.2s)², then rests.
+        const k = Math.max(0, 1 - a.freshAgeS / 2.2);
+        col.setRGB(0.75 + 0.25 * k, 1.0, 0.85 + 0.15 * k);
+        this.sizeBillboard(m, 9 + 22 * k * k + 2 * pulse * k, worldPerPx);
       } else col.copy(this._buildGreen);
       m.visible = true;
       slot++;
@@ -3532,6 +3560,19 @@ export class Orrery {
   __dragOrbitProbe(clientX: number, clientY: number): { distPx: number } | null {
     const d = this.ringScreenDistPx(clientX, clientY);
     return d === null ? null : { distPx: d };
+  }
+
+  /** FL-14 (SD-49) — the ring-pinned DRAFT chip: show a one-line facts readout pinned over
+   * the orrery while the pad is open (null hides). Facts only; main composes the text. */
+  setNetDraftChip(text: string | null): void {
+    if (!this.netDraftChip) return;
+    if (text === null) {
+      if (this.netDraftChip.style.display === "none") return; // already hidden — no churn
+      this.netDraftChip.style.display = "none";
+      return;
+    }
+    if (this.netDraftChip.textContent !== text) this.netDraftChip.textContent = text;
+    this.netDraftChip.style.display = "";
   }
 
   private attachInput(): void {

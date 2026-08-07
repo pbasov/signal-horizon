@@ -1571,7 +1571,10 @@ function netDraftSlice(
 ): import("./orrery/orrery").NetRenderState["draft"] {
   // Only draw the draft while the LAUNCH PAD is open (it IS the pad's consequence view);
   // off-pad the globe stays the clean monument view. R1 (SD-45): pad = MISSION panel mode.
-  if (r1Mode !== "pad") return null;
+  if (r1Mode !== "pad") {
+    orrery.setNetDraftChip(null);
+    return null;
+  }
   // The truthful preview of the live editable draft (the SAME call the panel makes).
   const preview = previewLaunch(eph, netPreviewWorld(), netDraft, t);
   // The draft sat's NADIR footprint (the would-be sat built the SAME way the applier builds it).
@@ -1626,6 +1629,30 @@ function netDraftSlice(
             preview.contracts.find((pc) => pc.contractId === c.id)?.coveredFraction ?? 0,
         }
       : null;
+  // FL-14 — the ring-pinned draft chip (facts only): cost · period · time-to-service · batch.
+  {
+    const tts = c
+      ? timeToServiceS(
+          eph,
+          netDraft,
+          { latRad: c.region.latRad, lonRad: c.region.lonRad },
+          netSession.grounds.slice(),
+          t,
+          2 * Math.max(periodS > 0 ? periodS : A1_GEO_PERIOD_S, 1),
+        )
+      : Infinity;
+    const serve =
+      c === null
+        ? "no live tender"
+        : !Number.isFinite(tts)
+          ? "never serves the target"
+          : tts <= 0.5
+            ? "serving NOW"
+            : `first serve in ${Math.round(tts)}s`;
+    orrery.setNetDraftChip(
+      `DRAFT — €${Math.round(preview.costEur).toLocaleString("en-US")}${netDraft.count > 1 ? ` ×${netDraft.count}` : ""} · period ${Math.round(periodS)}s · ${serve}`,
+    );
+  }
   return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM, altM: netDraft.semiMajorM - A1_BODY_RADIUS_M };
 }
 
@@ -1937,13 +1964,15 @@ function pushAvailHistory(contractId: string, value: number): number[] {
 function netBuildRenderState(): BuildRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
-  // R2 (SD-45) — freshly-deployed sats pulse for a beat (the deploy payoff): ids whose
-  // member deployed within the last 3 sim-seconds (read off the lingering launch events).
+  // R2 (SD-45) + FL-14 — freshly-deployed sats POP at separation (the deploy payoff): the
+  // AGE since each member's deployAtS (read off the lingering launch events), while < 3 s.
   netFreshDeployIds.clear();
+  netFreshDeployAge.clear();
   for (const ev of netSession.launchEvents) {
     for (const m of ev.members) {
       if (m.deployed === 1 && m.outcome !== "no_sep" && clock.seconds - m.deployAtS < 3) {
         netFreshDeployIds.add(m.sat.id);
+        netFreshDeployAge.set(m.sat.id, clock.seconds - m.deployAtS);
       }
     }
   }
@@ -1963,6 +1992,7 @@ function netBuildRenderState(): BuildRenderState {
       orbit: s.orbit,
       faulting: faultingIds.has(s.id),
       fresh: netFreshDeployIds.has(s.id),
+      freshAgeS: netFreshDeployAge.get(s.id),
     };
   });
   return {
@@ -2062,6 +2092,8 @@ function netAccept(contractId?: string): void {
 /** R3 (SD-45) — the act-4 verb: LAUNCH THE DEEP-SPACE RELAY (the same net_launch, the
  * MARS_RELAY preset — its presence bridges the Mars leg). One click on the Mars tender. */
 const netFreshDeployIds = new Set<string>();
+/** FL-14 — age-since-deploy per fresh sat (the pop probe reads this). */
+const netFreshDeployAge = new Map<string, number>();
 
 function netLaunchMarsRelay(): void {
   const action = netLaunchAction(
@@ -2835,6 +2867,13 @@ function ledgerFleetState(): LedgerFleetState {
 // FL-13 (SD-49) — the ring-grab probe (scriptable pointer-priority verification).
 (window as unknown as Record<string, unknown>).__dragOrbitProbe = (x: number, y: number) =>
   orrery.__dragOrbitProbe(x, y);
+// FL-14 — probe the LIVE multi-arc pool + deploy pops (scripted verification).
+(window as unknown as Record<string, unknown>).__launchTheatre = () => ({
+  // pending events with arcs in flight (each should pool its own line now),
+  events: netMode ? netSession.launchEvents.map((ev) => ({ id: ev.id, members: ev.members.map((m) => m.outcome) })) : [],
+  // per-member deploy pops currently live (age < 3 s).
+  pops: [...netFreshDeployAge.entries()].map(([id, age]) => ({ id, age: Math.round(age * 10) / 10 })),
+});
 (window as unknown as Record<string, unknown>).__netDebug = () => {
   const c = netSession.contracts.find((x) => x.state === "active") ?? netSession.contracts[0];
   const solve = c ? netSession.lastSolveFor(c.id) : null;

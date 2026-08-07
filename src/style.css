@@ -1100,3 +1100,22 @@ body {
 /* FL-08 — the tender facts row (bonus countdown / decay / breach grace): facts, dim, dense. */
 .mission-tender-facts { font-size: 10px; color: var(--fg-dim); margin: 1px 0; line-height: 1.35; }
 .mission-tender-facts:empty { display: none; }
+
+/* FL-14 — the ring-pinned DRAFT chip: one dense fact line under the camera bar, bottom-right
+   of the pad's consequence view. 1-bit chrome, dim label + bright values. */
+.net-draft-chip {
+  position: absolute;
+  right: 6px;
+  bottom: 44px;
+  max-width: 300px;
+  padding: 3px 7px;
+  background: rgba(11, 11, 18, 0.78);
+  background-image: var(--dither-sparse);
+  background-repeat: repeat;
+  border: 1px solid var(--line-dim);
+  color: var(--fg);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  pointer-events: none;
+}
