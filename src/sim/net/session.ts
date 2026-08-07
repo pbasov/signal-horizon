@@ -152,6 +152,27 @@ export const NET_UNDERBURN_FACTOR = 0.82;
 /** The circularization burn price (€) — the "fix the underburn" button. TUNABLE. */
 export const NET_CIRCULARIZE_COST_EUR = 300.0;
 
+/** FL-10 (SD-49) — the HONEST launch-failure rates, shown on the pad. `armed` = the
+ * act-1 curtain has lifted (failuresArmed ⇒ the rolls apply); `count` sizes the ANY-
+ * member failure. Returns NULL while not armed — Act 1 shows NOTHING (the silent zero is
+ * deliberate; a "0%" line would be a lie of emphasis, and the maiden vehicle exemption is
+ * silent forgiveness, not a promise). Pure. */
+export function launchFailureRates(
+  count: number,
+  armed: boolean,
+): { vehicleLoss: number; perMemberUnderburn: number; perMemberNoSep: number; anyMemberFailed: number } | null {
+  if (!armed) return null;
+  const n = Math.max(1, Math.trunc(count));
+  return {
+    vehicleLoss: NET_VEHICLE_LOSS_CHANCE,
+    perMemberUnderburn: NET_UNDERBURN_CHANCE,
+    perMemberNoSep: NET_NOSEP_CHANCE,
+    // P(≥1 member fails separation) — a batch is a GAMBLE with independent members. The underburn
+    // is recoverable (a €300 burn) so it isn't folded into "failed".
+    anyMemberFailed: 1 - Math.pow(1 - NET_NOSEP_CHANCE, n),
+  };
+}
+
 /** One batch member riding a pending launch. JSON-safe; folded. */
 export interface PendingMember {
   /** The sat as it will DEPLOY (underburn members carry the lowered orbit). */
@@ -493,6 +514,12 @@ export class NetSession {
   /** The current scenario cursor (which beat is live). */
   get cursor(): number {
     return this.scenarioCursor;
+  }
+
+  /** FL-10 — whether launch failure rolls apply right now (act-1 is forced clean). A pure
+   * read of {@link scenarioCursor} — the SAME rule launchBatch/launchSat apply. */
+  get failuresArmed(): boolean {
+    return this.scenarioCursor > 0;
   }
 
   /** The sim-time the session has been STEPPED to (the END of the last step). The Act-2 gate

@@ -60,6 +60,8 @@ export interface MissionTopState {
   /** A physics/eligibility RULES FACT about the current design vs the target tender
    * (LAW 1: facts the player needs, never solved answers). Null = nothing to say. */
   padFact: string | null;
+  /** FL-10 — the honest launch-risk line (null while failures are dark: act 1 + maiden). */
+  riskBand: string | null;
 }
 
 export interface MissionTopActions {
@@ -156,6 +158,7 @@ export class MissionTop implements PanelHandle {
   private readonly vFacts: HTMLElement;
   private readonly vStack: HTMLElement;
   private readonly vProblem: HTMLElement;
+  private readonly vRisk: HTMLElement;
   private readonly vPadFact: HTMLElement;
   private readonly armBtn: HTMLButtonElement;
   private readonly launchBtn: HTMLButtonElement;
@@ -278,6 +281,7 @@ export class MissionTop implements PanelHandle {
 
     const commitGroup = el("div", "group");
     this.vStack = el("div", "mission-stack", "");
+    this.vRisk = el("div", "mission-hint", "");
     this.vProblem = el("div", "mission-problem", "");
     this.vPadFact = el("div", "mission-fact", "");
     this.armBtn = btn("ARM", "net-btn mission-arm", () => this.actions.onArm());
@@ -285,7 +289,7 @@ export class MissionTop implements PanelHandle {
     this.armBtn.title = "Two-step commit: ARM, then LAUNCH. The stack price is charged win or lose.";
     this.launchBtn = btn("LAUNCH", "net-btn mission-launch", () => this.actions.onLaunch());
     this.launchBtn.setAttribute("data-net", "launch");
-    commitGroup.append(this.vStack, this.vPadFact, this.vProblem, this.armBtn, this.launchBtn);
+    commitGroup.append(this.vStack, this.vRisk, this.vPadFact, this.vProblem, this.armBtn, this.launchBtn);
     this.padFace.appendChild(commitGroup);
 
     this.content.appendChild(this.padFace);
@@ -520,6 +524,9 @@ export class MissionTop implements PanelHandle {
     this.vStack.classList.toggle("over", s.stack.totalEur > s.balanceEur);
     this.vProblem.textContent = s.problem ?? "";
     this.vProblem.style.display = s.problem ? "" : "none";
+    // FL-10 — the risk band: honest silence in act 1 (absent node, never "0%").
+    this.vRisk.textContent = s.riskBand ?? "";
+    this.vRisk.style.display = s.riskBand ? "" : "none";
     this.vPadFact.textContent = s.padFact ?? "";
     this.vPadFact.style.display = s.padFact ? "" : "none";
     this.armBtn.classList.toggle("active", s.armed);

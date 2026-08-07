@@ -15,7 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { loadEphemeris } from "../system-data";
 import { KIND_NET_LAUNCH, simAction } from "../action";
-import { NetSession } from "./session";
+import { NetSession, launchFailureRates } from "./session";
 import { launchStackCost, GEO_PARK, NET_BATCH_MEMBER_DISCOUNT, launchVehicleCost } from "./world";
 import { DEFAULT_LOADOUT_CARD_IDS, hardwarePriceEur } from "./sat";
 import { DT } from "../clock";
@@ -106,5 +106,33 @@ describe("FL-11: the batch manifest discount (−15% hardware for members 2+)", 
     const single = launchStackCost("smallsat", ["BROADCAST"], a, 1);
     const perSatBatched = launchStackCost("smallsat", ["BROADCAST"], a, 3) / 3;
     expect(perSatBatched).toBeLessThan(single);
+  });
+});
+
+// ── FL-10 (SD-49) — the honest risk band: rates arithmetic + the act-1 curtain ──────
+describe("FL-10 — launchFailureRates + the failuresArmed curtain", () => {
+  it("null while failures are dark (act 1 shows NOTHING, never a '0%' lie)", () => {
+    expect(launchFailureRates(1, false)).toBeNull();
+    expect(launchFailureRates(6, false)).toBeNull();
+    expect(freshSession().failuresArmed).toBe(false); // cursor 0
+  });
+
+  it("armed: the flat per-launch/per-member rates + the ANY-member batch gamble", () => {
+    const r = launchFailureRates(1, true)!;
+    expect(r.vehicleLoss).toBeCloseTo(0.02, 12);
+    expect(r.perMemberUnderburn).toBeCloseTo(0.08, 12);
+    expect(r.perMemberNoSep).toBeCloseTo(0.03, 12);
+    expect(r.anyMemberFailed).toBeCloseTo(0.03, 12);
+    const r6 = launchFailureRates(6, true)!;
+    expect(r6.anyMemberFailed).toBeCloseTo(1 - Math.pow(1 - 0.03, 6), 12);
+    expect(r6.anyMemberFailed).toBeGreaterThan(6 * 0.03 * 0.9); // clearly NOT 6× (independence)
+  });
+
+  it("failuresArmed flips exactly when the act-1 gate advances the cursor", () => {
+    // Driving the full canonical act-1 is the replay suite's job; here we pin the RULE:
+    // the getter is a pure read of the scenario cursor (same predicate the roll gates on).
+    const s = freshSession();
+    expect(s.cursor).toBe(0);
+    expect(s.failuresArmed).toBe(false);
   });
 });

@@ -60,7 +60,7 @@ import { BuildSession } from "./sim/m2/session";
 // net/ Act-1 — the connectivity game (design §5/§6). NetSession is the live mutable world
 // (roster + REGION-0 contract + wallet + scenario cursor); applyNetAction is the SHARED
 // applier live + replay use; the world planner gives the truthful consequence preview.
-import { NetSession, NET_RNG_SEED, BREACH_GRACE_SECONDS } from "./sim/net/session";
+import { NetSession, NET_RNG_SEED, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
@@ -107,6 +107,7 @@ import {
   WIRE_UNDERBURN,
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
+  PAD_RISK_BAND,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier } from "./sim/net/sat";
@@ -2704,6 +2705,14 @@ function missionTopState(): MissionTopState {
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
     padFact: r1PadFact(),
+    // FL-10 — the honest risk band (null while failures are dark; rates from the ONE set of
+    // constants the session rolls against).
+    riskBand: (() => {
+      const rates = launchFailureRates(netDraft.count, netSession.failuresArmed);
+      if (rates === null) return null;
+      const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;
+      return PAD_RISK_BAND(pct(rates.vehicleLoss), pct(rates.perMemberUnderburn), pct(rates.perMemberNoSep));
+    })(),
   };
 }
 

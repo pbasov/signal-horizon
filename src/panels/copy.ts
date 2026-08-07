@@ -73,9 +73,10 @@ export const TENDER_PAY_DECAY = (halfLifeText: string): string =>
 /** FL-07/FL-08 — the breach grace on the terms, printed as a fact. */
 export const TENDER_BREACH_GRACE = (graceText: string): string =>
   `pays only while served · a breach counts once you've been dark ${graceText} straight`;
-/** FL-10 — the launch risk band on the PAD (absent in Act 1, where failure is silent-zero). */
-export const PAD_RISK_BAND = (vehiclePct: string, perSatPct: string): string =>
-  `launch risk — vehicle loss ${vehiclePct} · per-sat failure ${perSatPct}`;
+/** FL-10 — the launch risk band on the PAD (ABSENT in Act 1, where failure is silent-zero;
+ * never rendered as "0%" — honest silence, not lying reassurance). */
+export const PAD_RISK_BAND = (vehiclePct: string, underburnPct: string, noSepPct: string): string =>
+  `launch risk — vehicle loss ${vehiclePct} · underburn ${underburnPct}/sat (a burn fixes it) · no separation ${noSepPct}/sat`;
 /** FL-11 — the manifest discount on the PAD stack line. */
 export const STACK_BATCH_DISCOUNT = (pct: string): string =>
   `2nd+ satellite on the same vehicle −${pct} hardware`;
