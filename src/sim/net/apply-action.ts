@@ -138,7 +138,9 @@ export function applyNetAction(
   }
   if (action.kind === KIND_NET_ACCEPT) {
     const id = str(action.payload.contractId);
-    const c = session.acceptContract(id);
+    // FL-07: the signature carries its TICK time so the live board price it freezes at is
+    // byte-identical live vs replay.
+    const c = session.acceptContract(id, action.atTick * dt);
     if (c === null) return { kind: "rejected", costEur: 0 };
     return { kind: "contract_accepted", costEur: 0, contractId: c.id };
   }

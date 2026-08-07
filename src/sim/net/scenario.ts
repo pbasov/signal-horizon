@@ -38,6 +38,7 @@
 import type { NetSession } from "./session";
 import {
   NET_ACT1_REGION,
+  NET_ACT1B_REGION,
   NET_ACT1_REGION_RADIUS_RAD,
   NET_ACT2_REGION_LAT_RAD,
   NET_ACT2_REGION_LON_RAD,
@@ -45,7 +46,7 @@ import {
   ACT4_MARS_CONTRACT_ID,
   type Region,
 } from "./endpoint";
-import { offerNetContract, type SlaAxis } from "./contract";
+import { offerNetContract, NET_DEFAULT_PAY_PER_SECOND, type SlaAxis } from "./contract";
 import type { FaultScript, TraceShortfall } from "./fault-types";
 
 /**
@@ -104,6 +105,26 @@ export const ACT2_CONTRACT_ID = "REGION-1";
  * be HELD. A lone inclined LEO (worst-phase rolling avail ≈ 0.28 over REGION-1) sawtooths far
  * below it; a phased N=4 polar constellation holds rolling-avail = 1.0 and clears it. */
 export const ACT2_SLA_AVAIL = 0.99;
+
+// --- FL-07 (SD-47) — ACT 1 TENDER TEXTURE -------------------------------------------
+
+/** FL-07 — the second Act-1 tender id (the decaying one: "equatorial transit", 5°E). */
+export const ACT1B_CONTRACT_ID = "REGION-C";
+
+/** FL-07 — the Act-1 offers now carry a CLOCK (the Act-1 Infinity exemption is dead):
+ * both tenders lapse 2 sim-hours after emit. TUNABLE. */
+export const ACT1_OFFER_WINDOW_S = 2 * 3600.0;
+/** FL-07 — REGION-0's sign-on bonus (€) + its lapse limit. With the bonus, one full REGION-0
+ * term earns 2.0×7200 + 2000 = €16,400 < the €19,055 honest GEO stack — the economy
+ * theorem still holds. TUNABLE. */
+export const ACT1_SIGNON_BONUS_EUR = 2000;
+export const ACT1_SIGNON_WINDOW_S = 900;
+/** FL-07 — REGION-C's pay multiple + decay half-life. 1.3× (not a fat multiple): a FULL-pay
+ * term (2.6 × 7200 = €18,720) stays under the €19,055 stack, so even a degenerate immediate
+ * sign cannot out-earn its own honest provisioning (the economy theorem); the DECAY does the
+ * pricing work from there. TUNABLE. */
+export const ACT1B_PAY_MULT = 1.3;
+export const ACT1B_PAY_HALVING_S = 1200;
 
 /** The HAND-OFF CYCLE the gate requires the region to be HELD across, breach-free, before the
  * concept is FELT (≥1 full rise→set→rise hand-off, design §3.3). Two LEO periods (= 300 s) — a
@@ -216,10 +237,11 @@ export const NET_ACT3A_BACKHAUL_REGION: Region = {
  */
 const ACT1: Beat = {
   id: "act1",
-  emit(session: NetSession): void {
-    // The ONE Act-1 demand: connectivity-only (the mask hides the other axes), latency-
-    // tolerant (the high default slaLatencyS is un-enforced this act). Idempotent — the
-    // session de-dupes by id, so a re-emit is a no-op.
+  emit(session: NetSession, t: number): void {
+    // FL-07 (SD-47) — TWO live tenders, not one patient offer: a real choice exists from
+    // minute one (which patron, and when to sign). Both connectivity-only (the axis mask is
+    // unchanged), both clocked; idempotent (the session de-dupes by id).
+    // REGION-0 — the opener: flat pay + a sign-on bonus with a 15-minute clock.
     session.addContract(
       offerNetContract(ACT1_CONTRACT_ID, NET_ACT1_REGION, {
         activeAxes: new Set<SlaAxis>(["connectivity"]),
@@ -227,6 +249,23 @@ const ACT1: Beat = {
         // pre-P3 default). It routes the SHORT way; the player later OVERRIDES it to bandwidth-share-
         // aware (the act3a net_set_prefer relief) so it yields the short corridor to REGION-2.
         trafficClass: "latency",
+        offerWindowS: ACT1_OFFER_WINDOW_S,
+        offeredAtS: t,
+        signOnBonusEur: ACT1_SIGNON_BONUS_EUR,
+        signOnBonusUntilS: t + ACT1_SIGNON_WINDOW_S,
+      }),
+    );
+    // REGION-C — the richer but REPRICING deal: the market halves its pay every 1200 s the
+    // offer sits unsigned. Signing what you can't serve yet bleeds; waiting bleeds the pay.
+    session.addContract(
+      offerNetContract(ACT1B_CONTRACT_ID, NET_ACT1B_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity"]),
+        trafficClass: "latency",
+        payPerSecond: NET_DEFAULT_PAY_PER_SECOND * ACT1B_PAY_MULT,
+        penaltyPerSecond: 2 * NET_DEFAULT_PAY_PER_SECOND * ACT1B_PAY_MULT,
+        offerWindowS: ACT1_OFFER_WINDOW_S,
+        offeredAtS: t,
+        payHalvingS: ACT1B_PAY_HALVING_S,
       }),
     );
   },

@@ -447,6 +447,16 @@ function netStateHash(s: NetSession): bigint {
     // from baseline + t + loadPhase + a seeded-noise draw). Folded right after offeredLoad (its
     // sibling) so two states with the same realized load but a different baseline never collide.
     acc = mixFloat(acc, c.loadBaseline);
+    // FL-07 (SD-47) re-pin #2: the tender-texture fields. payPerSecond + penaltyPerSecond MUST
+    // fold now that accept FREEZES the decayed board price (two accepts at different times
+    // diverge); plus the offer-clock fields (offeredAtS, sign-on bonus + lapse, pay halving)
+    // so a restore can't reprice a tender. Folded right after loadBaseline (the € cluster).
+    acc = mixFloat(acc, c.payPerSecond);
+    acc = mixFloat(acc, c.penaltyPerSecond);
+    acc = mixFloat(acc, c.offeredAtS);
+    acc = mixFloat(acc, c.signOnBonusEur);
+    acc = mixFloat(acc, c.signOnBonusUntilS);
+    acc = mixFloat(acc, c.payHalvingS);
     // activeAxes by ASCENDING ordinal (connectivity=0…bandwidth=3) — never Set order.
     const ordinals = NetSession.foldAxisOrdinals(c.activeAxes);
     acc = mixInt(acc, BigInt(ordinals.length));
@@ -618,7 +628,10 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 // FL-01+FL-11 (SD-46/SD-48) re-pin [#1 of the FL plan]: the priced BROADCAST default (+€2,500
 // per lean launch in the canonical arc) + the members-2+ manifest discount move the wallet path;
 // determinism (restore == continuous, JSON round-trip) unchanged, verified before pinning.
-const NET_REPLAY_GOLDEN = 71513456548811159n;
+// FL-07 (SD-47) re-pin #2 [of two planned]: tender texture — sign-on bonus (REGION-0 +€2,000
+// landed in-window), the decaying REGION-C fold, pay/penalty now folding (accept freezes), and
+// the texture fields mixed. Determinism unchanged (restore == continuous, JSON round-trip OK).
+const NET_REPLAY_GOLDEN = 14974205439654686823n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {

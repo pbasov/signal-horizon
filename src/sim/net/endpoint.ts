@@ -87,6 +87,18 @@ export const NET_ACT1_REGION: Region = {
   bodyId: "earth",
 };
 
+/** FL-07 (SD-47) — the SECOND Act-1 tender: an equatorial transit metro at 5°E whose pay
+ * DECAYS on the board (the market re-prices an unsigned deal). One smallsat can serve both
+ * metros from one floodlight — or the player chooses. Same disc geometry as REGION-0. */
+export const NET_ACT1B_REGION: Region = {
+  id: "REGION-C",
+  label: "equatorial transit",
+  latRad: 0,
+  lonRad: (5 * Math.PI) / 180,
+  radiusRad: NET_ACT1_REGION_RADIUS_RAD,
+  bodyId: "earth",
+};
+
 /** R2e (SD-45) — THE LAUNCH SITE (render + launch-arc origin; NOT a comms endpoint):
  * Cape Canaveral, 28.4° N, 80.6° W. Rockets rise from here; the comms ground network
  * below is a separate concern (real-world split: launch pads ≠ ground stations). */

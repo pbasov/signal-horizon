@@ -218,8 +218,20 @@ export interface Contract {
   /** Sim-time the OFFER auto-expires (the m2 stepOfferedContract reads this). The net
    * contract has NO offer window in Act 1, so this is `Infinity` — the SHARED offered-step
    * helper then never expires it (a genuine, deterministic no-op), keeping ONE convention.
-   * SAME field name as m2/contracts.ts. */
+   * SAME field name as m2/contracts.ts.
+   * FL-07 (SD-47): Act 1 ladders onto the SAME machinery — windows are now universal. */
   offerExpiresAtS: number;
+  // --- FL-07 (SD-47) — TENDER TEXTURE: the offer is a live market object, not a static row ---
+  /** When the offer was emitted (the decay + sign-on clock origin). */
+  offeredAtS: number;
+  /** One-shot sign-on bonus (€) credited to the wallet if accepted by {@link signOnBonusUntilS}. */
+  signOnBonusEur: number;
+  /** Absolute sim-time the sign-on bonus lapses (0 = no bonus offered). */
+  signOnBonusUntilS: number;
+  /** While OFFERED, the pay decays with this half-life from {@link offeredAtS} (the market
+   * re-prices an unsigned deal). Infinity = flat (Acts 2–4 tenders keep their R3 behaviour).
+   * On accept the pay FREEZES at its decayed value and this is set to Infinity. */
+  payHalvingS: number;
   /** Term in sim-seconds (fraction-weighted served-time must reach this to COMPLETE). */
   termSeconds: number;
   /** Accumulated served sim-seconds, weighted by served fraction (drives COMPLETION). */
@@ -430,6 +442,11 @@ export function offerNetContract(
      * (both must be given; the shared m2 stepOfferedContract fails it past that). */
     offerWindowS?: number;
     offeredAtS?: number;
+    /** FL-07: one-shot sign-on bonus (€) + its absolute lapse time. */
+    signOnBonusEur?: number;
+    signOnBonusUntilS?: number;
+    /** FL-07: offer-board pay decay half-life (Infinity = flat). */
+    payHalvingS?: number;
   },
 ): Contract {
   // The traffic class SETS the default prefer (§7.2). An explicit `prefer` opt still wins (a test /
@@ -461,6 +478,10 @@ export function offerNetContract(
       opts?.offerWindowS !== undefined && opts?.offeredAtS !== undefined
         ? opts.offeredAtS + opts.offerWindowS
         : Infinity,
+    offeredAtS: opts?.offeredAtS ?? 0,
+    signOnBonusEur: opts?.signOnBonusEur ?? 0,
+    signOnBonusUntilS: opts?.signOnBonusUntilS ?? 0,
+    payHalvingS: opts?.payHalvingS ?? Infinity,
     termSeconds: opts?.termSeconds ?? NET_DEFAULT_TERM_SECONDS,
     servedSecondsAccum: 0,
     breachSecondsAccum: 0,
@@ -514,6 +535,24 @@ export function netRevenueRatePerSecond(contract: Contract, servedFraction: numb
   if (contract.state !== "active") return 0;
   if (servedFraction > 0) return contract.payPerSecond * servedFraction;
   return -contract.penaltyPerSecond;
+}
+
+// --- FL-07 (SD-47) — the decayed-pay + sign-on-bonus helpers (the market texture) -----
+
+/** The pay an OFFERED contract would freeze at if signed at sim-time `t`: the offer-board
+ * value decayed with {@link Contract.payHalvingS} from {@link Contract.offeredAtS}.
+ * Flat (exact `payPerSecond`) when the half-life is not finite/positive OR the contract is
+ * already past its offered state (accept freezes + flattens it). Pure. */
+export function decayedPayAtS(c: Contract, t: number): number {
+  if (!Number.isFinite(c.payHalvingS) || c.payHalvingS <= 0) return c.payPerSecond;
+  const dt = Math.max(0, t - c.offeredAtS);
+  return c.payPerSecond * Math.pow(2, -dt / c.payHalvingS);
+}
+
+/** The sign-on bonus (€) payable if signed at sim-time `t` (0 once the bonus window has
+ * lapsed, when none was offered, or after accept consumed it). Pure. */
+export function signOnBonusAtS(c: Contract, t: number): number {
+  return c.signOnBonusEur > 0 && t <= c.signOnBonusUntilS ? c.signOnBonusEur : 0;
 }
 
 /** Add € earned this step to a contract's running total (the session calls this with the

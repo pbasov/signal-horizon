@@ -51,6 +51,8 @@ import {
   renewalOffer,
   netRevenueRatePerSecond,
   recordNetEarned,
+  decayedPayAtS,
+  signOnBonusAtS,
   cloneNetContract,
   escalateLoad,
   burstyOfferedLoad,
@@ -735,10 +737,24 @@ export class NetSession {
    * ACCEPT an OFFERED contract by id, moving it OFFERED → ACTIVE so it begins accruing
    * revenue from the live router coverage. Returns the affected contract, or null if the
    * id is unknown or not OFFERED. Pure + deterministic.
+   *
+   * FL-07 (SD-47): signature PRICES the moment — the pay FREEZES at its decayed offer-board
+   * value ({@link decayedPayAtS} at `tS`), the penalty rebinds to 2× the frozen pay (the 2×
+   * asymmetry preserved pay-side-symmetric), and a lapsed-proof sign-on bonus lands in the
+   * wallet. All folds: payPerSecond/penaltyPerSecond/balance are already folded; the bonus
+   * consumption zeroes signOnBonusEur (folded).
    */
-  acceptContract(contractId: string): Contract | null {
+  acceptContract(contractId: string, tS?: number): Contract | null {
     const c = this.contractById(contractId);
     if (c === null || c.state !== "offered") return null;
+    const t = tS ?? this.lastStepS;
+    const frozenPay = decayedPayAtS(c, t);
+    const bonus = signOnBonusAtS(c, t);
+    if (bonus > 0) this.walletBalance += bonus;
+    c.payPerSecond = frozenPay;
+    c.penaltyPerSecond = 2 * frozenPay;
+    c.signOnBonusEur = 0; // consumed (whether or not the window was met — no double-dip)
+    c.payHalvingS = Infinity; // signed terms stop repricing
     c.state = "active";
     return c;
   }

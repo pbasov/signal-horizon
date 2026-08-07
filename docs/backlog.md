@@ -109,7 +109,7 @@
 - [x] **FL-04** PAD silhouette slot editor (G1/S1 named slots replace the flat card grid); Playwright dup-fill script; redundant shape encoding. (P2-C2)
 - [x] **FL-05** antenna-truthful preview: `footprintRadiusRad(card, altM)`; `draftToSat(bus, loadout)` [bus half-done in FL-01 commits]; draft disc sized by antenna; consequence-truth invariant × comsat+ACCESS. Golden-clean. (P2-C3)
 - [x] **FL-06** `suggestLoadout` — viable, never optimal (greedy legal fit per contract axes); FIT button on PAD. (P2-C4)
-- [ ] **FL-07** contract fields + ACT1 multi-tender: `offeredAtS/signOnBonusEur/signOnBonusUntilS/payDecayHalfLifeS` + accept-freeze pricing; ACT1 2h window + REGION-0 €2k/900s sign-on + REGION-C (1.6×, 1200s half-life); fold mix after offerExpiresAtS · net-golden re-pin #2 + lapse-replay test + economy theorem re-verified under decay. (P3-C1)
+- [~] **FL-07** (sim done; tender-board UI rows = FL-08) contract fields + ACT1 multi-tender: `offeredAtS/signOnBonusEur/signOnBonusUntilS/payDecayHalfLifeS` + accept-freeze pricing; ACT1 2h window + REGION-0 €2k/900s sign-on + REGION-C (1.6×, 1200s half-life); fold mix after offerExpiresAtS · net-golden re-pin #2 + lapse-replay test + economy theorem re-verified under decay. (P3-C1)
 - [ ] **FL-08** tender-board fact rows: bonus countdown / decay note / breach-grace fact in NetContractRow (+ the FL-11 manifest-discount pad row); facts-only copy; colour-off shot. (P3-C2)
 - [ ] **FL-09** act-4 offer-window decision (Mars relay tender clock yes/no); one-line scenario change + decision note. (P3-C3)
 - [ ] **FL-10** honest launch risk band: `launchFailureRates(count, armed)` + `failuresArmed` getter + PAD fact row (act 1 = absent, never "0%"). (P4-C1)
