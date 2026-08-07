@@ -615,7 +615,10 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 //       holds. The two existing goldens (M1 cache 544847093270497462n, M2 build 8431658617016421069n)
 //       are DIFFERENT worlds (neither imports net/) and stay byte-for-byte UNTOUCHED.
 // ---------------------------------------------------------------------------
-const NET_REPLAY_GOLDEN = 12975807967364188200n; // R0 (SD-45): cards+beams+events+economy re-pin.
+// FL-01+FL-11 (SD-46/SD-48) re-pin [#1 of the FL plan]: the priced BROADCAST default (+€2,500
+// per lean launch in the canonical arc) + the members-2+ manifest discount move the wallet path;
+// determinism (restore == continuous, JSON round-trip) unchanged, verified before pinning.
+const NET_REPLAY_GOLDEN = 71513456548811159n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -1339,8 +1342,9 @@ describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-p
     );
     const res = applyNetAction(eph, s, action, dt)!;
     expect(res.kind).toBe("sats_launched");
-    // R0 (SD-45): cost = launchStackCost(bus, cards, a, count) — one vehicle + N × hardware.
-    const expectedCost = launchStackCost("smallsat", [], GEO_PARK.semiMajorM, 1);
+    // R0 (SD-45) + FL-01 (SD-46): cost = launchStackCost(bus, cards, a, count) — one vehicle +
+    // N × hardware; a NO-loadout wire launch is charged the PRICED BROADCAST default it flies.
+    const expectedCost = launchStackCost("smallsat", ["BROADCAST"], GEO_PARK.semiMajorM, 1);
     expect(res.costEur).toBeCloseTo(expectedCost, 9);
     expect(before - s.balance).toBeCloseTo(expectedCost, 9); // the WALLET actually dropped.
     // The sat rides the countdown/ascent/deploy pipeline — in orbit only after ~18 s.
@@ -1349,7 +1353,7 @@ describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-p
     expect(s.sats.length).toBe(1);
   });
 
-  it("a BATCH launch debits ONE vehicle + count× hardware (batching rewarded), charged win or lose", () => {
+  it("a BATCH launch debits ONE vehicle + discounted hardware for members 2+ (batching rewarded), charged win or lose", () => {
     const eph = buildEph();
     const s = new NetSession();
     const before = s.balance;
@@ -1366,7 +1370,9 @@ describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-p
       0,
     );
     const res = applyNetAction(eph, s, action, dt)!;
-    const expectedCost = launchStackCost("smallsat", [], LEO_SWEEP.semiMajorM, count);
+    // FL-01 + FL-11: the no-loadout batch is charged the priced BROADCAST default, members 2+
+    // at the manifest discount (SD-46/SD-48).
+    const expectedCost = launchStackCost("smallsat", ["BROADCAST"], LEO_SWEEP.semiMajorM, count);
     expect(res.costEur).toBeCloseTo(expectedCost, 9);
     expect(before - s.balance).toBeCloseTo(expectedCost, 9);
     // Act 1 (cursor 0) forces every outcome to success: all `count` members deploy.

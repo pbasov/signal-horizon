@@ -30,6 +30,10 @@ export interface SimActionDict {
 }
 
 /** The known action kinds (mirrors SimAction.KindNoop / KindSetTimeScale). */
+// FL-01: the ONE wire-default loadout lives in sat.ts; recording it for an explicitly
+// empty loadout keeps the log honest (you see what you paid for). satu.ts is dep-free of
+// DOM/three, so this import keeps the action module pure.
+import { DEFAULT_LOADOUT_CARD_IDS } from "./net/sat";
 export const KIND_NOOP = "noop";
 export const KIND_SET_TIME_SCALE = "set_time_scale";
 /**
@@ -300,11 +304,15 @@ export function netLaunch(
   if (params.phaseSpreadRad !== undefined && params.phaseSpreadRad !== 0) {
     payload.phaseSpreadRad = params.phaseSpreadRad;
   }
-  // R0 (SD-45): the sat DESIGN on the wire — bus + antenna-card loadout. Only emitted when
-  // non-default so a default launch keeps the lean wire shape.
+  // R0 (SD-45): the sat DESIGN on the wire — bus + antenna-card loadout. FL-01: an explicitly
+  // EMPTY list records the DEFAULT it resolves to (the log shows what you paid for; the applier
+  // prices the default either way). An undefined loadout keeps the lean pre-R0 wire shape.
   if (params.bus !== undefined && params.bus !== "smallsat") payload.bus = params.bus;
-  if (params.loadout !== undefined && params.loadout.length > 0) {
-    payload.loadout = params.loadout.slice();
+  if (params.loadout !== undefined) {
+    payload.loadout =
+      params.loadout.length > 0
+        ? params.loadout.slice()
+        : [...DEFAULT_LOADOUT_CARD_IDS];
   }
   return simAction(KIND_NET_LAUNCH, atTick, payload);
 }

@@ -32,7 +32,7 @@ import {
 import type { NetSession } from "./session";
 import { NET_CIRCULARIZE_COST_EUR } from "./session";
 import type { NetSat, BusTier } from "./sat";
-import { resolveLoadout, validateLoadout } from "./sat";
+import { resolveLoadout, validateLoadout, DEFAULT_LOADOUT_CARD_IDS } from "./sat";
 import { resolveOrbit, MARS_RELAY, launchStackCost } from "./world";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 
@@ -91,17 +91,18 @@ export function applyNetAction(
     const isRelay = action.payload.presetId === MARS_RELAY.id;
     const t = action.atTick * dt;
 
-    // R0 (SD-45): the sat DESIGN on the wire. Absent bus/loadout ⇒ the standard broadcast
-    // smallsat (the pre-R0 default), so a lean legacy wire dict still resolves.
+    // R0 (SD-45): the sat DESIGN on the wire. Absent/empty bus/loadout ⇒ the standard
+    // broadcast smallsat (the pre-R0 default), so a lean legacy wire dict still resolves.
+    // FL-01: the default is applied BEFORE validation + pricing — a defaulted launch is
+    // CHARGED for the BROADCAST it flies (the free-card exploit is closed; SD-46).
     const bus: BusTier = str(action.payload.bus) === "comsat" ? "comsat" : "smallsat";
     const rawLoadout = action.payload.loadout;
-    const cardIds: string[] = Array.isArray(rawLoadout)
+    const filtered: string[] = Array.isArray(rawLoadout)
       ? rawLoadout.filter((v): v is string => typeof v === "string")
       : [];
-    if (cardIds.length > 0) {
-      const problem = validateLoadout(bus, cardIds);
-      if (problem !== null) return { kind: "rejected", costEur: 0, problem };
-    }
+    const cardIds: string[] = filtered.length > 0 ? filtered : [...DEFAULT_LOADOUT_CARD_IDS];
+    const problem = validateLoadout(bus, cardIds);
+    if (problem !== null) return { kind: "rejected", costEur: 0, problem };
 
     // THE COST (m1-redesign §2.5): one vehicle (base + bus-tier lift to the target
     // altitude) + count × (bus + cards) hardware — the SAME function the builder previews.

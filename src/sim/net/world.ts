@@ -23,7 +23,7 @@ import type { SimRng } from "../rng";
 import { EARTH_MU } from "../m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "../m2/orbit";
 import type { AntennaSpec, NetSat, BusTier } from "./sat";
-import { standardLoadout, hardwarePriceEur } from "./sat";
+import { standardLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS } from "./sat";
 import {
   type RegionPoint,
   type GroundNet,
@@ -206,8 +206,14 @@ export function launchVehicleCost(bus: BusTier, semiMajorM: number): number {
   return NET_LAUNCH_BASE_EUR + NET_LIFT_EUR_PER_KM[bus] * altKm;
 }
 
+/** The batch manifest discount (FL-11, SD-48): members 2+ of one launch pay
+ * `1 − NET_BATCH_MEMBER_DISCOUNT` × hardware — batching rewards consolidation (one vehicle
+ * already amortized). TUNABLE. */
+export const NET_BATCH_MEMBER_DISCOUNT = 0.15;
+
 /** The full committed cost (€) of a launch: one vehicle + `count` × (bus + antenna
- * cards). The SAME function the builder previews and the applier charges. Pure. */
+ * cards), members 2+ at the manifest discount. The SAME function the builder previews and
+ * the applier charges. Pure. */
 export function launchStackCost(
   bus: BusTier,
   cardIds: readonly string[],
@@ -215,7 +221,8 @@ export function launchStackCost(
   count: number,
 ): number {
   const n = Math.max(1, Math.trunc(count));
-  return launchVehicleCost(bus, semiMajorM) + hardwarePriceEur(bus, cardIds) * n;
+  const hw = hardwarePriceEur(bus, cardIds);
+  return launchVehicleCost(bus, semiMajorM) + hw * (1 + (n - 1) * (1 - NET_BATCH_MEMBER_DISCOUNT));
 }
 
 /**
@@ -266,6 +273,9 @@ export interface LaunchDraft {
    * never sets it (and a launch that never drags it) leaves it undefined ⇒ resolveOrbit uses 0,
    * so the orbit is byte-identical to the pre-RAAN draft (golden-safe). */
   raanRad?: number;
+  /** R0/FL: the bus tier the draft flies. OPTIONAL + defaults to "smallsat" so a preset /
+   * pre-FL draft is byte-identical (the router never reads `bus` — pricing + slots only). */
+  bus?: BusTier;
   loadout: AntennaSpec[];
   count: number;
 }
@@ -306,7 +316,9 @@ export const NET_PLANNER_PRESETS: Preset[] = [GEO_PARK_PRESET, LEO_SWEEP_PRESET,
 
 /** The launch cost (€) of a {@link LaunchDraft}: the base cost (from the seeding preset)
  * + the altitude term, ×`count`. An overload of {@link launchCost} over a full draft so
- * the planner reads ONE cost surface. Pure. */
+ * the planner reads ONE cost surface. Pure.
+ * @deprecated FL-01/FL-11 (SD-48): legacy math, NOT what a commit charges — the truthful
+ * preview + applier share {@link launchStackCost}. Kept for legacy readers/tests only. */
 export function launchDraftCost(draft: LaunchDraft, costBaseEur: number): number {
   return launchCost({ semiMajorM: draft.semiMajorM, costBaseEur }) * Math.max(1, draft.count);
 }
@@ -369,7 +381,9 @@ export function draftToSat(draft: LaunchDraft, t: number, id = "PREVIEW-SAT"): N
       { semiMajorM: draft.semiMajorM, incRad: draft.incRad, subLonRad: draft.subLonRad, raanRad: draft.raanRad },
       t,
     ),
-    bus: "smallsat",
+    // FL-01/FL-11: the preview sat flies the drafted bus (defaults smallsat — byte-
+    // identical to the pre-bus builder sat; the router never reads `bus`).
+    bus: draft.bus ?? "smallsat",
     loadout: draft.loadout.map((a) => ({ ...a })),
   };
 }
@@ -400,6 +414,13 @@ function wrapPi(a: number): number {
   return x;
 }
 
+/** The card ids a draft's resolved antenna loadout corresponds to (an id-less legacy
+ * antenna — eirp-seeded or pre-R0 — reads as the wire default it would resolve to). */
+function draftCardIds(draft: LaunchDraft): string[] {
+  const ids = draft.loadout.map((a) => a.cardId).filter((id) => id.length > 0);
+  return ids.length > 0 ? ids : [...DEFAULT_LOADOUT_CARD_IDS];
+}
+
 /**
  * THE TRUTHFUL CONSEQUENCE PREVIEW (design §2.3 / §6). Compute what committing `draft` at
  * sim-time `t` WOULD do — footprint coverage, ground track, period, and the per-contract
@@ -417,8 +438,11 @@ export function previewLaunch(
   world: PreviewWorld,
   draft: LaunchDraft,
   t: number,
+  /** @deprecated FL-01: ignored — the preview price is the applier's {@link launchStackCost},
+   * never the legacy base+altitude math. Kept in the signature for legacy callers. */
   costBaseEur = 0,
 ): LaunchPreview {
+  void costBaseEur;
   const sat = draftToSat(draft, t);
   const sats: NetSat[] = [sat];
   const grounds = world.grounds.slice();
@@ -452,7 +476,16 @@ export function previewLaunch(
   return {
     orbit: sat.orbit,
     periodS,
-    costEur: launchDraftCost(draft, costBaseEur),
+    // FL-01/FL-11 (SD-46/SD-48): THE preview price IS the applier's price — the ONE stack-cost
+    // function over the drafted bus + cards + count (+ the batch discount), so the PAD line ==
+    // the charged line, always. The draft's AntennaSpec loadout carries its cardId through from
+    // the builder (an id-less legacy antenna reads as the wire default it resolves to).
+    costEur: launchStackCost(
+      sat.bus,
+      draftCardIds(draft),
+      draft.semiMajorM,
+      draft.count,
+    ),
     groundTrack,
     contracts,
   };

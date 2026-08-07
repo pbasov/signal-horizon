@@ -109,7 +109,7 @@ import {
   WIRE_FIRST_SIGNAL,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
-import { BUS_SPECS, validateLoadout, hardwarePriceEur, type BusTier } from "./sim/net/sat";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, type BusTier } from "./sim/net/sat";
 import { launchStackCost, launchVehicleCost, A1_GEO_PERIOD_S } from "./sim/net/world";
 import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
@@ -2618,8 +2618,12 @@ function missionTopState(): MissionTopState {
       latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
     }
   }
+  // FL-01 truth-on-the-pad: an empty selection resolves (and is CHARGED) as the default
+  // BROADCAST at commit — the stack line must preview the SAME effective loadout, never the
+  // free-empty fiction.
+  const effCards = r1Cards.length > 0 ? r1Cards : [...DEFAULT_LOADOUT_CARD_IDS];
   const vehicleEur = launchVehicleCost(r1Bus, netDraft.semiMajorM);
-  const hardwareEur = hardwarePriceEur(r1Bus, r1Cards);
+  const hardwareEur = hardwarePriceEur(r1Bus, effCards);
   return {
     mode: r1Mode,
     act: netSession.cursor,
@@ -2638,7 +2642,7 @@ function missionTopState(): MissionTopState {
     stack: {
       vehicleEur,
       hardwareEur,
-      totalEur: launchStackCost(r1Bus, r1Cards, netDraft.semiMajorM, netDraft.count),
+      totalEur: launchStackCost(r1Bus, effCards, netDraft.semiMajorM, netDraft.count),
     },
     facts: { periodS, parks, latencyMs },
     comb,

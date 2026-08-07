@@ -223,6 +223,12 @@ export function hardwarePriceEur(bus: BusTier, cardIds: readonly string[]): numb
   return sum;
 }
 
+/** THE WIRE-DEFAULT LOADOUT (FL-01): the card ids a launch with an absent/empty wire
+ * loadout is fitted with — AND charged for. The applier defaults to this BEFORE
+ * validation + pricing, so a defaulted launch pays for the BROADCAST it flies (no free
+ * antenna via a lean wire dict). */
+export const DEFAULT_LOADOUT_CARD_IDS: readonly string[] = ["BROADCAST"];
+
 /**
  * The standard DEFAULT loadout — one BROADCAST card. This is what a launch action that
  * carries no explicit loadout resolves to (back-compat: every pre-R0 recorded launch was
@@ -230,7 +236,7 @@ export function hardwarePriceEur(bus: BusTier, cardIds: readonly string[]): numb
  * by the caller (the link-budget module's reference distance).
  */
 export function standardLoadout(rangeRefM: number): AntennaSpec[] {
-  const card = antennaCardById("BROADCAST");
+  const card = antennaCardById(DEFAULT_LOADOUT_CARD_IDS[0]);
   return card ? [antennaFromCard(card, rangeRefM)] : [];
 }
 

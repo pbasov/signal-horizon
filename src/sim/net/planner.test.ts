@@ -15,11 +15,11 @@ import {
   resolveOrbit,
   draftToSat,
   previewLaunch,
-  launchDraftCost,
+  launchStackCost,
   type LaunchDraft,
   type PreviewWorld,
 } from "./world";
-import { standardLoadout, type NetSat } from "./sat";
+import { standardLoadout, resolveLoadout, type NetSat } from "./sat";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 import { solve, isPointServed, type RoutableContract } from "./router";
 
@@ -161,14 +161,29 @@ describe("planner: previewLaunch is the TRUTHFUL consequence preview (== post-co
     expect(sat.loadout[0].rangeRefM).toBe(NET_REF_LINK_DISTANCE_M);
   });
 
-  it("COST: the draft cost is the base + altitude term × count (≥1), pure", () => {
-    const single = launchDraftCost(GEO_PARK_PRESET.draft, GEO_PARK_PRESET.costBaseEur);
-    expect(single).toBeGreaterThan(GEO_PARK_PRESET.costBaseEur); // altitude term adds.
+  it("COST: the preview price IS the applier's stack price (FL-01/FL-11: one function)", () => {
+    // The legacy base+altitude math is retired (kept as a deprecated reader): the TRUE price
+    // of a commit is launchStackCost(bus, cards, semiMajorM, count) — vehicle once + hardware
+    // per member (members 2+ at the manifest discount). The PAD line shows exactly that.
+    expect(previewLaunch(eph, world, GEO_PARK_PRESET.draft, 0).costEur).toBeCloseTo(
+      launchStackCost("smallsat", ["BROADCAST"], GEO_PARK.semiMajorM, 1),
+      9,
+    );
     const batch: LaunchDraft = { ...GEO_PARK_PRESET.draft, count: 3 };
-    expect(launchDraftCost(batch, GEO_PARK_PRESET.costBaseEur)).toBeCloseTo(single * 3, 6);
-    // The preview surfaces that same cost.
-    const preview = previewLaunch(eph, world, GEO_PARK_PRESET.draft, 0, GEO_PARK_PRESET.costBaseEur);
-    expect(preview.costEur).toBe(single);
+    expect(previewLaunch(eph, world, batch, 0).costEur).toBeCloseTo(
+      launchStackCost("smallsat", ["BROADCAST"], GEO_PARK.semiMajorM, 3),
+      9,
+    );
+    // A comsat + ACCESS draft prices bus-truthfully too (never the legacy smallsat base).
+    const comsatDraft: LaunchDraft = {
+      ...GEO_PARK_PRESET.draft,
+      bus: "comsat",
+      loadout: resolveLoadout(["ACCESS_S", "ACCESS_S"], NET_REF_LINK_DISTANCE_M),
+    };
+    expect(previewLaunch(eph, world, comsatDraft, 0).costEur).toBeCloseTo(
+      launchStackCost("comsat", ["ACCESS_S", "ACCESS_S"], GEO_PARK.semiMajorM, 1),
+      9,
+    );
   });
 
   it("an EMPTY standing world previews no contracts but still resolves the orbit + track + period", () => {
