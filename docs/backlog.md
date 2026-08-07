@@ -114,7 +114,7 @@
 - [x] **FL-09** act-4 offer-window decision (Mars relay tender clock yes/no); one-line scenario change + decision note. (P3-C3)
 - [x] **FL-10** honest launch risk band: `launchFailureRates(count, armed)` + `failuresArmed` getter + PAD fact row (act 1 = absent, never "0%"). (P4-C1)
 - [x] **FL-12** `timeToServiceS` (forward-scan isPointServed) + pad facts. (P4-C3)
-- [ ] **FL-13** ring-grab orbit drag: `onNetDragOrbit`, ring hit-test, pointer priority (ring → globe aim → camera), 15 Hz solve throttle, `__dragOrbitProbe` + scripted pointer test. HIGH risk. (P4-C4)
+- [x] **FL-13** ring-grab orbit drag: `onNetDragOrbit`, ring hit-test, pointer priority (ring → globe aim → camera), 15 Hz solve throttle, `__dragOrbitProbe` + scripted pointer test. HIGH risk. (P4-C4)
 - [ ] **FL-14** ring-pinned live readout + pooled multi-arc launches + per-member deploy pops. (P4-C5)
 - [ ] **FL-15** style overhaul (post-verbs): a) palette→tokens; b) bundled fonts + cap9/ui11/body13/head16; c) gutter/rail/min-size consolidation + kill fake controls; d) visible dither + redundant focus + preset-tab CSS; e) pixel cursor + boot. (P5)
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, PROPOSED — needs user); WM minimize/collapse op.

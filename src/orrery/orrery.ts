@@ -315,6 +315,9 @@ export interface NetRenderState {
     /** The draft sat's CURRENT position on that ring (the phase marker — moves as PHASE changes), an
      * earth-relative world point. Null until a draft exists. */
     satPosM: Vec3 | null;
+    /** FL-13 (SD-49) — the draft orbit's ALTITUDE above the surface (metres). The ring-grab
+     * drag reads it as the grab-start value (the callback emits absolute altitudes). */
+    altM: number;
   } | null;
   /**
    * §3 / Act-1 "signal reaches there" — the SERVED region→sat→ground LINK beam, drawn when a
@@ -900,7 +903,19 @@ export class Orrery {
   /** R2 (SD-45) — DRAG-TO-AIM: while the pad is open, dragging ON the globe aims the
    * draft (body-fixed lat/lon under the cursor). Set by main.ts; null = aiming off. */
   onNetAim: ((latRad: number, lonRad: number) => void) | null = null;
+  /** FL-13 (SD-49) — RING-GRAB: set by main; while the pad is open, grabbing the DRAFT
+   * ORBIT RING (not the globe) drags ALTITUDE — a vertical pull raises/lowers the orbit.
+   * Receives absolute altitudes above the surface (metres, game-space, pre-clamp). */
+  onNetDragOrbit: ((altM: number) => void) | null = null;
   private aimDragging = false;
+  /** FL-13 (SD-49) — RING-GRAB state: grabbing the DRAFT RING (not the globe) drags
+   * ALTITUDE; a vertical pull raises/lowers the orbit. Pointer priority while the pad is
+   * open: RING grab → globe aim → camera orbit. */
+  private ringDragging = false;
+  private ringGrabClientY = 0;
+  private ringGrabAltM = 0;
+  /** metres of altitude per vertical pixel (derived from the ring's screen span at grab). */
+  private ringMPerPx = 1000;
   private readonly aimRaycaster = new THREE.Raycaster();
   private readonly aimNdc = new THREE.Vector2();
   /** A faint lat/lon GRATICULE child of the sphere (its own LineSegments over the unit sphere) that
@@ -3490,11 +3505,67 @@ export class Orrery {
     return { latRad, lonRad: lon };
   }
 
+  /** FL-13 (SD-49) — screen-space distance (px) from the pointer to the DRAFT ORBIT RING
+   * (null when the ring is hidden). The ring is a LineSegments whose positions sit in
+   * RENDER space (rebased); project each vertex and take the min distance. Read-only. */
+  private ringScreenDistPx(clientX: number, clientY: number): number | null {
+    const ring = this.netDraftRing;
+    if (!ring || !ring.visible) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const arr = (ring.geometry.getAttribute("position") as { array: Float32Array }).array;
+    const v = this.aimNdc3;
+    let best = Infinity;
+    for (let i = 0; i < arr.length; i += 6) {
+      // every segment START (they duplicate, but the det is cheap and correct)
+      v.set(arr[i], arr[i + 1], arr[i + 2]).project(this.camera);
+      const sx = rect.left + ((v.x + 1) / 2) * rect.width;
+      const sy = rect.top + ((1 - v.y) / 2) * rect.height;
+      const d = Math.hypot(sx - clientX, sy - clientY);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+  private readonly aimNdc3 = new THREE.Vector3();
+
+  /** FL-13 — dev/test probe: pointer → ring hit-test result (the scriptable handle the
+   * ring-drag pointer test drives). */
+  __dragOrbitProbe(clientX: number, clientY: number): { distPx: number } | null {
+    const d = this.ringScreenDistPx(clientX, clientY);
+    return d === null ? null : { distPx: d };
+  }
+
   private attachInput(): void {
     this.canvas.addEventListener("pointerdown", (e) => {
-      // R2 (SD-45) — DRAG-TO-AIM: with the pad open, a press ON the globe grabs the AIM
-      // (the draft follows the cursor's surface point); a press off-globe orbits the camera.
+      // Pointer priority (pad open): RING grab (altitude drag) → globe AIM drag → camera.
       const aiming = this.onNetAim !== null && (this.netState?.body?.plannerActive ?? false);
+      if (aiming && this.onNetDragOrbit !== null) {
+        const ringDist = this.ringScreenDistPx(e.clientX, e.clientY);
+        if (ringDist !== null && ringDist <= PICK_TOLERANCE_PX) {
+          this.ringDragging = true;
+          this.ringGrabClientY = e.clientY;
+          this.ringGrabAltM = this.netState?.draft?.altM ?? 0;
+          // metres-per-pixel from the ring's screen span: dragging across the ring's height
+          // spans the whole altitude axis (LEO→GEO), at whatever zoom we're at.
+          const ring = this.netDraftRing!;
+          const rect = this.canvas.getBoundingClientRect();
+          const arr = (ring.geometry.getAttribute("position") as { array: Float32Array }).array;
+          const v = this.aimNdc3;
+          let yMin = Infinity;
+          let yMax = -Infinity;
+          for (let i = 0; i < arr.length; i += 6) {
+            v.set(arr[i], arr[i + 1], arr[i + 2]).project(this.camera);
+            const sy = rect.top + ((1 - v.y) / 2) * rect.height;
+            if (sy < yMin) yMin = sy;
+            if (sy > yMax) yMax = sy;
+          }
+          const spanPx = Math.max(40, yMax - yMin);
+          // The altitude axis covered by the ring's screen height ≈ the ring's own altitude
+          // on both sides of the globe (2× alt), floored to keep low-orbit drags usable.
+          this.ringMPerPx = Math.max(500, (2 * Math.max(this.ringGrabAltM, 20_000)) / spanPx);
+          this.canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       if (aiming) {
         const hit = this.aimHit(e.clientX, e.clientY);
         if (hit !== null) {
@@ -3510,6 +3581,11 @@ export class Orrery {
       this.canvas.setPointerCapture(e.pointerId);
     });
     this.canvas.addEventListener("pointermove", (e) => {
+      if (this.ringDragging) {
+        // FL-13 — vertical pull = altitude. UP (negative clientY delta) raises the orbit.
+        this.onNetDragOrbit?.(this.ringGrabAltM + (this.ringGrabClientY - e.clientY) * this.ringMPerPx);
+        return;
+      }
       if (this.aimDragging) {
         const hit = this.aimHit(e.clientX, e.clientY);
         if (hit !== null) this.onNetAim?.(hit.latRad, hit.lonRad);
@@ -3533,6 +3609,7 @@ export class Orrery {
       }
       this.dragging = false;
       this.aimDragging = false;
+      this.ringDragging = false;
       try {
         this.canvas.releasePointerCapture(e.pointerId);
       } catch {

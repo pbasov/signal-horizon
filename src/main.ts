@@ -1626,7 +1626,7 @@ function netDraftSlice(
             preview.contracts.find((pc) => pc.contractId === c.id)?.coveredFraction ?? 0,
         }
       : null;
-  return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM };
+  return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM, altM: netDraft.semiMajorM - A1_BODY_RADIUS_M };
 }
 
 /**
@@ -2472,6 +2472,17 @@ orrery.onNetAim = netMode
     }
   : null;
 
+// FL-13 (SD-49) — RING-GRAB ALTITUDE DRAG: grabbing the draft ring on the globe raises /
+// lowers the would-be orbit (vertical pull, absolute altitude at each event). Routed through
+// the SAME netEditDraft as the typed field / arrows, so clamps + preview re-run are shared.
+// No extra solve throttle needed: the pad render ALREADY re-runs previewLaunch every frame
+// the pad is open — a drag edit just feeds the next frame.
+orrery.onNetDragOrbit = netMode
+  ? (altM: number) => {
+      netEditDraft("semiMajorM", A1_BODY_RADIUS_M + Math.max(0, altM));
+    }
+  : null;
+
 const log = new SystemLog();
 const telemetry = new Telemetry();
 // net/ Act-1 — FINANCE reads the connectivity-game economy (wallet/revenue/earned/roster) in
@@ -2821,6 +2832,9 @@ function ledgerFleetState(): LedgerFleetState {
 // DEV probe (SD-45 flicker hunt): sample the live serve verdict from the console.
 (window as unknown as Record<string, unknown>).__discDebug = () => orrery.__discDebug();
 (window as unknown as Record<string, unknown>).__aimProbe = (x: number, y: number) => orrery.__aimProbe(x, y);
+// FL-13 (SD-49) — the ring-grab probe (scriptable pointer-priority verification).
+(window as unknown as Record<string, unknown>).__dragOrbitProbe = (x: number, y: number) =>
+  orrery.__dragOrbitProbe(x, y);
 (window as unknown as Record<string, unknown>).__netDebug = () => {
   const c = netSession.contracts.find((x) => x.state === "active") ?? netSession.contracts[0];
   const solve = c ? netSession.lastSolveFor(c.id) : null;
