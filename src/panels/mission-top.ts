@@ -48,8 +48,9 @@ export interface MissionTopState {
   draft: PadDraftReadout;
   /** Itemized stack: one vehicle + count × hardware. */
   stack: { vehicleEur: number; hardwareEur: number; totalEur: number };
-  /** Physics facts of the draft (period; parks flag; one-way latency to the comb region). */
-  facts: { periodS: number; parks: boolean; latencyMs: number | null };
+  /** Physics facts of the draft (period; parks flag; one-way latency to the comb region;
+   * FL-12 time-to-service — sim-seconds until first serve; Infinity = never this horizon). */
+  facts: { periodS: number; parks: boolean; latencyMs: number | null; timeToServeS: number };
   comb: { windows: boolean[]; duty: number } | null;
   /** The FLEET's live windows over the same span (null = no fleet yet) — the gaps row. */
   combFleet: { windows: boolean[]; duty: number } | null;
@@ -515,7 +516,12 @@ export class MissionTop implements PanelHandle {
     const dutyPct = s.comb ? Math.round(s.comb.duty * 100) : 0;
     const fleetPct = s.combFleet ? `fleet holds ${Math.round(s.combFleet.duty * 100)}% · ` : "";
     const lat = s.facts.latencyMs === null ? "—" : `${s.facts.latencyMs.toFixed(1)} ms`;
-    this.vFacts.textContent = `${fleetPct}with this launch ${dutyPct}% · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat}`;
+    const tts = Number.isFinite(s.facts.timeToServeS)
+      ? s.facts.timeToServeS <= 0.5
+        ? "serving NOW"
+        : `first serve in ${Math.round(s.facts.timeToServeS)}s`
+      : "never served on this orbit";
+    this.vFacts.textContent = `${fleetPct}with this launch ${dutyPct}% · period ${Math.round(s.facts.periodS)}s${s.facts.parks ? " · PARKS" : ""} · one-way ${lat} · ${tts}`;
 
     this.vStack.textContent = `vehicle €${Math.round(s.stack.vehicleEur).toLocaleString("en-US")} + hardware €${Math.round(s.stack.hardwareEur).toLocaleString("en-US")} × ${s.count} = €${Math.round(s.stack.totalEur).toLocaleString("en-US")} · wallet €${Math.round(s.balanceEur).toLocaleString("en-US")}`;
     // FL-11 — the manifest discount is a fact on the stack when batching.

@@ -422,8 +422,30 @@ function draftCardIds(draft: LaunchDraft): string[] {
   return ids.length > 0 ? ids : [...DEFAULT_LOADOUT_CARD_IDS];
 }
 
-// ── FL-05 — the antenna-truthful FOOTPRINT (the sky a fit can actually reach) ──────
+// ── FL-12 (SD-49) — TIME-TO-SERVICE: when does THIS draft first serve? ─────────────
 
+/** Forward-scan from `t` until the draft's would-be sat first serves the region centre
+ * (the SAME {@link isPointServed} gate the router runs). Scans in `stepS` increments over
+ * `horizonS`; returns sim-seconds until first serve (0 = serving NOW; a parked GEO over
+ * the region reads 0), or Infinity when nothing serves inside the horizon (rendered "—").
+ * Pure; the pad fact line + the ring-pinned readout consume it. */
+export function timeToServiceS(
+  eph: Ephemeris,
+  draft: LaunchDraft,
+  region: RegionPoint,
+  grounds: readonly GroundNet[],
+  t: number,
+  horizonS: number,
+  stepS = 5,
+): number {
+  const sat = draftToSat(draft, t);
+  for (let dtH = 0; dtH <= horizonS; dtH += stepS) {
+    if (isPointServed(eph, region, grounds as GroundNet[], [sat], t + dtH)) return dtH;
+  }
+  return Infinity;
+}
+
+// ── FL-05 — the antenna-truthful FOOTPRINT (the sky a fit can actually reach) ──────
 /** The LoS horizon reach (surface central angle, radians) of a sat at `altM` above the
  * toy body, gated at the net elevation floor ({@link NET_MIN_ELEVATION_RAD}) — the SAME
  * gate the link budget closes against, so the disc never promises sky it can't serve.

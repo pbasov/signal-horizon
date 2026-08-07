@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { standardLoadout, resolveLoadout, antennaCardById, suggestLoadout, validateLoadout } from "./sat";
-import { horizonReachRad, footprintRadiusRad, previewLaunch, draftToSat, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
+import { horizonReachRad, footprintRadiusRad, previewLaunch, draftToSat, timeToServiceS, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
 import { NET_ACT1_REGION, NET_ACT1_GROUND } from "./endpoint";
 import { Ephemeris } from "../ephemeris";
 import { solve } from "./router";
@@ -114,5 +114,29 @@ describe("FL-06 — suggestLoadout: greedy legality, never the answer", () => {
     }
     // and it never fills more than ONE slot — the rest are the player's to design.
     expect(suggestLoadout("comsat", { latency: true, bandwidth: true }).length).toBe(1);
+  });
+});
+
+// ── FL-12 — timeToServiceS: when the draft first serves ────────────────────────────
+describe("FL-12 — timeToServiceS", () => {
+  const grounds = [NET_ACT1_GROUND];
+  const centre = { latRad: NET_ACT1_REGION.latRad, lonRad: NET_ACT1_REGION.lonRad };
+
+  it("a parked GEO over the region serves NOW (0 s)", () => {
+    const draft = { semiMajorM: GEO_PARK.semiMajorM, incRad: 0, subLonRad: 0, loadout: BROADCAST, count: 1 };
+    expect(timeToServiceS(eph, draft, centre, grounds, 0, 600)).toBe(0);
+  });
+
+  it("a mis-aimed GEO NEVER serves inside the horizon (Infinity)", () => {
+    const draft = { semiMajorM: GEO_PARK.semiMajorM, incRad: 0, subLonRad: Math.PI / 2, loadout: BROADCAST, count: 1 };
+    expect(timeToServiceS(eph, draft, centre, grounds, 0, 600)).toBe(Infinity);
+  });
+
+  it("a LEO sweep serves within at most one period (motion is the answer)", () => {
+    const period = 150; // A1_LEO_PERIOD_S
+    const draft = { semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: Math.PI / 3, loadout: BROADCAST, count: 1 };
+    const tts = timeToServiceS(eph, draft, centre, grounds, 0, 2 * period, 2);
+    expect(tts).toBeGreaterThanOrEqual(0);
+    expect(tts).toBeLessThanOrEqual(2 * period);
   });
 });

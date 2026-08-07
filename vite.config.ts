@@ -20,5 +20,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // The replay/golden suites (net-replay, events) simulate whole sessions tick-by-tick; under
+    // full-suite CPU contention they legitimately need tens of seconds. The default 5 s was a
+    // recurring flake (three false-reds in one day) — 60 s keeps real hangs visible.
+    testTimeout: 60000,
+    hookTimeout: 60000,
   },
 });

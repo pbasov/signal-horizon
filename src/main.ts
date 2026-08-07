@@ -113,7 +113,7 @@ import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
-import { launchStackCost, launchVehicleCost, footprintRadiusRad, A1_GEO_PERIOD_S } from "./sim/net/world";
+import { launchStackCost, launchVehicleCost, footprintRadiusRad, timeToServiceS, A1_GEO_PERIOD_S } from "./sim/net/world";
 import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
@@ -2650,6 +2650,7 @@ function missionTopState(): MissionTopState {
   let comb: { windows: boolean[]; duty: number } | null = null;
   let combFleet: { windows: boolean[]; duty: number } | null = null;
   let latencyMs: number | null = null;
+  let timeToServeS = Infinity;
   let periodS = 0;
   let parks = false;
   if (r1Mode === "pad") {
@@ -2669,6 +2670,18 @@ function missionTopState(): MissionTopState {
       comb = { windows: union.windows, duty: union.duty };
       const cp = preview.contracts.find((x) => x.contractId === target.region.id);
       latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
+      // FL-12 — WHEN does this draft first serve (not just whether): the pad fact line and
+      // the (FL-14) ring-pinned readout. Horizon: two periods of the draft (a LEO sweep is
+      // answered within one; a parked-but-mis-aimed GEO never answers).
+      const ttsHorizon = 2 * Math.max(periodS > 0 ? periodS : A1_GEO_PERIOD_S, 1);
+      timeToServeS = timeToServiceS(
+        eph,
+        netDraft,
+        { latRad: target.region.latRad, lonRad: target.region.lonRad },
+        grounds,
+        t,
+        ttsHorizon,
+      );
     }
   }
   // FL-01 truth-on-the-pad: an empty selection resolves (and is CHARGED) as the default
@@ -2698,7 +2711,7 @@ function missionTopState(): MissionTopState {
       hardwareEur,
       totalEur: launchStackCost(r1Bus, effCards, netDraft.semiMajorM, netDraft.count),
     },
-    facts: { periodS, parks, latencyMs },
+    facts: { periodS, parks, latencyMs, timeToServeS },
     comb,
     combFleet,
     combRegionLabel: target?.label ?? "no demand yet",
