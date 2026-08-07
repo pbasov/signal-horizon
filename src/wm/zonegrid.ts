@@ -153,21 +153,25 @@ export function summonInto(g: ZoneGrid, targetHost: string, host: string): ZoneG
   return validate(ng) ? ng : null;
 }
 
+/** The minimum zone edge (px) a gutter split may approach — a tile never collapses past
+ * readability (the 12% weight clamp can starve a tile on small panes). */
+export const MIN_ZONE_EDGE_PX = 48;
+
 /** Repartition two adjacent columns by setting the left column's share to `frac`. */
-export function setColumnSplit(g: ZoneGrid, leftIndex: number, frac: number): ZoneGrid {
+export function setColumnSplit(g: ZoneGrid, leftIndex: number, frac: number, spanPx?: number): ZoneGrid {
   const ng = cloneGrid(g);
   const c0 = ng.columns[leftIndex];
   const c1 = ng.columns[leftIndex + 1];
   if (!c0 || !c1) return ng;
   const total = c0.weight + c1.weight;
-  const f = Math.max(0.12, Math.min(0.88, frac));
+  const f = clampSplit(frac, spanPx);
   c0.weight = total * f;
   c1.weight = total * (1 - f);
   return ng;
 }
 
 /** Repartition two adjacent rows within a column by setting the top row's share to `frac`. */
-export function setRowSplit(g: ZoneGrid, ci: number, topIndex: number, frac: number): ZoneGrid {
+export function setRowSplit(g: ZoneGrid, ci: number, topIndex: number, frac: number, spanPx?: number): ZoneGrid {
   const ng = cloneGrid(g);
   const col = ng.columns[ci];
   if (!col) return ng;
@@ -175,10 +179,23 @@ export function setRowSplit(g: ZoneGrid, ci: number, topIndex: number, frac: num
   const r1 = col.rows[topIndex + 1];
   if (!r0 || !r1) return ng;
   const total = r0.weight + r1.weight;
-  const f = Math.max(0.12, Math.min(0.88, frac));
+  const f = clampSplit(frac, spanPx);
   r0.weight = total * f;
   r1.weight = total * (1 - f);
   return ng;
+}
+
+/** The split clamp: the 12–88% weight band, PLUS the px floor when the caller knows the
+ * pixel span (both sides ≥ MIN_ZONE_EDGE_PX when there is room). */
+function clampSplit(frac: number, spanPx?: number): number {
+  let lo = 0.12;
+  let hi = 0.88;
+  if (spanPx !== undefined && spanPx > 2 * MIN_ZONE_EDGE_PX) {
+    const edge = MIN_ZONE_EDGE_PX / spanPx;
+    lo = Math.max(lo, edge);
+    hi = Math.min(hi, 1 - edge);
+  }
+  return Math.max(lo, Math.min(hi, frac));
 }
 
 /**

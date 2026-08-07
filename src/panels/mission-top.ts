@@ -127,6 +127,23 @@ const AXIS_PIPS: { key: "latency" | "availability" | "bandwidth"; glyph: string 
   { key: "bandwidth", glyph: "BW" },
 ];
 
+/** FL-15a — canvas-fills read TOKENS (never raw hex): resolved from :root custom props,
+ * memoized per frame-call is overkill — cache the getter and resolve on demand. */
+let combTokCache: { bg: string; cellOff: string; fleetDim: string; cyan: string } | null = null;
+function combTokenColors(): { bg: string; cellOff: string; fleetDim: string; cyan: string } {
+  if (combTokCache === null) {
+    const cs = getComputedStyle(document.documentElement);
+    const tok = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
+    combTokCache = {
+      bg: tok("--bg", "black"),
+      cellOff: tok("--bg-2", "black"),
+      fleetDim: tok("--cyan-dim", "teal"),
+      cyan: tok("--cyan", "aqua"),
+    };
+  }
+  return combTokCache;
+}
+
 export class MissionTop implements PanelHandle {
   readonly title = "MISSION";
   readonly content: HTMLElement;
@@ -493,23 +510,26 @@ export class MissionTop implements PanelHandle {
       const h = this.combCanvas.height;
       ctx.clearRect(0, 0, w, h);
       const rowH = (h - 6) / 2;
+      // FL-15a — tokens only, even in the canvas (resolved once per frame from the custom
+      // properties; they never change at runtime, but a theme could).
+      const toks = combTokenColors();
       const drawRow = (windows: boolean[] | null, y: number, onColor: string) => {
         if (windows === null) {
-          ctx.fillStyle = "#141b26";
+          ctx.fillStyle = toks.bg;
           ctx.fillRect(0, y, w, rowH);
           return;
         }
         const n = windows.length;
         const cell = w / n;
         for (let i = 0; i < n; i++) {
-          ctx.fillStyle = windows[i] ? onColor : "#1a2430";
+          ctx.fillStyle = windows[i] ? onColor : toks.cellOff;
           ctx.fillRect(i * cell, y, Math.ceil(cell) - 1, rowH);
         }
       };
       // TOP: the fleet as it stands (dim cyan — the gaps are the dark cells).
-      drawRow(s.combFleet?.windows ?? null, 2, "#2a7d8f");
+      drawRow(s.combFleet?.windows ?? null, 2, toks.fleetDim);
       // BOTTOM: fleet + this launch (bright — aim until it fills the top row's gaps).
-      drawRow(s.comb.windows, 4 + rowH, "#49d7c8");
+      drawRow(s.comb.windows, 4 + rowH, toks.cyan);
     } else if (ctx) {
       ctx.clearRect(0, 0, this.combCanvas.width, this.combCanvas.height);
     }

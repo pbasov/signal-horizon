@@ -23,7 +23,7 @@ function tile(litCount: number, alpha: number): string {
 
 export function applyDither(): void {
   const r = document.documentElement.style;
-  r.setProperty("--dither-sparse", tile(2, 0.045)); // panel interiors
-  r.setProperty("--dither-dense", tile(5, 0.06)); // title bars / status strip
-  r.setProperty("--dither-mid", tile(8, 0.1)); // scrollbar / drop-target
+  r.setProperty("--dither-sparse", tile(2, 0.09)); // panel interiors
+  r.setProperty("--dither-dense", tile(5, 0.13)); // title bars / status strip
+  r.setProperty("--dither-mid", tile(8, 0.16)); // scrollbar / drop-target
 }

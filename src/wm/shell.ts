@@ -190,10 +190,8 @@ export class Shell {
     subEl.className = "sub";
     const grow = document.createElement("span");
     grow.className = "grow";
-    const glyphs = document.createElement("span");
-    glyphs.className = "glyphs";
-    glyphs.textContent = "⛶  ✕";
-    bar.append(dot, titleEl, subEl, grow, glyphs);
+    // 15c (SD): the static ⛶ ✕ glyphs were affordance lies (zero handlers) — dropped.
+    bar.append(dot, titleEl, subEl, grow);
 
     const body = document.createElement("div");
     body.className = "panel-body";
@@ -410,7 +408,7 @@ export class Shell {
       const r = this.canvas.getBoundingClientRect();
       const pos = kind === "col" ? ev.clientX - r.left : ev.clientY - r.top;
       const frac = (pos - originPx) / spanPx;
-      this.grid = kind === "col" ? setColumnSplit(this.grid, ci, frac) : setRowSplit(this.grid, ci, ri, frac);
+      this.grid = kind === "col" ? setColumnSplit(this.grid, ci, frac, spanPx) : setRowSplit(this.grid, ci, ri, frac, spanPx);
       this.relayout();
     };
     const up = () => {

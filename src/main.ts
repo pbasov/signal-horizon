@@ -163,7 +163,7 @@ topbar.innerHTML =
   `<span>· ts/three.js</span>` +
   `<span class="spacer"></span>` +
   `<span class="hint">F11 fullscreen · click the right rail to summon a panel · drag title-bars to swap · drag gutters to resize</span>` +
-  `<span class="win-glyphs"><span>●</span><span>⛶</span><span>✕</span></span>`;
+  `<span class="hint" style="margin-left:auto"></span>`;
 
 const wmCanvas = document.createElement("div");
 wmCanvas.className = "wm-canvas";
@@ -3012,6 +3012,8 @@ function refreshParse(force = false): void {
 }
 
 status.setPresetTabs(presets.map((p) => p.name));
+// FL-15d — the tabs are clickable too (the number key and the click land in setWmPreset).
+status.onPreset = (i) => setWmPreset(i);
 // net/ M1 (SD-44 PHASE 1) — BOOT INTO THE OVERVIEW TRIAGE WALL (index 0): the orrery hero + the
 // STATUS·BOARD + FINANCE, so the cold player starts on "is anything wrong now?" rather than the crammed
 // launch panel. The cache-mode boot is unchanged (PRESET_SPECS index 0 is its PLAY layout).

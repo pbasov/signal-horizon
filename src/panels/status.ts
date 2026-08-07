@@ -177,8 +177,12 @@ export class StatusStrip {
     this.tabsCell.replaceChildren();
     this.tabTokens.clear();
     names.forEach((name, i) => {
-      const token = document.createElement("span");
+      const token = document.createElement("button");
+      token.type = "button";
       token.className = "tab";
+      token.title = `Preset ${i + 1} (key ${i + 1})`;
+      // 15d — the tabs are REAL controls (the key hint names them; the click fires it).
+      token.addEventListener("click", () => this.onPreset?.(i));
       const key = document.createElement("span");
       key.className = "lab";
       key.textContent = String(i + 1);
@@ -190,6 +194,9 @@ export class StatusStrip {
       this.tabTokens.set(name, token);
     });
   }
+
+  /** FL-15d — wire a click on a preset tab to the same preset switch the number key fires. */
+  onPreset: ((index: number) => void) | null = null;
 
   /** Per-frame refresh: text + classes only, no structural rebuild (save the alarm). */
   update(state: FrameState): void {

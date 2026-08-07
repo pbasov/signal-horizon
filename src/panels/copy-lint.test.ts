@@ -64,10 +64,7 @@ describe("R1 — copy lint: goals, never instructions", () => {
 // any NEW hardcoded hex fails the build. ──
 const HEX_RE = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g;
 /** file → exact hex literals grandfathered in (FL-15a must empty this, never grow it). */
-const HEX_ALLOWLIST: Record<string, string[]> = {
-  // mission-top.ts comb canvas fills (signal cyan + dark cells) — tokenize in FL-15a.
-  "mission-top.ts": ["#141b26", "#1a2430", "#2a7d8f", "#49d7c8"],
-};
+const HEX_ALLOWLIST: Record<string, string[]> = {};
 
 describe("FL-02 — chrome colour lint: panels use tokens, never hardcoded hex", () => {
   for (const f of FILES) {

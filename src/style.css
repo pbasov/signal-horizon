@@ -7,16 +7,18 @@
 
 :root {
   /* --- chrome (monochrome) --- */
-  --bg: #0b0b12;          /* cool blue-black, never dead black */
+  --bg: var(--bg);          /* cool blue-black, never dead black */
   --bg-2: #0e0e17;
   --fg: #ececf3;          /* near-white */
   --fg-dim: #9a9aa6;
   --line: #e4e4ee;        /* bright 1-bit border */
   --line-dim: rgba(228, 228, 238, 0.22);
   --grey: #5a5a63;        /* machine-grey: fully stale / inactive */
+  --grey-hi: #6c6c77;     /* scrollbar hover — one step above machine-grey */
 
   /* --- signal (colour does work; desaturates toward --grey as data stales) --- */
   --cyan: #46d6c9;        /* active links / healthy / info */
+  --cyan-dim: #2f7a88;    /* the dim channel of the cyan ramp (comb fleet row, facts rules) */
   --amber: #ff9e2e;       /* warm amber — packets, warnings, warm signal */
   --green: #4fd98b;       /* good margins */
   --orange: #ff7a1a;      /* warn thresholds */
@@ -30,6 +32,12 @@
   --dither-sparse: none;
   --dither-dense: none;
   --dither-mid: none;
+
+  /* The 4-step type scale (§8: one blocky display face + one legible mono). */
+  --ts-cap: 9px;   /* captions/legends */
+  --ts-ui: 11px;   /* controls/labels */
+  --ts-body: 13px; /* reading text */
+  --ts-head: 16px; /* headlines (wallet, objectives) */
 
   --titlebar-h: 22px;
   --topbar-h: 26px;
@@ -97,8 +105,8 @@ body {
 .topbar .brand { color: var(--fg); font-weight: 700; }
 .topbar .spacer { flex: 1 1 auto; }
 .topbar .hint { color: var(--fg-dim); text-transform: none; letter-spacing: 0; }
-.win-glyphs { display: flex; gap: 8px; color: var(--fg); }
-.win-glyphs span { cursor: default; }
+/* 15c: the static ● ⛶ ✕ window glyphs were affordance LIES (no handlers) — removed from the
+   markup; the class remains dead-free. */
 
 /* ---- the tiling WM canvas: panels are absolutely placed by the engine ---- */
 .wm-canvas {
@@ -120,6 +128,9 @@ body {
 /* The FOCUSED tile — the window-summon rail's target. A cyan border + an inverted-ish
    titlebar tint so the focused tile reads at a glance (which tile a rail click lands in). */
 .panel.focused { border-color: var(--cyan); }
+/* 15d — focus reads colour-off too: the focused tile's titlebar gets a ▸ marker (shape),
+   not just the cyan border (CVD-safe redundancy, DD-1). */
+.panel.focused > .panel-titlebar .title::before { content: "▸ "; color: var(--cyan); }
 .panel.focused > .panel-titlebar { border-bottom-color: var(--cyan); }
 .panel.focused > .panel-titlebar .title { color: var(--cyan); }
 .panel.dragging { opacity: 0.45; z-index: 50; }
@@ -273,7 +284,15 @@ body {
 
 /* ---- orrery host --------------------------------------------------------- */
 .orrery-host { position: absolute; inset: 0; }
-.orrery-host canvas { display: block; width: 100%; height: 100%; }
+.orrery-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 15e — the crosshair IS the cursor on the signal surface (aim/drag/grab verbs); chrome
+     keeps the default arrow. A bundled pixel-cursor asset is deferred (no offline asset
+     pipeline in the repo — recorded in backlog FL-15e). */
+  cursor: crosshair;
+}
 .orrery-overlay {
   position: absolute;
   inset: 0;
@@ -383,7 +402,7 @@ body {
   margin-top: 3px;
   padding: 2px 4px;
   background: var(--red);
-  color: #0b0b12;
+  color: var(--bg);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-align: center;
@@ -510,7 +529,7 @@ body {
    Reuses the .telem 1-bit chrome housing; only the data carries the warmth ramp. */
 .parse-note {
   color: var(--fg-dim);
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
   line-height: 1.35;
   margin-top: 3px;
 }
@@ -531,7 +550,7 @@ body {
 .parse-feed-head .val.warn  { color: var(--amber); }
 .parse-feed-head .val.dead  { color: var(--grey); }
 .parse-feed-head .msg { color: var(--fg-dim); margin-left: auto; text-align: right; }
-.parse-feed-note { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+.parse-feed-note { font-size: var(--ts-ui); margin-top: 1px; color: var(--fg-dim); }
 .parse-feed-note.good  { color: var(--green); }
 .parse-feed-note.watch { color: var(--cyan); }
 .parse-feed-note.warn  { color: var(--amber); }
@@ -548,7 +567,7 @@ body {
   margin: 2px 0 4px;
   padding: 3px 7px;
   background: var(--red);
-  color: #0b0b12;
+  color: var(--bg);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-align: center;
@@ -559,7 +578,7 @@ body {
    Reuses the .telem 1-bit chrome housing; only the data carries colour, every
    distinction redundant on a word/glyph (§8 CVD-safe). */
 .contract-list { margin-top: 2px; }
-.contract-empty { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; padding: 2px 0; }
+.contract-empty { color: var(--fg-dim); font-size: var(--ts-ui); line-height: 1.35; padding: 2px 0; }
 .contract-card {
   border-top: 1px dashed var(--line-dim);
   padding: 3px 4px 3px 2px;
@@ -580,7 +599,7 @@ body {
 .contract-state.green { color: var(--green); }
 .contract-state.amber { color: var(--amber); }
 .contract-state.red   { color: var(--red); font-weight: 700; }
-.contract-detail { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+.contract-detail { font-size: var(--ts-ui); margin-top: 1px; color: var(--fg-dim); }
 .contract-detail.cyan  { color: var(--cyan); }
 .contract-detail.green { color: var(--green); }
 .contract-detail.amber { color: var(--amber); }
@@ -590,7 +609,7 @@ body {
    Reuses the .telem 1-bit chrome housing; only the data carries colour, every
    distinction redundant on a glyph/word (§8 CVD-safe). */
 .fleet-list { margin-top: 2px; }
-.fleet-empty { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; padding: 2px 0; }
+.fleet-empty { color: var(--fg-dim); font-size: var(--ts-ui); line-height: 1.35; padding: 2px 0; }
 .fleet-card {
   border-top: 1px dashed var(--line-dim);
   padding: 3px 4px 3px 2px;
@@ -607,7 +626,7 @@ body {
 .fleet-class.green  { color: var(--green); }
 .fleet-class.amber  { color: var(--amber); }
 .fleet-class.violet { color: var(--violet); }
-.fleet-detail { font-size: 10.5px; margin-top: 1px; color: var(--fg-dim); }
+.fleet-detail { font-size: var(--ts-ui); margin-top: 1px; color: var(--fg-dim); }
 
 /* ---- bottom status strip (always visible) -------------------------------- */
 .statusstrip {
@@ -620,7 +639,7 @@ body {
   background-color: var(--bg-2);
   background-image: var(--dither-dense);
   background-repeat: repeat;
-  font-size: 11.5px;
+  font-size: var(--ts-ui);
   letter-spacing: 0.03em;
   white-space: nowrap;
   overflow: hidden;
@@ -643,6 +662,12 @@ body {
 .statusstrip .cell.paused .val { color: var(--orange); }
 .statusstrip .spacer { flex: 1 1 auto; border-right: none; }
 .statusstrip .cell.keys { color: var(--fg-dim); text-transform: none; letter-spacing: 0; }
+/* 15d — the PRESET TABS are real controls now: hover raises, active inverts (redundant
+   with the bold/key-num channel). */
+.statusstrip .tabs .tab { cursor: pointer; padding: 0 6px; margin: 0 1px; border: 1px solid transparent; }
+.statusstrip .tabs .tab:hover { border-color: var(--line-dim); color: var(--fg); }
+.statusstrip .tabs .tab.active { border-color: var(--cyan); background: var(--bg-2); }
+.statusstrip .tabs .tab.active .lab { color: var(--cyan); font-weight: 700; }
 .statusstrip .cell.keys kbd {
   color: var(--fg);
   border: 1px solid var(--line-dim);
@@ -652,11 +677,11 @@ body {
 }
 .statusstrip .cell.alarm {
   background: var(--red);
-  color: #0b0b12;
+  color: var(--bg);
   font-weight: 700;
 }
 .statusstrip .cell.alarm .lab,
-.statusstrip .cell.alarm .val { color: #0b0b12; }
+.statusstrip .cell.alarm .val { color: var(--bg); }
 
 /* ---- custom 1-bit scrollbars (Chromium) ---------------------------------- */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -666,7 +691,7 @@ body {
   background-image: var(--dither-mid);
   border: 1px solid var(--line-dim);
 }
-::-webkit-scrollbar-thumb:hover { background-color: #6c6c77; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--grey-hi); }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---- net/ Act-1 LAUNCH planner (the clickable Act-1 face) ----------------- */
@@ -676,7 +701,7 @@ body {
 .net-btn {
   flex: 1 1 auto;
   font: inherit;
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-dim);
@@ -697,7 +722,7 @@ body {
   font-weight: 700;
 }
 .net-btn.ready { color: var(--green); border-color: var(--green); }
-.net-hint { margin-top: 4px; color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+.net-hint { margin-top: 4px; color: var(--fg-dim); font-size: var(--ts-ui); line-height: 1.35; }
 .net-hint.warn { color: var(--amber); }
 .net-hint.good { color: var(--green); }
 
@@ -739,14 +764,14 @@ body {
   grid-template-columns: 1fr auto auto auto;
   gap: 8px;
   align-items: baseline;
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
 }
 .status-row-top .status-label { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
 .status-row-top .v { text-align: right; }
 .status-row-top .status-served, .status-row-top .status-earned { color: var(--fg-dim); text-align: right; }
 .status-row-top .status-served.amber { color: var(--amber); }
 /* The full-width at-risk REASON line (the fix-hint under an UNSERVED demand). */
-.status-reason { color: var(--amber); font-size: 9.5px; letter-spacing: 0.01em; padding-left: 2px; }
+.status-reason { color: var(--amber); font-size: var(--ts-cap); letter-spacing: 0.01em; padding-left: 2px; }
 /* The triage SUMMARY header — the at-a-glance network health, set off from the rows. */
 .status-summary {
   font-size: 10px;
@@ -764,7 +789,7 @@ body {
 .net-stepper .net-btn { padding: 0 7px; min-width: 0; line-height: 1.7; }
 .net-stepper-n { min-width: 1.4em; text-align: center; color: var(--cyan); font-weight: 700; }
 /* LINK·LOAD allocation ledger — the per-contract served-vs-floor split under a shared sat. */
-.linkload-ledger { color: var(--fg-dim); font-size: 9.5px; letter-spacing: 0.01em; margin-top: 2px; }
+.linkload-ledger { color: var(--fg-dim); font-size: var(--ts-cap); letter-spacing: 0.01em; margin-top: 2px; }
 .linkload-ledger.red { color: var(--red); }
 /* Price-the-bet verdict tones on the offered-contract underwrite line. */
 .net-contract-prog.amber { color: var(--amber); }
@@ -779,7 +804,7 @@ body {
   grid-template-columns: auto auto 1fr;
   gap: 8px;
   align-items: baseline;
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
 }
 .roster-row-top .roster-id { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
 .roster-row-top .v { text-align: left; }
@@ -787,8 +812,8 @@ body {
 .roster-row-top .roster-covers.green { color: var(--green); }
 .roster-row-top .roster-covers.dim { color: var(--grey); }
 /* The orbit-detail sub-line (alt · incl) under each launched sat. */
-.roster-meta { color: var(--fg-dim); font-size: 9.5px; letter-spacing: 0.01em; padding-left: 1px; }
-.roster-dark { font-size: 10.5px; color: var(--fg-dim); line-height: 1.35; }
+.roster-meta { color: var(--fg-dim); font-size: var(--ts-cap); letter-spacing: 0.01em; padding-left: 1px; }
+.roster-dark { font-size: var(--ts-ui); color: var(--fg-dim); line-height: 1.35; }
 .roster-dark.amber { color: var(--amber); font-weight: 700; }
 .roster-dark.green { color: var(--green); }
 .roster-dark.dim { color: var(--grey); font-style: italic; }
@@ -798,8 +823,8 @@ body {
 .linkload-rows { display: flex; flex-direction: column; gap: 5px; margin: 3px 0 1px; }
 .linkload-row { border: 1px solid var(--line-dim); padding: 3px 6px 4px; }
 .linkload-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.linkload-head .linkload-id { color: var(--fg); font-weight: 700; font-size: 10.5px; letter-spacing: 0.02em; }
-.linkload-pct { font-size: 10.5px; text-align: right; }
+.linkload-head .linkload-id { color: var(--fg); font-weight: 700; font-size: var(--ts-ui); letter-spacing: 0.02em; }
+.linkload-pct { font-size: var(--ts-ui); text-align: right; }
 .linkload-bar {
   height: 6px;
   margin: 3px 0 2px;
@@ -817,24 +842,24 @@ body {
    title; LOCKED (future) cards dim with a "LOCKED" tag (a word, not just dimming). 1-bit chrome. */
 .howto-card { border: 1px solid var(--line-dim); padding: 4px 7px 5px; margin: 4px 0; }
 .howto-card-title { font-weight: 700; font-size: 11px; letter-spacing: 0.02em; color: var(--fg); margin-bottom: 2px; }
-.howto-card-line { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+.howto-card-line { color: var(--fg-dim); font-size: var(--ts-ui); line-height: 1.35; }
 .howto-card.live { border-color: var(--cyan); }
 .howto-card.live .howto-card-title { color: var(--cyan); }
 .howto-card.locked { opacity: 0.5; }
 .howto-card.locked .howto-card-title::after { content: " · LOCKED"; color: var(--grey); font-weight: 400; }
-.howto-xref { color: var(--grey); font-size: 9.5px; line-height: 1.3; margin-top: 2px; }
+.howto-xref { color: var(--grey); font-size: var(--ts-cap); line-height: 1.3; margin-top: 2px; }
 
 /* ---- net/ OBJECTIVE (the per-act goal made explicit) + the CONTRACTS view ------------------- */
 /* OBJECTIVE: a bright title line (the signal — what you're doing now) over a dim how-to. The group
    housing is the standard 1-bit dashed box; only the title carries colour. */
-.net-obj-title { color: var(--cyan); font-weight: 700; font-size: 11.5px; letter-spacing: 0.02em; margin: 3px 0 1px; }
-.net-obj-detail { color: var(--fg-dim); font-size: 10.5px; line-height: 1.35; }
+.net-obj-title { color: var(--cyan); font-weight: 700; font-size: var(--ts-ui); letter-spacing: 0.02em; margin: 3px 0 1px; }
+.net-obj-detail { color: var(--fg-dim); font-size: var(--ts-ui); line-height: 1.35; }
 
 /* CONTRACTS: one bordered mini-card per deal — a state-toned head, the enforced SLA terms + reward,
    the live served%/term progress, and an inline ACCEPT for offered ones. Chrome card, coloured head. */
 .net-contracts { display: flex; flex-direction: column; gap: 4px; margin: 3px 0 1px; }
 .net-contract { border: 1px solid var(--line-dim); padding: 3px 6px 4px; }
-.net-contract-head { font-weight: 700; font-size: 10.5px; letter-spacing: 0.02em; color: var(--fg); }
+.net-contract-head { font-weight: 700; font-size: var(--ts-ui); letter-spacing: 0.02em; color: var(--fg); }
 .net-contract-head.cyan { color: var(--cyan); }
 .net-contract-head.green { color: var(--green); }
 .net-contract-head.amber { color: var(--amber); }
@@ -842,7 +867,7 @@ body {
 .net-contract-terms { color: var(--fg-dim); font-size: 10px; margin-top: 1px; }
 .net-contract-prog { color: var(--fg-dim); font-size: 10px; margin-top: 1px; }
 .net-contract .net-btn { margin-top: 3px; }
-.net-contract-empty { color: var(--fg-dim); font-size: 10.5px; font-style: italic; padding: 2px 0; }
+.net-contract-empty { color: var(--fg-dim); font-size: var(--ts-ui); font-style: italic; padding: 2px 0; }
 
 /* ---- net/ §3.1 ORBIT draft sliders (the ceiling — drag altitude/inclination/phase/RAAN) ------ */
 /* Each row: a NAME · value head over a full-width range input. The slider is the make-or-break
@@ -851,7 +876,7 @@ body {
 .net-slider { margin: 2px 0 5px; }
 .net-slider .row { margin-bottom: 1px; }
 /* §3.1 — the per-axis EFFECT caption: a dim one-liner teaching what the slider does (cause→effect). */
-.net-slider-cap { color: var(--fg-dim); font-size: 9.5px; line-height: 1.25; margin-top: 1px; opacity: 0.82; }
+.net-slider-cap { color: var(--fg-dim); font-size: var(--ts-cap); line-height: 1.25; margin-top: 1px; opacity: 0.82; }
 .net-range {
   -webkit-appearance: none;
   appearance: none;
@@ -900,7 +925,7 @@ body {
   padding: 5px 7px 6px;
   background: rgba(11, 11, 18, 0.78);
   border: 1px solid var(--line-dim);
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
   letter-spacing: 0.06em;
   pointer-events: none;
   z-index: 3;
@@ -1010,7 +1035,7 @@ body {
   padding: 5px 7px 6px;
   background: rgba(11, 11, 18, 0.78);
   border: 1px solid var(--line-dim);
-  font-size: 10.5px;
+  font-size: var(--ts-ui);
   letter-spacing: 0.06em;
   pointer-events: none;
   z-index: 3;
@@ -1028,7 +1053,7 @@ body {
 .net-mars .nm-hint {
   margin-top: 5px;
   color: var(--fg-dim);
-  font-size: 9.5px;
+  font-size: var(--ts-cap);
   line-height: 1.3;
 }
 .net-mars .nm-hint.good { color: var(--green); }
@@ -1039,7 +1064,7 @@ body {
 .mission-mode { min-width: 110px; }
 .mission-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .mission-bus, .mission-card { display: block; width: 100%; text-align: left; margin: 1px 0; opacity: 0.75; padding: 2px 5px; }
-.mission-bus.active, .mission-card.active { opacity: 1; outline: 1px solid #49d7c8; color: #49d7c8; background: #0b0b12 !important; }
+.mission-bus.active, .mission-card.active { opacity: 1; outline: 1px solid var(--cyan); color: var(--cyan); background: var(--bg) !important; }
 /* FL-04 — the bus SILHOUETTE: named slots (G1/G2/S1/S2) as fitted/empty boxes. Shape
    (▣/▢) + label carry the state; colour only reinforces (CVD-safe). Token colours. */
 .mission-slots { display: flex; gap: 4px; margin: 3px 0 1px; }
@@ -1050,50 +1075,50 @@ body {
 .mission-slotchooser { display: flex; gap: 3px; flex-wrap: wrap; margin: 2px 0 3px; }
 .mission-slotchooser:empty { display: none; }
 .mission-cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; }
-.mission-hint { color: #7f8ea3; font-size: 10px; margin-top: 3px; }
+.mission-hint { color: var(--fg-dim); font-size: 10px; margin-top: 3px; }
 .mission-param { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 2px 0; }
-.mission-param-label { color: #7f8ea3; font-size: 10px; letter-spacing: 0.08em; }
-.mission-input { width: 90px; background: #0b0b12; color: #e8eef7; border: 1px solid #2a3646; font: inherit; padding: 2px 4px; text-align: right; }
-.mission-count { min-width: 26px; text-align: center; color: #49d7c8; font-weight: 700; }
+.mission-param-label { color: var(--fg-dim); font-size: 10px; letter-spacing: 0.08em; }
+.mission-input { width: 90px; background: var(--bg); color: var(--fg); border: 1px solid var(--line-dim); font: inherit; padding: 2px 4px; text-align: right; }
+.mission-count { min-width: 26px; text-align: center; color: var(--cyan); font-weight: 700; }
 .mission-step { width: 26px; }
-.mission-comb { width: 100%; height: 34px; image-rendering: pixelated; border: 1px solid #2a3646; }
+.mission-comb { width: 100%; height: 34px; image-rendering: pixelated; border: 1px solid var(--line-dim); }
 .mission-stack { font-size: 11px; margin: 3px 0; }
-.mission-problem { color: #e2b04a; font-size: 10px; margin: 2px 0; }
+.mission-problem { color: var(--amber); font-size: 10px; margin: 2px 0; }
 .mission-arm { margin: 3px 4px 3px 0; }
-.mission-arm.active { color: #e2b04a; outline: 1px solid #e2b04a; }
+.mission-arm.active { color: var(--amber); outline: 1px solid var(--amber); }
 .mission-launch { opacity: 0.5; }
-.mission-launch.ready { opacity: 1; color: #49d7c8; outline: 1px solid #49d7c8; }
-.mission-tender { border-top: 1px dashed #2a3646; padding: 5px 0; }
+.mission-launch.ready { opacity: 1; color: var(--cyan); outline: 1px solid var(--cyan); }
+.mission-tender { border-top: 1px dashed var(--line-dim); padding: 5px 0; }
 .mission-tender-head { display: flex; justify-content: space-between; gap: 8px; }
 .mission-tender-label { font-weight: 700; }
-.mission-tender-state.offered { color: #e2b04a; }
-.mission-tender-state.active { color: #49d7c8; }
-.mission-tender-state.active.dark { color: #e2604a; }
-.mission-tender-state.failed { color: #e2604a; }
+.mission-tender-state.offered { color: var(--amber); }
+.mission-tender-state.active { color: var(--cyan); }
+.mission-tender-state.active.dark { color: var(--orange-red); }
+.mission-tender-state.failed { color: var(--orange-red); }
 .mission-pips { display: flex; gap: 4px; margin: 3px 0; align-items: center; }
-.mission-pip { font-size: 9px; padding: 0 3px; border: 1px solid #2a3646; color: #4a5a70; }
-.mission-pip.on { color: #49d7c8; border-color: #49d7c8; }
-.mission-terms { font-size: 10px; color: #7f8ea3; margin-left: 6px; }
-.mission-tender-bet { font-size: 10px; color: #9aa8bb; }
-.mission-tender-served { font-size: 10px; color: #7f8ea3; margin: 2px 0; }
-.mission-accept { margin-top: 3px; color: #49d7c8; }
+.mission-pip { font-size: 9px; padding: 0 3px; border: 1px solid var(--line-dim); color: var(--grey); }
+.mission-pip.on { color: var(--cyan); border-color: var(--cyan); }
+.mission-terms { font-size: 10px; color: var(--fg-dim); margin-left: 6px; }
+.mission-tender-bet { font-size: 10px; color: var(--fg-dim); }
+.mission-tender-served { font-size: 10px; color: var(--fg-dim); margin: 2px 0; }
+.mission-accept { margin-top: 3px; color: var(--cyan); }
 .ledger-fleet { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-.lf-wallet { font-size: 15px; font-weight: 700; }
-.lf-rate.up { color: #49d7c8; }
-.lf-rate.down { color: #e2604a; }
-.lf-chip { border-top: 1px dashed #2a3646; padding: 4px 0; }
+.lf-wallet { font-size: var(--ts-head); font-weight: 700; }
+.lf-rate.up { color: var(--cyan); }
+.lf-rate.down { color: var(--orange-red); }
+.lf-chip { border-top: 1px dashed var(--line-dim); padding: 4px 0; }
 .lf-chip-head { display: flex; justify-content: space-between; gap: 6px; }
 .lf-chip-id { font-weight: 700; }
-.lf-chip-orbit { color: #7f8ea3; font-size: 10px; }
+.lf-chip-orbit { color: var(--fg-dim); font-size: 10px; }
 .lf-beam, .lf-beam-fixed { display: block; width: 100%; text-align: left; font-size: 10px; margin: 2px 0; }
-.lf-beam-fixed { color: #9aa8bb; padding: 2px 4px; border: 1px dashed #2a3646; }
-.lf-beam.unaimed { color: #e2b04a; outline: 1px dashed #e2b04a; }
-.lf-beam.hot, .lf-beam-fixed.hot { color: #e2604a; }
-.lf-fix { display: block; width: 100%; color: #e2b04a; margin: 2px 0; }
-.lf-pending { color: #e2b04a; font-size: 10px; padding: 2px 0; }
-.lf-beam.blind { color: #e2604a; outline: 1px dashed #e2604a; }
-.mission-fact { color: #8ab8d0; font-size: 10px; margin: 3px 0; border-left: 2px solid #2a5060; padding-left: 5px; }
-.mission-stack.over { color: #e2604a; }
+.lf-beam-fixed { color: var(--fg-dim); padding: 2px 4px; border: 1px dashed var(--line-dim); }
+.lf-beam.unaimed { color: var(--amber); outline: 1px dashed var(--amber); }
+.lf-beam.hot, .lf-beam-fixed.hot { color: var(--orange-red); }
+.lf-fix { display: block; width: 100%; color: var(--amber); margin: 2px 0; }
+.lf-pending { color: var(--amber); font-size: 10px; padding: 2px 0; }
+.lf-beam.blind { color: var(--orange-red); outline: 1px dashed var(--orange-red); }
+.mission-fact { color: var(--cyan-dim); font-size: 10px; margin: 3px 0; border-left: 2px solid var(--line-dim); padding-left: 5px; }
+.mission-stack.over { color: var(--orange-red); }
 .mission-route { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
 .mission-route-btn { font-size: 9px; padding: 1px 6px; }
 
