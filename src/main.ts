@@ -109,7 +109,7 @@ import {
   WIRE_FIRST_SIGNAL,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
-import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, type BusTier } from "./sim/net/sat";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
 import { launchStackCost, launchVehicleCost, footprintRadiusRad, A1_GEO_PERIOD_S } from "./sim/net/world";
@@ -2567,6 +2567,22 @@ const missionTopPanel = new MissionTop({
     // by setSlot, the shape by the reducer tests).
     const next = setSlot(r1Loadout, slot, cardId);
     if (next !== null) r1Loadout = next;
+    syncR1Loadout();
+    r1Armed = false;
+  },
+  onFit: () => {
+    // FL-06 — FIT: the viable-but-imperfect suggestion for the TARGET tender's active axes
+    // (latency ⇒ spot beam; bandwidth ⇒ upsized spot; else the floodlight). The player can
+    // always do better — that's the design.
+    const target =
+      netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
+      netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
+      null;
+    const axes = target?.activeAxes ?? new Set();
+    r1Loadout = fromCards(
+      r1Bus,
+      suggestLoadout(r1Bus, { latency: axes.has("latency"), bandwidth: axes.has("bandwidth") }),
+    );
     syncR1Loadout();
     r1Armed = false;
   },

@@ -73,6 +73,9 @@ export interface MissionTopActions {
   /** FL-04 — write (or clear, cardId=null) ONE named slot of the bus silhouette. The
    * flat toggle set is gone: capacity design is slot assignment, visibly physical. */
   onSlotCard(slot: number, cardId: string | null): void;
+  /** FL-06 — fit the planner's VIABLE-BUT-IMPERFECT suggestion (spec §3.2: the assist
+   * solves legality, never the puzzle). Clears the player's fit and fills from the axes. */
+  onFit(): void;
   onCount(delta: number): void;
   onParam(name: keyof PadDraftReadout, value: number): void;
   onArm(): void;
@@ -213,6 +216,13 @@ export class MissionTop implements PanelHandle {
     busGroup.appendChild(slotRow);
     this.slotClassLegend = el("div", "mission-hint", "");
     busGroup.appendChild(this.slotClassLegend);
+    // FL-06 — the FIT assist: fills the silhouette with the viable-but-imperfect suggestion
+    // for the target tender's axes (greedy legality; the optimal fit is never handed over).
+    const fitBtn = btn("FIT", "net-btn mission-fit", () => this.actions.onFit());
+    fitBtn.setAttribute("data-net", "fit");
+    fitBtn.title =
+      "A safe, legal fit for the standing terms — never the best one. What it leaves empty (extra slots, spare capacity, bigger pipes) is yours to decide.";
+    busGroup.appendChild(fitBtn);
     this.slotChooser = el("div", "mission-slotchooser");
     busGroup.appendChild(this.slotChooser);
     this.padFace.appendChild(busGroup);

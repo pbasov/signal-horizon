@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { standardLoadout, resolveLoadout, antennaCardById } from "./sat";
+import { standardLoadout, resolveLoadout, antennaCardById, suggestLoadout, validateLoadout } from "./sat";
 import { horizonReachRad, footprintRadiusRad, previewLaunch, draftToSat, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
 import { NET_ACT1_REGION, NET_ACT1_GROUND } from "./endpoint";
 import { Ephemeris } from "../ephemeris";
@@ -77,5 +77,42 @@ describe("FL-05 — consequence truth extended: comsat + ACCESS draft", () => {
     expect(slice.served).toBe(post.served);
     expect(slice.latencyFloorS).toBe(post.latencyS);
     expect(slice.bindingConstraint).toBe(post.bindingConstraint);
+  });
+});
+
+// ── FL-06 — suggestLoadout: viable, NEVER optimal (the locked planner rule) ────────
+describe("FL-06 — suggestLoadout: greedy legality, never the answer", () => {
+  it("always validates on every bus", () => {
+    for (const bus of ["smallsat", "comsat"] as const) {
+      for (const needs of [
+        { latency: false, bandwidth: false },
+        { latency: true, bandwidth: false },
+        { latency: false, bandwidth: true },
+        { latency: true, bandwidth: true },
+      ]) {
+        expect(validateLoadout(bus, suggestLoadout(bus, needs))).toBeNull();
+      }
+    }
+  });
+
+  it("a latency-active SLA ⇒ includes a spot beam (BROADCAST can never carry latency)", () => {
+    const fit = suggestLoadout("smallsat", { latency: true, bandwidth: false });
+    expect(fit).toContain("ACCESS_S");
+    expect(fit).not.toContain("BROADCAST");
+  });
+
+  it("connectivity-only ⇒ the standard floodlight (the simplest legal fit)", () => {
+    expect(suggestLoadout("comsat", { latency: false, bandwidth: false })).toEqual(["BROADCAST"]);
+  });
+
+  it("never returns GATEWAY (headroom past ACCESS-L is the player's ceiling, not the assist)", () => {
+    for (const needs of [
+      { latency: false, bandwidth: true },
+      { latency: true, bandwidth: true },
+    ]) {
+      expect(suggestLoadout("comsat", needs)).not.toContain("GATEWAY");
+    }
+    // and it never fills more than ONE slot — the rest are the player's to design.
+    expect(suggestLoadout("comsat", { latency: true, bandwidth: true }).length).toBe(1);
   });
 });

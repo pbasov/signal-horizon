@@ -252,3 +252,25 @@ export function resolveLoadout(cardIds: readonly string[] | undefined, rangeRefM
   }
   return out.length > 0 ? out : standardLoadout(rangeRefM);
 }
+
+/**
+ * FL-06 (SD-46) — the planner's FIT suggestion: a VIABLE-BUT-IMPERFECT loadout for the
+ * target tender's active SLA axes, never the optimal one (the locked planner rule, spec
+ * §3.2 / m1-redesign: "a planner that solves the puzzle is a vending machine"). Greedy
+ * legality only:
+ *   - latency-axis live  ⇒ a spot beam is REQUIRED (BROADCAST is down-only and can never
+ *     carry a latency SLA) — ACCESS-S, the cheapest legal spot;
+ *   - bandwidth-axis live ⇒ upsize the spot to ACCESS-L (headroom, not optimisation —
+ *     GATEWAY-level provisioning is the player's job);
+ *   - otherwise           ⇒ the standard BROADCAST floodlight.
+ * Always slot-legal on the given bus (T1's 1G accepts any of these singles). Excess slots
+ * are left EMPTY — filling them is the player's ceiling. Pure.
+ */
+export function suggestLoadout(
+  bus: BusTier,
+  needs: { latency: boolean; bandwidth: boolean },
+): string[] {
+  void bus; // every suggestion below is legal on every bus (one G card max) — by design.
+  if (needs.latency || needs.bandwidth) return [needs.bandwidth ? "ACCESS_L" : "ACCESS_S"];
+  return [...DEFAULT_LOADOUT_CARD_IDS];
+}
