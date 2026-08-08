@@ -318,7 +318,7 @@ drag. Batch pipeline declared the ONLY authoritative failure economics; legacy f
 deprecated (removal: follow-up ticket). / Consequences: input-mode regression risk documented +
 probe-tested (__dragOrbitProbe / __aimProbe); deploy payoff = pooled multi-arc + fresh-marker pop.
 
-## SD-50 — PROPOSED: satellite power model (needs user approval — DO NOT BUILD)
+## SD-50 — DEFERRED to M2: satellite power model (user decided 2026-08-08, was PROPOSED)
 Status: PROPOSED / Context: loadout editor's third trade-off axis would be power; BusSpec.massKg
 is dead data, no power field exists anywhere in the sim. / Decision required from USER: wire
 bus power budget vs card draw (ACCESS-L/GATEWAY throttling on T1?) or keep slots as the only
