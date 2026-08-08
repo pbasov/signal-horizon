@@ -72,6 +72,21 @@ for (const f of files) {
     },
     eval: (fn, ...evalArgs) => page.evaluate(fn, ...evalArgs),
     key: (k) => page.evaluate((kk) => window.dispatchEvent(new KeyboardEvent("keydown", { key: kk, bubbles: true })), k),
+    /** TRUSTED input (autoplay-safe): real device-level key/mouse via CDP. */
+    async pressKey(k) {
+      await page.keyboard.press(k);
+    },
+    async realClick(sel) {
+      const box = await page.evaluate((s) => {
+        const el = document.querySelector(s);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }, sel);
+      if (!box) return false;
+      await page.mouse.click(box.x, box.y);
+      return true;
+    },
     async click(sel) {
       const found = await page.evaluate((s) => {
         const el = document.querySelector(s);

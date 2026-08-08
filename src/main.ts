@@ -142,6 +142,7 @@ import { WindowRail, RAIL_PANELS, NET_RAIL_PANELS } from "./wm/window-rail";
 import { Orrery } from "./orrery/orrery";
 import { deriveReadout } from "./orrery/readout";
 import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audio/cue";
+import { NetAudioEngine, type NetCueKind } from "./audio/engine";
 import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
@@ -1136,6 +1137,7 @@ function netSetPrefer(contractId: string, pos: number): void {
   const action = netSetPreferAction(contractId, w.lat, w.bw, w.stab, clock.tick);
   const res = applyAndRecordNetAction(action);
   if (res && res.kind === "prefer_set") {
+    netAudio.play("prefer_reroute");
     log.append({
       tSim: clock.seconds,
       sev: "info",
@@ -1307,6 +1309,7 @@ function drainNetFaultLog(): void {
         value: f.kind.toUpperCase(),
         msg: renderFaultLine(f, t),
       });
+      netAudio.play(f.kind === "telegraphed" ? "fault_telegraph" : "fault_amber");
     }
     // P2 (§5.3) — THE LIVE TICKING COUNTDOWN for a PENDING telegraphed fault. While the countdown is
     // still running (sat not yet dropped), re-surface "fails in Ns" each NET_COUNTDOWN_BUCKET_S as it
@@ -1411,10 +1414,12 @@ function drainNetAct4Log(): void {
         "ACT 4 — distance changes everything. A Mars colony needs data, and the deep-space relay " +
         "is the only road there — but the signal crawls minutes one-way: your real-time playbook breaks.",
     });
+    netAudio.play("mars_relay_launch");
   }
   // (2) The FIRST Mars data arrival — fired once the sample freezes (the data arrives OLD by sight).
   if (!netMarsArrivalLogged && netSession.mars !== null) {
     netMarsArrivalLogged = true;
+    netAudio.play("mars_first_signal");
     const ageMin = ((netSession.marsAgeS(t) ?? 0) / 60).toFixed(1);
     log.append({
       tSim: t,
@@ -2067,6 +2072,7 @@ function netLaunch(): void {
           ? `${label} committed — ${failed} of the batch will not separate (€${Math.round(res.costEur)} charged, win or lose)`
           : `${label} committed (€${Math.round(res.costEur)} charged) — vehicle on the pad`,
     });
+    netAudio.play("credit_committed");
   } else if (res && res.kind === "launch_failed") {
     // THE LAUNCH WHOLLY FAILED (every member lost the §3.5 risk roll): the sat/batch is lost, but you
     // PAID the launch provider anyway (the cost is charged win or lose). Surface it in SYSTEM.LOG.
@@ -2095,6 +2101,7 @@ function netAccept(contractId?: string): void {
     ACT1_CONTRACT_ID;
   const action = netAcceptAction(id, clock.tick);
   const res = applyAndRecordNetAction(action);
+  if (res && res.kind === "contract_accepted") netAudio.play(id.includes("+R") ? "renewal_landed" : "signed_offered");
   if (res && res.kind === "contract_accepted") {
     log.append({
       tSim: clock.seconds,
@@ -2182,20 +2189,21 @@ function drainMissionWire(): void {
     wireWelcomed = true;
     log.append({ tSim: t, sev: "info", entity: "MISSION", value: "on console", msg: MISSION_WELCOME });
   }
-  const beat = (key: string, due: boolean, sev: "info" | "warn", msg: string, value: string): void => {
+  const beat = (key: string, due: boolean, sev: "info" | "warn", msg: string, value: string, cue?: NetCueKind): void => {
     if (!due || wireSeen.has(key)) return;
     wireSeen.add(key);
     log.append({ tSim: t, sev, entity: "PAD", value, msg });
+    if (cue) netAudio.play(cue);
   };
   for (const ev of netSession.launchEvents) {
     beat(`${ev.id}:cd`, t >= ev.committedAtS, "info", WIRE_COUNTDOWN(ev.id), ev.id);
     beat(`${ev.id}:up`, t >= ev.liftoffAtS, "info", WIRE_LIFTOFF(ev.id), ev.id);
-    if (ev.lost === 1) beat(`${ev.id}:lost`, t >= ev.lostAtS, "warn", WIRE_VEHICLE_LOST(ev.id), ev.id);
+    if (ev.lost === 1) beat(`${ev.id}:lost`, t >= ev.lostAtS, "warn", WIRE_VEHICLE_LOST(ev.id), ev.id, "fault_amber");
     for (const m of ev.members) {
       if (m.deployed !== 1) continue;
-      if (m.outcome === "no_sep") beat(`${m.sat.id}:nosep`, true, "warn", WIRE_NOSEP(m.sat.id), m.sat.id);
-      else if (m.outcome === "underburn") beat(`${m.sat.id}:ub`, true, "warn", WIRE_UNDERBURN(m.sat.id), m.sat.id);
-      else beat(`${m.sat.id}:dep`, true, "info", WIRE_DEPLOY(m.sat.id), m.sat.id);
+      if (m.outcome === "no_sep") beat(`${m.sat.id}:nosep`, true, "warn", WIRE_NOSEP(m.sat.id), m.sat.id, "no_sep");
+      else if (m.outcome === "underburn") beat(`${m.sat.id}:ub`, true, "warn", WIRE_UNDERBURN(m.sat.id), m.sat.id, "underburn");
+      else beat(`${m.sat.id}:dep`, true, "info", WIRE_DEPLOY(m.sat.id), m.sat.id, "deploy_pop");
     }
   }
   // FIRST SIGNAL — the launch→cover→lit payoff, once per contract.
@@ -2204,6 +2212,7 @@ function drainMissionWire(): void {
     wireServedOnce.add(c.id);
     const satId = netSession.lastSolveFor(c.id)?.path?.[1] ?? "the network";
     log.append({ tSim: t, sev: "info", entity: "LINK", value: c.id, msg: WIRE_FIRST_SIGNAL(satId, c.label) });
+    netAudio.play("serve_locked");
   }
 }
 
@@ -2227,6 +2236,7 @@ function netPlaceMarsCache(): void {
       value: "placed",
       msg: "cache breadcrumb placed near Mars — freshness jumps to full (then drains again by sight)",
     });
+    netAudio.play("cache_breadcrumb");
   }
 }
 
@@ -2384,6 +2394,14 @@ function cycleNetPreset(): void {
 const cueBus = new CueBus();
 const audio = new AudioCue();
 audio.armUnlock(); // create + resume the AudioContext on the first gesture.
+// X-05 — the NET procedural engine (everything generated, slight plate reverb).
+const netAudio = new NetAudioEngine();
+netAudio.armUnlock();
+(window as unknown as Record<string, unknown>).__audio = () => netAudio.probe();
+// Every committed button click is a small cue — physical feedback per the house style.
+document.addEventListener("pointerdown", (e) => {
+  if ((e.target as HTMLElement | null)?.closest?.("button, .tab, .mission-slot")) netAudio.play("key_click");
+});
 // Prior demand slice for edge detection (a cache hit / arrival is a TRANSITION).
 let prevCue: CueDemandSlice | null = null;
 
@@ -2416,7 +2434,10 @@ function tickSim(t: number): void {
     const newCursor = netSession.cursor;
     lastNetCursor = newCursor;
     const beat = NET_ACT_BEAT[newCursor] ?? null;
-    if (beat) log.append({ tSim: t, sev: "info", entity: "ACT", value: String(newCursor + 1), msg: beat });
+    if (beat) {
+    log.append({ tSim: t, sev: "info", entity: "ACT", value: String(newCursor + 1), msg: beat });
+    netAudio.play("gate_act");
+  }
   }
 
   // X-04 — AUTOSAVE cadence (a sim-time budget: pause stops autosaving too). Every 120 sim-s.
@@ -3549,6 +3570,14 @@ function frame(now: number): void {
     // panel's render is a no-op churn-wise). The orrery planner overlay keys on the net-launch tile.
     // UX sweep — the Mars story line wakes exactly when the frontier opens (act 4).
     orrery.setMarsLinkLive(netSession.cursor >= 4);
+    // X-05 — the network's SOUNDTRACK: calm = the mean service level of live contracts,
+    // strain = near-breach warmth (a dipped contract reads as a detuned undertone).
+    {
+      const actives = netSession.contracts.filter((c) => c.state === "active");
+      const calm = actives.length === 0 ? 0.2 : actives.reduce((a, c) => a + c.lastServedFraction, 0) / actives.length;
+      const strain = actives.reduce((a, c) => Math.max(a, c.breachSecondsAccum > 6 ? 1 : 0), 0);
+      netAudio.setHealth(calm, strain);
+    }
     // UX sweep — dynamic hero fill: NO roster ⇒ ring-free bother, frame the globe bigger; the
     // first deployed sat settles to ring-fit. Changes go through a cached edge so the wheel
     // zoom isn't reset per frame (setNetHeroFraming resets netZoomMul on call).
@@ -3638,6 +3667,7 @@ function vaultLoad(slot: "quick" | "autosave"): void {
     value: `${slot} · fold ${hh.toString(16)}`,
     msg: `resumed €${Math.round(netSession.balance).toLocaleString("en-US")} · act ${netSession.cursor + 1} — the fold hash proves the restore is the run`,
   });
+  netAudio.play("vault_load");
   // Rebuild: the renders all read the session per frame (the restore is the truth).
 }
 const SLOT_LABELS: Record<"quick" | "autosave", string> = { quick: "quick", autosave: "auto" };
