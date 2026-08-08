@@ -987,6 +987,19 @@ function netEconomyState(): NetEconomy {
  * (the SAME router + link budget the live world runs, so the preview == the post-commit
  * verdict). Pure reads of the net session; computed here so the panel stays a thin painter.
  */
+/** UX sweep — the mission-desktop hero fill, with the roster edge driving a single re-frame.
+ * Cold open (no sats, no ring on screen): bigger globe. Once the first bird rides, the GEO ring
+ * must still fit (0.24, the user's clipping report). Edge-triggered so wheel zoom survives. */
+let r1HeroDesired = -1;
+let r1HeroApplied = -1;
+function r1ApplyHeroFill(): void {
+  if (wmPresetName === "MISSION") r1HeroDesired = netSession.sats.length === 0 ? 0.45 : 0.24;
+  if (r1HeroDesired !== r1HeroApplied) {
+    r1HeroApplied = r1HeroDesired;
+    orrery.setNetHeroFraming(r1HeroDesired);
+  }
+}
+
 function netPlannerRenderState(): NetPlannerRenderState {
   const t = clock.seconds;
   // The cost base is the preset's when the draft still matches a preset, else the GEO PARK base (a
@@ -2986,8 +2999,11 @@ function setWmPreset(i: number): void {
     // R1 (SD-45): MISSION is the one primary desktop — the globe is the hero there, framed
     // so a full GEO ring (≈2.8× the globe radius) FITS with margin: fill 0.24 ⇒ ring
     // diameter ≈ 0.67 of the pane height (user report: 0.38 clipped the orbits off-screen).
-    if (wmPresetName === "MISSION") orrery.setNetHeroFraming(0.24);
-    else orrery.setNetHeroFraming(0);
+    // UX sweep: DYNAMIC fill — with NO roster yet (the cold open) there is no orbit ring on
+    // screen, so take the fill the geometry allows; once the first sat rides, settle to the
+    // ring-fitting 0.24. (The dolly lerps, so the landing of NET-SAT-0 glides out.)
+    if (wmPresetName === "MISSION") r1HeroDesired = netSession.sats.length === 0 ? 0.45 : 0.24;
+    else r1HeroDesired = 0;
   }
   // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run
   // summary on entry so it reflects the live log even on a paused run (the per-frame caller is dirty-
@@ -3433,6 +3449,12 @@ function frame(now: number): void {
     // the four dashboards take their own pure projections. Each panel rebuilds DOM only on change, so
     // painting an off-screen tile is cheap (the Shell only mounts the visible ones, but a detached
     // panel's render is a no-op churn-wise). The orrery planner overlay keys on the net-launch tile.
+    // UX sweep — the Mars story line wakes exactly when the frontier opens (act 4).
+    orrery.setMarsLinkLive(netSession.cursor >= 4);
+    // UX sweep — dynamic hero fill: NO roster ⇒ ring-free bother, frame the globe bigger; the
+    // first deployed sat settles to ring-fit. Changes go through a cached edge so the wheel
+    // zoom isn't reset per frame (setNetHeroFraming resets netZoomMul on call).
+    r1ApplyHeroFill();
     missionTopPanel.render(missionTopState());
     ledgerFleetPanel.render(ledgerFleetState());
     drainMissionWire();

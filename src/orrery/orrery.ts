@@ -2475,6 +2475,14 @@ export class Orrery {
     this.netZoomMul = 1; // a new framing resets the user zoom.
   }
 
+  /** UX sweep — the Earth↔Mars link line is the ACT-4 frontier's opening reveal. In net mode
+   * it stays hidden until the Mars leg exists (cursor reached act4); cache mode unaffected.
+   * True once per frame from main (cheap idempotent assignment). */
+  setMarsLinkLive(live: boolean): void {
+    this.marsLinkLive = live;
+  }
+  private marsLinkLive = false;
+
   setPreset(i: number): void {
     if (i < 0 || i >= CAMERA_PRESETS.length) return;
     this.activePreset = i;
@@ -2885,6 +2893,15 @@ export class Orrery {
   }
 
   private updatePacketAndLink(t: number, focusAbs: Vec3, worldPerPx: number): void {
+    // Net-mode boot honesty (UX sweep): the Earth↔Mars line belongs to the Act-4 frontier story.
+    // Before the Mars leg exists it is a diagonal of noise crossing the pane — the boot of the
+    // CONNECTIVITY game reads better without it. (Cache mode is unchanged: it always shows.)
+    if (this.netRenderMode && !this.marsLinkLive) {
+      this.linkLine.visible = false;
+      this.packetMesh.visible = false;
+      for (const fp of this.feedPackets) fp.visible = false;
+      return;
+    }
     this.renderInto(this._earthR, this.ctx.eph.position("earth", t), focusAbs);
     this.renderInto(this._marsR, this.ctx.eph.position("mars", t), focusAbs);
     const ex = this._earthR.x, ey = this._earthR.y, ez = this._earthR.z;
@@ -2900,6 +2917,8 @@ export class Orrery {
       arr[w++] = ex + (mx - ex) * t0; arr[w++] = ey + (my - ey) * t0; arr[w++] = ez + (mz - ez) * t0;
       arr[w++] = ex + (mx - ex) * t1; arr[w++] = ey + (my - ey) * t1; arr[w++] = ez + (mz - ez) * t1;
     }
+    // Restore visibility only when drawing (hidden in net mode pre-act-4).
+    this.linkLine.visible = true;
     pos.needsUpdate = true;
 
     const pk = this.ctx.packet();
