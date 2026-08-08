@@ -1,23 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { Ephemeris } from "./ephemeris";
-import { mixInt, mixFloat, mixString } from "./state-hash";
 import { saveGame, addAction, saveFromJSON, saveToJSON } from "./save";
 import {
   netLaunch,
   netAccept,
-  netSetPrefer,
-  netPlaceCache,
-  netAssignBeam,
-  netCircularize,
   KIND_NET_LAUNCH,
   KIND_NET_ACCEPT,
   KIND_NET_SET_PREFER,
   KIND_NET_PLACE_CACHE,
-  KIND_NET_ASSIGN_BEAM,
-  KIND_NET_CIRCULARIZE,
   type SimAction,
 } from "./action";
-import { loadEphemeris } from "./system-data";
 import { C_LIGHT, AU_M } from "./ephemeris";
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS as NET_BREACH_GRACE_SECONDS } from "./net/session";
 import { applyNetAction } from "./net/apply-action";
@@ -35,7 +27,6 @@ import {
   ACT1_CONTRACT_ID,
   ACT2_CONTRACT_ID,
   ACT3A_CONTRACT_ID,
-  ACT3A_BACKHAUL_CONTRACT_ID,
   ACT2_ZERO_GAP_N,
   ACT2_SLA_AVAIL,
   NET_HANDOFF_CYCLE_S,
@@ -52,450 +43,41 @@ import { windowAvailability } from "./net/availability";
 import { standardLoadout, type NetSat } from "./net/sat";
 import { NET_REF_LINK_DISTANCE_M } from "./net/link-budget";
 
-const TAU = Math.PI * 2;
+// ── THE CANON LIVES IN sim/net/canon.ts (R3, 2026-08-08) ────────────────────────────
+// The arrival-arc builders, tick constants, the replay driver AND the net hasher moved to
+// src/sim/net/canon.ts so the replay golden AND the balance measurement read ONE source.
+// Behaviour is byte-identical — the golden pin below proves it in both directions (this file
+// asserts the hash; canon-balance.test.ts asserts the same hash independently).
+import {
+  GOLDEN_DT,
+  buildCanonEph,
+  actLog,
+  act2Log,
+  act3aLog,
+  act3bLog,
+  act4Log,
+  replayCanon,
+  netStateHash,
+  isNetKind,
+  MAX_TICK,
+  MAX_TICK_ACT3A,
+  MAX_TICK_ACT3B,
+  MAX_TICK_ACT4,
+  TICK_LAUNCH,
+  TICK_ACCEPT,
+  TICK_ACCEPT2,
+  ACT2_PHASE_SPREAD_RAD,
+  TICK_RELIEF,
+  TICK_MARS_RELAY,
+  TICK_PLACE_CACHE,
+  TAU2,
+} from "./net/canon";
 
-/**
- * net/ A3 — THE M1 ARRIVAL-SEQUENCE DETERMINISM REPLAY (design §3 the state-gating engine,
- * §4 determinism/golden, §5 the Act-1 slice). The connectivity game is a SEPARATE world from
- * the M1 cache/economy (544847093270497462n) and the M2 build (8431658617016421069n), so it
- * carries its OWN replay golden, off its OWN seed (4242424242424242n). NEITHER existing golden
- * is touched: this test imports neither m1/ nor m2/session.ts.
- *
- * --- WHAT THIS GUARDS -------------------------------------------------------
- * The WHOLE Act-1 loop is deterministic via the action log + the per-tick session step:
- *   - the SCENARIO ENGINE emits the one Act-1 connectivity contract deterministically INSIDE
- *     step (so it is in the fold), the player LAUNCHES the parked GEO PARK + ACCEPTS the
- *     contract, the router serves the whole equatorial disc, revenue accrues, and the act1
- *     GATE (served + € rising) fires — recording its gate tick into the cursor;
- *   - the roster (full SatOrbit f64s + loadout eirps), the contracts (state + accums +
- *     lastServedFraction + earnedEur + offeredLoad + activeAxes by FIXED ORDINAL), the wallet,
- *     the RNG state, the scenarioCursor + gate-tick stamps, and the fault cursor (a 0 placeholder
- *     in Act 1) all fold into the replay hash.
- *
- * ORDERING (live == replay, design §4): each tick step(t) runs FIRST (scenario emit + serve/
- * breach + revenue + the gate), THEN any net action recorded at that tick applies post-step via
- * applyNetAction — the SAME "step then post-drain action" order m2-build-replay + main.ts use.
- */
-
-const GOLDEN_DT = 1 / 60;
-
-/**
- * The golden replay's ephemeris. Acts 1–3 are the toy frame (the router NEVER reads `eph` for the
- * Earth-relative sat/surface geometry — `satPositionRelative` drops `eph.position`, the surface
- * frame is the toy 300 km body), so for the Earth-only arc this is byte-identical to the empty
- * `Ephemeris.build({})` the pre-D1 golden used (verified). ACT 4 needs the REAL Earth↔Mars distance
- * for the light-delay, so the golden now builds from the canonical dataset — the toy near-Earth
- * scale and the REAL interplanetary distance COEXIST (the brief's hard rule): near-Earth orbits stay
- * toy-scaled; the Mars leg's light-delay uses the real body-to-body distance via `solveMarsLeg`. */
-function buildEph() {
-  return loadEphemeris();
-}
-
-/** Sim-time the golden replay runs to (the act1+act2 arc). R0 (SD-45): launches ride the
- * countdown/ascent/deploy EVENT pipeline and the act2 constellation takes seeded attrition
- * (2 no-seps + 1 underburn on this seed) needing a circularize + a fill batch — so the act2
- * gate fires at t ≈ 661 s. 680 sim-seconds runs just past it (the cursor reaches act3a). */
-const MAX_T_SECONDS = 680;
-const MAX_TICK = Math.round(MAX_T_SECONDS / GOLDEN_DT);
-
-/** LAUNCH the default GEO PARK at this tick (the pre-seeded default that already works). */
-const TICK_LAUNCH = 600; // t = 10 sim-seconds.
-/** ACCEPT the Act-1 contract AFTER the launch event deploys (~18 s pipeline) — accepting
- * before FIRST SIGNAL bleeds the 2× penalty (R0 §2.5), so the canon signs at t = 24 s. */
-const TICK_ACCEPT = 1440; // t = 24 sim-seconds.
-
-/** ACT 2: LAUNCH the N=4 LEO_SWEEP constellation as ONE BATCH right as act2 opens. On this
- * seed the batch takes attrition: members 1+2 NO-SEP (lost), member 3 UNDERBURNS — the
- * constellation arrives HOLED (the launch-event drama is real). */
-const TICK_BATCH = 1441; // t ≈ 24.02 s (the tick the act1 gate fired + REGION-1 was offered).
-/** ACT 2: ACCEPT REGION-1 + CIRCULARIZE the underburned NET-SAT-4 once the batch deployed. */
-const TICK_ACCEPT2 = 3032; // t ≈ 50.5 s.
-/** ACT 2: the FILL batch — 4 more polar sats interleaved (+π/4) to close the attrition holes.
- * Its sub-longitude compensates the spin between the two commits so the fill phases land
- * interleaved with the survivors' plane. */
-const TICK_FILL = 20642; // t ≈ 344 s.
-const FILL_SUBLON_RAD =
-  LEO_SWEEP.subLonRad + Math.PI / 4 - ((2 * Math.PI) / 240) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
-
-/** The even in-plane mean-anomaly spread for the N=4 batch (= 2π / count). */
-const ACT2_PHASE_SPREAD_RAD = TAU / ACT2_ZERO_GAP_N;
-
-/**
- * The recorded ACT-1 + ACT-2 action sequence (the M1 arrival arc through act2). R0 (SD-45):
- * the canon now includes the seeded-attrition RESPONSE — a circularize on the underburned
- * member and an interleaved fill batch — because the launch event's partial-deploy drama is
- * a real mechanic the player answers, not a scripted convenience.
- */
-function actLog(batchCount = ACT2_ZERO_GAP_N) {
-  const sg = saveGame(NET_RNG_SEED, GOLDEN_DT, { game: "net", act: "act2" });
-  // ACT 1 — the parked GEO over REGION-0.
-  addAction(
-    sg,
-    netLaunch(
-      {
-        presetId: GEO_PARK.id,
-        semiMajorM: GEO_PARK.semiMajorM,
-        incRad: GEO_PARK.incRad,
-        subLonRad: GEO_PARK.subLonRad,
-        count: 1,
-      },
-      TICK_LAUNCH,
-    ),
-  );
-  addAction(sg, netAccept(ACT1_CONTRACT_ID, TICK_ACCEPT));
-  // ACT 2 — the N=4 LEO_SWEEP batch (attrition on this seed), accept, circularize, fill.
-  addAction(
-    sg,
-    netLaunch(
-      {
-        presetId: LEO_SWEEP.id,
-        semiMajorM: LEO_SWEEP.semiMajorM,
-        incRad: LEO_SWEEP.incRad,
-        subLonRad: LEO_SWEEP.subLonRad,
-        count: batchCount,
-        phaseSpreadRad: TAU / batchCount,
-      },
-      TICK_BATCH,
-    ),
-  );
-  addAction(sg, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
-  addAction(sg, netCircularize("NET-SAT-4", TICK_ACCEPT2));
-  addAction(
-    sg,
-    netLaunch(
-      {
-        presetId: LEO_SWEEP.id,
-        semiMajorM: LEO_SWEEP.semiMajorM,
-        incRad: LEO_SWEEP.incRad,
-        subLonRad: FILL_SUBLON_RAD,
-        count: 4,
-        phaseSpreadRad: ACT2_PHASE_SPREAD_RAD,
-      },
-      TICK_FILL,
-    ),
-  );
-  return sg;
-}
-
-/** The pinned golden log: the full act1→act2 arc with the attrition response. */
-function act2Log() {
-  return actLog(ACT2_ZERO_GAP_N);
-}
-
-// ── ACT 3a (C1b): escalation → the shared-BROADCAST-pipe squeeze → re-tame ──────────────────────
-
-/** The DEG→RAD helper for the equatorial-LEO launches (act3a corridor). */
-const ACT3A_DEG_RAD = Math.PI / 180;
-
-/** ACT 3a: the corridor CONSTELLATION — 3 phased equatorial LEOs carrying ACCESS_S cards
- * (R0/SD-45: a latency-active contract can never ride a BROADCAST floodlight; it needs
- * POINTED spot beams, and one moving LEO cannot hold a low-latency SLA — three can). */
-const TICK_EQ_CORRIDOR = 39662; // the tick the act2 gate fired + act3a opened (t ≈ 661 s).
-/** ACT 3a: POINT each corridor sat's ACCESS beam at REGION-2 once the batch deployed. */
-const TICK_BEAMS = 41163; // t ≈ 686 s.
-/** ACT 3a: ACCEPT the corridor + the BACKHAUL (the two demands act3a offers). */
-const TICK_ACCEPT_R2 = 41223; // t ≈ 687 s.
-/** ACT 3a: the RELIEF — after the shared GEO BROADCAST pipe's asymmetric-peak squeeze dips
- * REGION-0 near-breach (bandwidth-binding, ~t = 924 s), launch a parallel equatorial
- * BROADCAST LEO; once it deploys, prefer-bw REGION-0 so the pair splits pipes durably. */
-const TICK_RELIEF = 55463; // t ≈ 924.4 s (the dip tick).
-const TICK_CIRC_RELIEF = 56303; // the relief LEO underburned on this seed — circularize it.
-const TICK_PREFER = 56784; // prefer-bw REGION-0 after the relief LEO is up.
-
-/**
- * The recorded ACT-1 → ACT-2 → ACT-3a action sequence (the C1b golden driver). R0 (SD-45):
- * the squeeze is the shared GEO BROADCAST pipe (REGION-0 + BACKHAUL-3, phases ~103° apart,
- * baselines grown by escalation until an asymmetric peak window cuts REGION-0's fair share
- * below its 0.6 floor); the corridor teaches POINTING (3 ACCESS beams) + the GEO ceiling.
- */
-function act3aLog() {
-  const sg = act2Log();
-  // The corridor constellation: 3 phased equatorial ACCESS_S LEOs (pointed after deploy).
-  addAction(
-    sg,
-    netLaunch(
-      {
-        presetId: "EQ_LEO",
-        semiMajorM: LEO_SWEEP.semiMajorM,
-        incRad: 0,
-        subLonRad: 1.5 * ACT3A_DEG_RAD,
-        count: 3,
-        phaseSpreadRad: TAU / 3,
-        loadout: ["ACCESS_S"],
-      },
-      TICK_EQ_CORRIDOR,
-    ),
-  );
-  addAction(sg, netAssignBeam("NET-SAT-9", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  addAction(sg, netAssignBeam("NET-SAT-10", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  addAction(sg, netAssignBeam("NET-SAT-11", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  addAction(sg, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
-  addAction(sg, netAccept(ACT3A_BACKHAUL_CONTRACT_ID, TICK_ACCEPT_R2));
-  // The relief: a parallel equatorial BROADCAST LEO + (once deployed) the prefer override.
-  addAction(
-    sg,
-    netLaunch(
-      { presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: -1.5 * ACT3A_DEG_RAD, count: 1 },
-      TICK_RELIEF,
-    ),
-  );
-  addAction(sg, netCircularize("NET-SAT-12", TICK_CIRC_RELIEF));
-  addAction(sg, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_PREFER));
-  return sg;
-}
-
-/** The act3a replay runs past the relief so the re-tame latches + the act3a gate fires
- * (gate ≈ t = 938 s). */
-const MAX_T_ACT3A_SECONDS = 950;
-const MAX_TICK_ACT3A = Math.round(MAX_T_ACT3A_SECONDS / GOLDEN_DT);
-
-// ── ACT 3b (C2): faults — the chaos kitten, mild-first (the re-pin driver) ──────────────────────
-//
-// Identical action log to act3a (the faults are scenario-seeded, not player actions); only the
-// HORIZON extends so the scripted Degradation plays out and the 3b gate fires (~t = 968 s).
-const act3bLog = act3aLog;
-
-/** The act3b replay runs past the 3b gate (~t = 968 s). */
-const MAX_T_ACT3B_SECONDS = 985;
-const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
-
-// ── ACT 4 (D1): the Mars frontier teaser — "distance changes everything" ────────────────────────
-
-/** ACT 4: LAUNCH the deep-space MARS RELAY just after act4 opens (~t = 968 s). */
-const TICK_MARS_RELAY = 58104; // t ≈ 968.4 s — the tick the act3b gate fired.
-/** ACT 4: ACCEPT the Mars contract once the relay deployed (presence-based bridge). */
-const TICK_MARS_ACCEPT = 59304; // t ≈ 988.4 s.
-/** ACT 4: PLACE the ONE cache breadcrumb — "data closer helps". */
-const TICK_PLACE_CACHE = 60504; // t ≈ 1008.4 s.
-
-/**
- * The recorded ACT-1 → … → ACT-4 action sequence (the D1 golden driver).
- */
-function act4Log() {
-  const sg = act3bLog();
-  addAction(
-    sg,
-    netLaunch(
-      { presetId: MARS_RELAY.id, semiMajorM: MARS_RELAY.semiMajorM, incRad: MARS_RELAY.incRad, subLonRad: MARS_RELAY.subLonRad, count: 1 },
-      TICK_MARS_RELAY,
-    ),
-  );
-  addAction(sg, netAccept(ACT4_MARS_CONTRACT_ID, TICK_MARS_ACCEPT));
-  addAction(sg, netPlaceCache(TICK_PLACE_CACHE));
-  return sg;
-}
-
-/** The act4 replay runs past the relay + accept + breadcrumb: t = 1090 s. */
-const MAX_T_ACT4_SECONDS = 1090;
-const MAX_TICK_ACT4 = Math.round(MAX_T_ACT4_SECONDS / GOLDEN_DT);
-
-/** Replay an action log through a NetSession to a given max tick (the act3a arc needs a longer
- * horizon than the act1/act2 arc). Mirrors {@link replay} (step then post-drain action). */
-function replayTo(sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResult {
-  const eph = buildEph(); // D1: real ephemeris (Earth-only arc byte-identical; Mars leg needs the real distance).
-  const session = new NetSession();
-  const byTick = new Map<number, SimAction[]>();
-  for (const a of sg.actions) {
-    if (isNetKind(a.kind)) {
-      const list = byTick.get(a.atTick) ?? [];
-      list.push(a);
-      byTick.set(a.atTick, list);
-    }
-  }
-  for (let tick = 0; tick <= maxTick; tick++) {
-    const t = tick * sg.dt;
-    session.step(eph, t, sg.dt);
-    const list = byTick.get(tick);
-    if (list !== undefined) for (const a of list) applyNetAction(eph, session, a, sg.dt);
-  }
-  return { hash: netStateHash(session), balance: session.balance, session };
-}
-
-/** The net action kinds this replay routes (the rest are ignored, like the m2 driver). */
-function isNetKind(kind: string): boolean {
-  return (
-    kind === KIND_NET_ASSIGN_BEAM ||
-    kind === KIND_NET_CIRCULARIZE ||
-    kind === KIND_NET_LAUNCH ||
-    kind === KIND_NET_ACCEPT ||
-    kind === KIND_NET_SET_PREFER ||
-    kind === KIND_NET_PLACE_CACHE
-  );
-}
-
-/**
- * Fold the net session's mutable state into a u64 (reusing the state-hash primitives).
- * Order (design §4): wallet + RNG state + scenarioCursor + gate-tick stamps + the fault cursor
- * (a 0 placeholder until C2) + the roster (full SatOrbit f64s + loadout eirps) + every contract
- * (state, accums, lastServedFraction, earnedEur, offeredLoad, and activeAxes folded by ASCENDING
- * SLA_AXIS_ORDINAL via mixInt — NEVER Set iteration order, NEVER a string sort of mutable labels).
- * Everything folded is bit-stable across runs.
- */
-function netStateHash(s: NetSession): bigint {
-  const snap = s.snapshot();
-  // Wallet + RNG (the determinism anchor).
-  let acc = mixFloat(0n, snap.balance);
-  acc = mixInt(acc, BigInt(snap.rngState));
-  acc = mixInt(acc, BigInt(snap.launchedCount));
-  acc = mixFloat(acc, snap.lastStepS);
-  // The SCENARIO cursor + the recorded gate-tick stamps (the arrival sequence's progress).
-  acc = mixInt(acc, BigInt(snap.scenarioCursor));
-  acc = mixInt(acc, BigInt(snap.gateTicks.length));
-  for (const gt of snap.gateTicks) acc = mixInt(acc, BigInt(gt));
-  // ACT-2 session state (the B3 fold extension): the availability clean-streak start-stamp (the
-  // gate-hardening field, a double) and the over-build waste log (an int recorded at act2
-  // completion — the Act-3 optimizer-pull seed). Folded in FIXED order after the gate ticks.
-  acc = mixFloat(acc, snap.cleanServedSinceS);
-  acc = mixInt(acc, BigInt(snap.wasteLoggedSats));
-  // ACT-3b (C2) FAULT + TRACE fold ADDITIONS (the SD-40-C2 re-pin) — REPLACING the old fault-cursor
-  // 0 placeholder. Folded in FIXED order here (where the placeholder was): the fault-generator gate
-  // flag, the ACTIVE faults (each by satId|kind|cause|the three §2.4 predictability-seed sim-times,
-  // sorted by satId in the snapshot), the pending mild-first SCRIPT queue (kinds+causes, in order),
-  // the mild-first gate stamp (lastScriptedFaultSatId), the served-through set + the weather/short-
-  // fall witnesses. In Acts 1–3a these are dormant defaults (off / empty / null / 0) ⇒ byte-
-  // identical to the pre-C2 fold for the act1/act2 horizons; they become live once the cursor
-  // reaches act3b (after the act3a gate) and the seeded roll fires the scripted pair.
-  acc = mixInt(acc, BigInt(snap.faultsOn));
-  acc = mixInt(acc, BigInt(snap.activeFaults.length));
-  for (const f of snap.activeFaults) {
-    acc = mixString(acc, f.satId);
-    acc = mixString(acc, f.kind);
-    acc = mixString(acc, f.cause);
-    acc = mixFloat(acc, f.startedAtS);
-    acc = mixFloat(acc, f.degradedCapacityFactor);
-    acc = mixFloat(acc, f.failsAtS);
-    acc = mixFloat(acc, f.recoversAtS);
-  }
-  acc = mixInt(acc, BigInt(snap.faultScriptQueue.length));
-  for (const sc of snap.faultScriptQueue) {
-    acc = mixString(acc, sc.kind);
-    acc = mixString(acc, sc.cause);
-    acc = mixString(acc, sc.targetSatId ?? "");
-  }
-  acc = mixString(acc, snap.lastScriptedFaultSatId ?? "");
-  acc = mixInt(acc, BigInt(snap.servedThroughFault.length));
-  for (const id of snap.servedThroughFault) acc = mixString(acc, id);
-  acc = mixInt(acc, BigInt(snap.faultWeathered));
-  acc = mixInt(acc, BigInt(snap.surfacedShortfall));
-  // ACT-4 (D1) the Mars frontier teaser — the ONE fold ADDITION: the Mars sample (a null-flag + 2
-  // f64s: capturedAtT + halfLifeS = the real one-way light delay). Null until the Mars path first
-  // carries / the breadcrumb is placed ⇒ dormant 0 for the pre-act4 horizons (byte-identical). The
-  // "as of Nm ago" / freshness / stale-pay dimming are render-layer reads off this (no Contract
-  // field, no wallet — §8 fenced).
-  acc = mixInt(acc, BigInt(snap.marsSample === null ? 0 : 1));
-  if (snap.marsSample !== null) {
-    acc = mixFloat(acc, snap.marsSample.capturedAtT);
-    acc = mixFloat(acc, snap.marsSample.halfLifeS);
-  }
-  // ACT-3a (C1b) escalation + congestion fold ADDITIONS (the SD-40-C1b re-pin): the escalation
-  // gate flag, the §2.4 congestion epoch, the chosen-sat assignment (sorted id|satId pairs — makes
-  // loadBySat a pure function of folded state across a restore), the re-tame witness + its
-  // near-breach-witnessed contract ids, and the prior congestion fingerprint (so a restore
-  // reproduces the epoch-bump decision). Folded in FIXED order after the fault cursor. In Acts 1/2
-  // these are dormant defaults (off / 0 / empty / "") ⇒ byte-identical to the pre-C1b fold for the
-  // shorter horizon; they become live once the cursor reaches act3a + escalation engages.
-  acc = mixInt(acc, BigInt(snap.escalationOn));
-  acc = mixInt(acc, BigInt(snap.congestionEpoch));
-  acc = mixInt(acc, BigInt(snap.act3aReTameWitnessed));
-  acc = mixInt(acc, BigInt(snap.chosenPipeByContract.length));
-  for (const [cid, pipe] of snap.chosenPipeByContract) {
-    acc = mixString(acc, cid);
-    acc = mixString(acc, pipe);
-  }
-  acc = mixInt(acc, BigInt(snap.nearBreachWitnessed.length));
-  for (const [id, dipAtS] of snap.nearBreachWitnessed) {
-    acc = mixString(acc, id);
-    acc = mixFloat(acc, dipAtS);
-  }
-  acc = mixFloat(acc, snap.playerTopoActionS ?? -1);
-  acc = mixString(acc, snap.congestionFingerprint);
-  // The ROSTER: each sat's full SatOrbit f64s + loadout eirps.
-  acc = mixInt(acc, BigInt(snap.roster.length));
-  for (const sat of snap.roster) {
-    acc = mixString(acc, sat.id);
-    acc = mixString(acc, sat.bus);
-    const o = sat.orbit;
-    acc = mixString(acc, o.parentId);
-    acc = mixFloat(acc, o.aM);
-    acc = mixFloat(acc, o.e);
-    acc = mixFloat(acc, o.incRad);
-    acc = mixFloat(acc, o.raanRad);
-    acc = mixFloat(acc, o.argpRad);
-    acc = mixFloat(acc, o.m0Rad);
-    acc = mixFloat(acc, o.epochS);
-    acc = mixFloat(acc, o.muParent);
-    acc = mixInt(acc, BigInt(sat.loadout.length));
-    for (const a of sat.loadout) acc = mixFloat(acc, a.eirp);
-  }
-  // The CONTRACTS: state + accums + lastServedFraction + earnedEur + offeredLoad + the activeAxes
-  // mask folded by FIXED ORDINAL ascending (the one canonical path: NetSession.foldAxisOrdinals).
-  acc = mixInt(acc, BigInt(snap.contracts.length));
-  for (const c of snap.contracts) {
-    acc = mixString(acc, c.id);
-    acc = mixString(acc, c.state);
-    acc = mixFloat(acc, c.servedSecondsAccum);
-    acc = mixFloat(acc, c.breachSecondsAccum);
-    acc = mixFloat(acc, c.lastServedFraction);
-    // The ROLLING availability readout (Act 2): 0 for a connectivity-only contract (the axis is
-    // off — byte-identical to the pre-B3 fold for REGION-0), the rolling held-fraction for an
-    // availability-active one. Folded right after lastServedFraction (its sibling readout).
-    acc = mixFloat(acc, c.lastAvailability);
-    acc = mixFloat(acc, c.earnedEur);
-    acc = mixFloat(acc, c.offeredLoad);
-    // P4 (§4.3): the SLOW load BASELINE the bursty offeredLoad oscillates around — the growing state
-    // the next step's escalation depends on (offeredLoad itself is the bursty realized value derived
-    // from baseline + t + loadPhase + a seeded-noise draw). Folded right after offeredLoad (its
-    // sibling) so two states with the same realized load but a different baseline never collide.
-    acc = mixFloat(acc, c.loadBaseline);
-    // FL-07 (SD-47) re-pin #2: the tender-texture fields. payPerSecond + penaltyPerSecond MUST
-    // fold now that accept FREEZES the decayed board price (two accepts at different times
-    // diverge); plus the offer-clock fields (offeredAtS, sign-on bonus + lapse, pay halving)
-    // so a restore can't reprice a tender. Folded right after loadBaseline (the € cluster).
-    acc = mixFloat(acc, c.payPerSecond);
-    acc = mixFloat(acc, c.penaltyPerSecond);
-    acc = mixFloat(acc, c.offeredAtS);
-    acc = mixFloat(acc, c.signOnBonusEur);
-    acc = mixFloat(acc, c.signOnBonusUntilS);
-    acc = mixFloat(acc, c.payHalvingS);
-    // activeAxes by ASCENDING ordinal (connectivity=0…bandwidth=3) — never Set order.
-    const ordinals = NetSession.foldAxisOrdinals(c.activeAxes);
-    acc = mixInt(acc, BigInt(ordinals.length));
-    for (const ord of ordinals) acc = mixInt(acc, BigInt(ord));
-  }
-  return acc;
-}
-
-interface ReplayResult {
-  hash: bigint;
-  balance: number;
-  session: NetSession;
-}
-
-/**
- * Replay an Act-1 net action log through a NetSession by STEPPING every fixed tick from 0 to
- * MAX_TICK at `sg.dt`: on each tick run step(t) FIRST (the scenario emit + serve/breach + revenue
- * + the gate), THEN apply any net action recorded at that tick post-step via the SHARED
- * applyNetAction (the SAME path main.ts will use live).
- */
-function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
-  const eph = buildEph(); // D1: real ephemeris (Earth-only arc byte-identical; Mars leg needs the real distance).
-  const session = new NetSession();
-  const byTick = new Map<number, SimAction[]>();
-  for (const a of sg.actions) {
-    if (isNetKind(a.kind)) {
-      const list = byTick.get(a.atTick) ?? [];
-      list.push(a);
-      byTick.set(a.atTick, list);
-    }
-  }
-  for (let tick = 0; tick <= MAX_TICK; tick++) {
-    const t = tick * sg.dt;
-    session.step(eph, t, sg.dt);
-    const list = byTick.get(tick);
-    if (list !== undefined) for (const a of list) applyNetAction(eph, session, a, sg.dt);
-  }
-  return { hash: netStateHash(session), balance: session.balance, session };
-}
+const TAU = TAU2;
+const buildEph = buildCanonEph;
+type ReplayResult = { hash: bigint; balance: number; session: NetSession };
+const replayTo = (sg: ReturnType<typeof saveGame>, maxTick: number): ReplayResult => replayCanon(sg, maxTick);
+const replay = (sg: ReturnType<typeof saveGame>): ReplayResult => replayCanon(sg, MAX_TICK);
 
 // ---------------------------------------------------------------------------
 // PINNED net/ M1 arrival-sequence replay golden — the full ACT-1 → ACT-2 → ACT-3a arc (scenario
@@ -631,7 +213,12 @@ function replay(sg: ReturnType<typeof saveGame>): ReplayResult {
 // FL-07 (SD-47) re-pin #2 [of two planned]: tender texture — sign-on bonus (REGION-0 +€2,000
 // landed in-window), the decaying REGION-C fold, pay/penalty now folding (accept freezes), and
 // the texture fields mixed. Determinism unchanged (restore == continuous, JSON round-trip OK).
-const NET_REPLAY_GOLDEN = 14974205439654686823n;
+// R3-BALANCE (2026-08-08) re-pin #3: the economy retune — pay €20/s / penalty 2× / term 480 s
+// (terms cycle INSIDE the hour; renewals sign in-canon), launch prices ~half, opening €75k;
+// renewals INHERIT the diurnal phase (the squeeze stays phase-anchored); the canon gains the
+// REGION-0+R1 accept (the witness rides the renewal generation). Gates fire at the SAME ticks.
+// Canon is extracted to sim/net/canon.ts; canon-balance.test.ts pins the wallet trajectory.
+const NET_REPLAY_GOLDEN = 17948230282099181132n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -978,10 +565,9 @@ describe("SD-40 C1b — act3a escalation: the tame → outgrow → re-tame cycle
     const r = replayTo(act3aLog(), TICK_RELIEF - 1);
     expect(r.session.cursor).toBe(2); // still on act3a — the cycle is not yet demonstrated.
     expect(r.session.escalationReTamed()).toBe(false);
-    // R0 (SD-45): the squeeze subject is REGION-0 (sharing the GEO BROADCAST pipe with the
-    // backhaul). At the relief tick − 1 its bandwidth axis is active and it is accruing
-    // breach inside the asymmetric-peak window (the fair-share bite is real).
-    const r0 = r.session.contracts.find((x) => x.id === ACT1_CONTRACT_ID)!;
+    // R3 (SD): the squeeze subject is the customer's CURRENT generation — REGION-0's renewal
+    // (phase-inherited, baseline carried; the first 480 s term completed at t ≈ 504).
+    const r0 = r.session.contracts.find((x) => x.id === "REGION-0+R1")!;
     expect(r0.activeAxes.has("bandwidth")).toBe(true);
     expect(r0.breachSecondsAccum).toBeGreaterThan(0);
   }, 60000);

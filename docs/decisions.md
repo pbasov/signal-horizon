@@ -625,3 +625,12 @@ A first-hand Playwright playtest confirmed the verdict with specifics: **zero de
 ### SD-50 — Satellite power model: DEFERRED to M2 (user decision, 2026-08-08)
 
 **Status: DEFERRED (was PROPOSED).** A per-bus power budget (bus generation vs antenna-card draw, throttle on overdraw, optional fault coupling) is the loadout editor's natural third trade-off axis — but the GDD gives power budgets to *datacenters* and is silent on satellite buses, so building it now would have been inventing a requirement. User call: **defer to M2**, where satellite power has real physics to hang on (solar flux per body, eclipses, RTG vs panels, station-keeping) and won't need a toy re-design. **Standing consequence:** `BusSpec.massKg` stays on the table as the M2 anchor — do NOT delete it as dead code; it's the reservation. If M2 doesn't land power, delete it then.
+
+### SD-51 — The R3 economy balance pass (net-golden re-pin #3; canon extracted, 2026-08-08)
+
+**Status: ACCEPTED (numbers pinned in `src/sim/net/canon-balance.test.ts`).** The measured canonical hour opened at −€83,646 (R3 owed: "lands wallet-negative") and now closes **+€3,536, floor −€1,169, all four gates at the same ticks (24.0 / 661 / 938.4 / 968.4)**:
+- **Prices:** launch base 6000→**2400**, lift 16/30→**10/16 €/km** (consolidation ratio kept); ante **€40k→€75k**.
+- **Throughput:** pay €2→**€20/s**, penalty 2× (€40/s), **term 7200→480 s** — terms now CYCLE inside the hour: renewals (+15%, grown demand) actually land in-session, which is the real economy lesson ("margins come from sharing + renewals" becomes playable, not doc-fiction).
+- **The squeeze survived only via a real invariance fix:** renewals now INHERIT the customer's diurnal `loadPhase` (same region, same rhythm — time-continuous across generations); without it a renewal silently re-phases the shared-pipe asymmetric-peak window that act3a is calibrated around. The canon signs `REGION-0+R1` (t=520); the re-tame witness rides the renewal generation (escalation test + "gate doesn't fire early" updated).
+- **Canon extraction:** the arrival-arc builders/ticks/replay driver/hasher moved to `src/sim/net/canon.ts`, shared by the golden and the measurement suite (one source; the two tests pin the same hash from both sides).
+- Golden `14974205439654686823n` → `17948230282099181132n` (economics + texture folds already in; gates + physics pinned identical).

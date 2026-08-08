@@ -190,14 +190,14 @@ export function launchCost(p: { semiMajorM: number; costBaseEur: number }): numb
 // ── R0 (SD-45) — the launch economy (m1-redesign §2.2/§2.5) ─────────────────────────
 
 /** The fixed vehicle/base price of a launch (€), before the lift term. TUNABLE. */
-export const NET_LAUNCH_BASE_EUR = 6000;
+export const NET_LAUNCH_BASE_EUR = 2400;
 
 /** Lift price (€ per km of altitude) by bus tier — the mass term. A comsat masses ~4.7×
  * a smallsat but lifts at ~1.9× the €/km (economies of scale): consolidation is cheaper
  * per unit, at the price of one fault domain in one place. TUNABLE. */
 export const NET_LIFT_EUR_PER_KM: Readonly<Record<BusTier, number>> = {
-  smallsat: 16,
-  comsat: 30,
+  smallsat: 10,
+  comsat: 16,
 };
 
 /** The vehicle cost (€) of ONE launch to a target semi-major axis with a given bus tier

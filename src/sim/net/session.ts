@@ -124,7 +124,7 @@ const stepOfferedContract = m2StepOfferedContract as unknown as (
  * every early commit is felt. Overspending is ALLOWED (the wallet can dip negative — the
  * build-vs-budget tension), but the theorem holds: no single contract's term revenue pays for
  * its own honest provisioning (economy.test.ts asserts it). TUNABLE. */
-export const NET_OPENING_BALANCE = 40000.0;
+export const NET_OPENING_BALANCE = 75000.0;
 
 // ── the launch-event pipeline (m1-redesign.md §2.2 phase 3 — launch as a sim-tick event) ──
 

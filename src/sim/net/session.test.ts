@@ -110,7 +110,10 @@ describe("A2 net session — accept → serve → revenue closes on the shared m
       s.acceptContract("REGION-0");
       return s;
     };
-    const T = 3600; // 1 sim-hour — well within the term, no completion.
+    // R3: terms now CYCLE (480 s) — a completed contract stops accruing, and fine/coarse
+    // completions boundary-quantize slightly differently. The DT-invariance being pinned is the
+    // REVENUE STEPPING, so measure INSIDE one term (no completion in window).
+    const T = 240; // 4 sim-min — well within the (retuned) term, no completion.
 
     const fine = make();
     for (let tick = 1; tick * DT <= T; tick++) fine.step(eph, tick * DT, DT);

@@ -119,11 +119,11 @@ export const ACT1_OFFER_WINDOW_S = 2 * 3600.0;
  * theorem still holds. TUNABLE. */
 export const ACT1_SIGNON_BONUS_EUR = 2000;
 export const ACT1_SIGNON_WINDOW_S = 900;
-/** FL-07 — REGION-C's pay multiple + decay half-life. 1.3× (not a fat multiple): a FULL-pay
- * term (2.6 × 7200 = €18,720) stays under the €19,055 stack, so even a degenerate immediate
- * sign cannot out-earn its own honest provisioning (the economy theorem); the DECAY does the
- * pricing work from there. TUNABLE. */
-export const ACT1B_PAY_MULT = 1.3;
+/** FL-07 — REGION-C's pay multiple + pay halving. 1.15× kept under the R3-retuned theorem
+ * bound (9.2 × 1200 = €11,040 < the ~€12,247 stack), so even a degenerate immediate sign
+ * cannot out-earn its own honest provisioning; the DECAY does the pricing work from there.
+ * TUNABLE. */
+export const ACT1B_PAY_MULT = 1.15;
 export const ACT1B_PAY_HALVING_S = 1200;
 
 /** The HAND-OFF CYCLE the gate requires the region to be HELD across, breach-free, before the

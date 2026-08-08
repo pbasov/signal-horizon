@@ -15,8 +15,8 @@ export const MISSION_OBJECTIVES: readonly { title: string; detail: string }[] = 
   {
     title: "First light",
     detail:
-      "The equatorial metro is dark, and its co-op pays €2/s for a broadcast feed while signal reaches it. " +
-      "Your wallet is finite; a signed deal that goes unserved bleeds €4/s.",
+      "The equatorial metro is dark, and its co-op pays for a broadcast feed while signal reaches it. " +
+      "Your wallet is finite; a signed deal that goes unserved bleeds twice what it pays.",
   },
   {
     title: "Hold a region that moves",

@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Ephemeris } from "../ephemeris";
-import { NetSession } from "./session";
+import { NetSession, NET_OPENING_BALANCE } from "./session";
 import {
   offerNetContract,
   decayedPayAtS,
@@ -95,13 +95,13 @@ describe("FL-07 — acceptContract prices the signature", () => {
     expect(signOnBonusAtS(c, 0)).toBe(0); // consumed
     const s2 = act1Session();
     s2.acceptContract("REGION-0", ACT1_SIGNON_WINDOW_S + 60);
-    expect(s2.balance).toBeCloseTo(40000, 6); // the bonus lapsed
+    expect(s2.balance).toBeCloseTo(NET_OPENING_BALANCE, 6); // the bonus lapsed
   });
 
   it("the market decays REGION-C on the BOARD (the unsigned pay the player sees)", () => {
     const c = act1Session().contractById("REGION-C")!;
-    expect(decayedPayAtS(c, c.offeredAtS)).toBeCloseTo(NET_DEFAULT_PAY_PER_SECOND * 1.3, 9);
-    expect(decayedPayAtS(c, c.offeredAtS + 1200 * 3)).toBeCloseTo((NET_DEFAULT_PAY_PER_SECOND * 1.3) / 8, 9);
+    expect(decayedPayAtS(c, c.offeredAtS)).toBeCloseTo(NET_DEFAULT_PAY_PER_SECOND * 1.15, 9);
+    expect(decayedPayAtS(c, c.offeredAtS + 1200 * 3)).toBeCloseTo((NET_DEFAULT_PAY_PER_SECOND * 1.15) / 8, 9);
   });
 });
 

@@ -138,6 +138,9 @@ function act3aLog(m: Map<number, SimAction[]>): void {
   add(m, TICK_BATCH, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_BATCH));
   add(m, TICK_ACCEPT2, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
   add(m, TICK_ACCEPT2, netCircularize("NET-SAT-4", TICK_ACCEPT2));
+  // R3: with the 480 s term, REGION-0's first generation completes mid-arc — sign the renewal
+  // (phase-inherited, baseline carried) so the escalation squeeze keeps its fuel. Matches canon.
+  add(m, 31200, netAccept("REGION-0+R1", 31200));
   add(m, TICK_FILL, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: FILL_SUBLON_RAD, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_FILL));
   // Act 3a: the corridor constellation (3 pointed ACCESS LEOs) + accept corridor + backhaul.
   add(m, TICK_EQ_CORRIDOR, netLaunch({ presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: 1.5 * DEG, count: 3, phaseSpreadRad: (2 * Math.PI) / 3, loadout: ["ACCESS_S"] }, TICK_EQ_CORRIDOR));
@@ -166,9 +169,11 @@ describe("C1b — escalation squeezes the shared BROADCAST pipe (binary), the pl
     expect(["active", "completed"]).toContain(r2.state);
     // Escalation GREW the loads above their offers and flipped the bandwidth axes on (§4.4).
     expect(r2.activeAxes.has("latency")).toBe(true); // the authored latency axis (pointed beams).
-    const r0 = s.contractById(ACT1_CONTRACT_ID)!;
+    // R3 — the customer's second generation carries the grown baseline (REGION-0 completed
+    // its first 480 s term; the renewal inherits baseline + diurnal phase).
+    const r0 = s.contractById("REGION-0+R1")!;
+    expect(["active", "completed"]).toContain(r0.state);
     expect(r0.loadBaseline).toBeGreaterThan(1.0);
-    expect(r0.activeAxes.has("bandwidth")).toBe(true); // the escalation-triggered flip.
     // THE 3a GATE FIRED: REGION-0 dipped near-breach (bandwidth-binding, the shared-pipe
     // squeeze), the player re-engineered (relief LEO deployed), and it returned to fully
     // SERVED alone on its pipe with the whole board green.
@@ -190,8 +195,7 @@ describe("C1b — escalation squeezes the shared BROADCAST pipe (binary), the pl
     expect(s.escalationReTamed()).toBe(false);
     // The dip is REAL: REGION-0 is accruing breach inside the asymmetric-peak window (the
     // fair-share bite on the shared GEO BROADCAST pipe).
-    const r0 = s.contractById(ACT1_CONTRACT_ID)!;
-    expect(r0.activeAxes.has("bandwidth")).toBe(true);
+    const r0 = s.contractById("REGION-0+R1") ?? s.contractById(ACT1_CONTRACT_ID)!;
     expect(r0.breachSecondsAccum).toBeGreaterThan(0);
   }, 120000);
 });

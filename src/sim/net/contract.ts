@@ -252,19 +252,21 @@ export interface Contract {
 // --- TUNING CONSTANTS — sane placeholders (tune later) ----------------------------
 
 /** € per sim-second a served Act-1 connectivity contract pays. Sized against the R0
- * economy theorem (m1-redesign §2.5): one term's full revenue (pay × term ≈ €14.4k) is
- * LESS than the contract's honest provisioning (~€19k launch stack) — no single contract
- * pays for its own hardware; margins come from sharing + renewals. TUNABLE. */
-export const NET_DEFAULT_PAY_PER_SECOND = 2.0;
+ * economy theorem (m1-redesign §2.5) AND the R3 balance pass (2026-08-08): one term's full
+ * revenue (pay × term ≈ €9.6k) is LESS than the contract's honest provisioning (~€12.2k
+ * stack after the FL retune) — no single contract pays for its own hardware; margins come
+ * from sharing + renewals — while the canonical hour now closes SOLVENT (canon-balance
+ * pins). TUNABLE. */
+export const NET_DEFAULT_PAY_PER_SECOND = 20.0;
 
 /** € per sim-second drained while an ACTIVE contract is wholly unserved — the 2× penalty
  * ASYMMETRY (m1-redesign §2.5): a wrong signing is strictly worse than not signing.
  * TUNABLE. */
-export const NET_DEFAULT_PENALTY_PER_SECOND = 4.0;
+export const NET_DEFAULT_PENALTY_PER_SECOND = 40.0;
 
 /** Default contract term (sim-seconds) — a sustained commitment scaled to the session
  * (≈ 2 sim-hours; ~15 real-minutes at the 8× cruise). TUNABLE. */
-export const NET_DEFAULT_TERM_SECONDS = 2 * 3600.0; // 2 sim-hours.
+export const NET_DEFAULT_TERM_SECONDS = 480.0; // 2 toy days — terms cycle INSIDE the M1 hour (renewals land in-session).
 
 /** Default availability/latency/bandwidth bars carried in the struct but HIDDEN in Act 1
  * (activeAxes={connectivity}). Sane non-trivial values so Act 2/3 inherit a real bar when
@@ -508,7 +510,7 @@ export const NET_RENEWAL_OFFER_WINDOW_S = 1800;
  * a renewal ordinal. Pure.
  */
 export function renewalOffer(completed: Contract, generation: number, nowS: number): Contract {
-  return offerNetContract(`${completed.id.split("+R")[0]}+R${generation}`, completed.region, {
+  const offer = offerNetContract(`${completed.id.split("+R")[0]}+R${generation}`, completed.region, {
     label: completed.label,
     activeAxes: new Set(completed.activeAxes),
     payPerSecond: completed.payPerSecond * NET_RENEWAL_PAY_GROWTH,
@@ -523,6 +525,11 @@ export function renewalOffer(completed: Contract, generation: number, nowS: numb
     offerWindowS: NET_RENEWAL_OFFER_WINDOW_S,
     offeredAtS: nowS,
   });
+  // R3 — the renewal is the SAME customer on the SAME region: its diurnal rhythm (loadPhase)
+  // is INHERITED, so the escalation chain is time-continuous across generations (a renewal
+  // never silently re-phases the shared-link squeeze). Deterministic; folded with the contract.
+  offer.loadPhase = completed.loadPhase;
+  return offer;
 }
 
 /**
