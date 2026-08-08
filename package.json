@@ -3,14 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Signal Horizon — a satellite & information-network tycoon sim in TypeScript + Three.js",
+  "description": "Signal Horizon \u2014 a satellite & information-network tycoon sim in TypeScript + Three.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node tools/smoke.mjs http://localhost:5173"
+    "smoke": "node tools/smoke.mjs http://localhost:5173",
+    "test:fast": "vitest run --exclude src/sim/net-replay.test.ts --exclude src/sim/m2/events.test.ts",
+    "playtest": "node tools/playtest.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.184.1",

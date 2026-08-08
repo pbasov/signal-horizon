@@ -284,7 +284,10 @@ const ACT1: Beat = {
     if (c === null) return null;
     if (c.state === "active" && c.lastServedFraction > 0) return null;
     // Stuck: either no covering orbit (active but unserved) or a long idle with no launch.
-    const idledOut = session.sats.length === 0 && t >= ACT1_IDLE_WINDOW_S;
+    // R3-polish bug: `t` is EPOCH-TIME live (the session shares the boot ephemeris epoch,
+    // ~14.5e6 s), so `t >= window` was true at boot and the assist showed on arrival. The idle
+    // clock must be SESSION-RELATIVE (t − when the contract landed = the act started).
+    const idledOut = session.sats.length === 0 && t - c.offeredAtS >= ACT1_IDLE_WINDOW_S;
     const wrongOrbit = c.state === "active" && c.lastServedFraction === 0;
     if (!idledOut && !wrongOrbit) return null;
     return {

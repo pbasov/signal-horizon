@@ -129,3 +129,22 @@ describe("FL-07 — the economy theorem holds under texture", () => {
     expect(a.contracts.map((c) => `${c.id}:${c.state}`)).toEqual(b.contracts.map((c) => `${c.id}:${c.state}`));
   });
 });
+
+// ── R3-polish — the idle assist is SESSION-RELATIVE (the epoch-time bug) ─────────
+describe("R3-polish — the idle fallback does not fire at epoch-boot", () => {
+  it("an epoch-booted session (t ≈ 14.5e6) shows NO assist on arrival; idle 2h later shows it", () => {
+    // Live net mode steps the session on the SHARED boot clock (the Mars-teaser ephemeris
+    // alignment), so t at act-1 start is ~14.5e6, not 0. The fallback's idle check must
+    // compare against the act's own start (the contract's offeredAtS), never the epoch.
+    const s = new NetSession();
+    const t0 = 14.5e6; // the real boot epoch shape.
+    s.step(eph, t0, DT); // act1 emits at t0
+    expect(s.currentShortfall(t0)).toBeNull(); // the bug: it fired immediately.
+    // two sim-hours later with nothing launched: NOW the assist is honest.
+    const late = t0 + 2 * 3600 + 60;
+    for (let t = t0 + 60; t <= late; t += 60) s.step(eph, t, DT);
+    const sf = s.currentShortfall(late);
+    expect(sf).not.toBeNull();
+    expect(sf!.subjectId).toBe("REGION-0");
+  });
+});
