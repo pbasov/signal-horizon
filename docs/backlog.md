@@ -302,7 +302,7 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 
 - [x] **X-01** Determinism & replay — fixed-tick clock ✅ (P0-03), seeded RNG ✅ (P0-04); golden-master green every milestone; +1 replay fixture per milestone.
 - [ ] **X-02** Performance budget — GC allocation pools in Three.js (scratch vectors + direct Float32Array writes — proven in spike review); event-driven route re-solve; headless perf benchmark M2–M3; budget real before M4.
-- [ ] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
+- [~] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
 - [x] **X-05** Audio system — Web Audio API; one-way event-bus → cues. **First cue landed (M1-11/E5):** `src/audio/cue.ts` lazy gesture-unlock + `CueBus` (sim stays Web-Audio-free). Health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.

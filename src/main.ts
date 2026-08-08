@@ -3265,6 +3265,17 @@ window.addEventListener("keydown", (e) => {
       r1Armed = false;
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
+    } else if (k === "m" || k === "M") {
+      // X-03 — the 1-bit purist monochrome toggle (colour-off fully playable, the exit check).
+      const el = document.documentElement;
+      el.classList.toggle("cvd-mono");
+      log.append({
+        tSim: clock.seconds,
+        sev: "info",
+        entity: "DISPLAY",
+        value: el.classList.contains("cvd-mono") ? "mono" : "colour",
+        msg: el.classList.contains("cvd-mono") ? "1-bit purist mode — meaning rides shape/word/dither" : "signal colour restored",
+      });
     } else if (k === "v") {
       vaultSave("quick");
     } else if (k === "V") {

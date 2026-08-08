@@ -127,6 +127,8 @@ export class StatusStrip {
       // X-04 — the vault keys.
       appendKeys(keys, "V");
       keys.append(" vault ");
+      appendKeys(keys, "M");
+      keys.append(" mono");
     } else {
       // M1-cache verbs (unchanged).
       appendKeys(keys, "1-3");

@@ -1197,3 +1197,27 @@ body {
 .boot-sub { color: var(--fg-dim); font-size: var(--ts-cap); letter-spacing: 0.2em; margin: 4px 0 12px; }
 .boot-log { font-size: var(--ts-ui); line-height: 1.5; min-height: 3.8em; }
 .boot-line { color: var(--cyan); }
+
+/* ---- X-03 — the 1-bit PURIST mode (CVD-safe by construction: signal colour is decor ---- */
+/* html.cvd-mono: every signal hue rebinds to machine-white/monochrome tones so the colour
+   channel carries ZERO informational load; all meaning rides the redundant shape/density/
+   word channels that DD-1 mandates anyway. ("Colour-off fully playable" — the exit check.) */
+html.cvd-mono {
+  --cyan: #e8e8f0;
+  --cyan-dim: #8e9099;
+  --amber: #d8d8e0;
+  --green: #e8e8f0;
+  --orange: #c9c9d2;
+  --orange-red: #e0e0e8;
+  --red: #efeff4;
+  --violet: #d0d0da;
+  --faction-blue: #d8d8e4;
+}
+html.cvd-mono .mission-tender-state,
+html.cvd-mono .mission-tender-state.offered,
+html.cvd-mono .mission-tender-state.active { color: var(--fg-dim); }
+
+/* X-03 — the purist continues INTO the canvas: the orrery desaturates to machine-white with a
+   hair of contrast. (Cheap + honest: the signal layer's meaning is shape/dither/position by
+   design — desaturation never destroys information.) */
+html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
