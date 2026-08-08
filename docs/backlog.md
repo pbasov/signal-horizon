@@ -301,8 +301,8 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 ## Cross-cutting (continuous from P0)
 
 - [x] **X-01** Determinism & replay — fixed-tick clock ✅ (P0-03), seeded RNG ✅ (P0-04); golden-master green every milestone; +1 replay fixture per milestone.
-- [ ] **X-02** Performance budget — GC allocation pools in Three.js (scratch vectors + direct Float32Array writes — proven in spike review); event-driven route re-solve; headless perf benchmark M2–M3; budget real before M4.
-- [~] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check.
+- [~] **X-02** Performance budget — hot loop clean (scratch vectors, no per-frame allocs in the orrery); instrumented perf (the __perf rings + the perf scene, p95 frame ≈ 1.3 ms under 1000× on the mature net — 13× headroom); owed: the CI perf benchmark wire-up (the scene is the hook).
+- [~] **X-03** Accessibility — chrome/signal split + CVD-safe palette + purist toggle. "Colour-off fully playable" = per-milestone exit check. v1 ✅: the purist mono mode (M key, token rebind + canvas grayscale, instrument-asserted) + prefs persist; owed: the deuter/protan/tritan selectable palettes + the colour-off canon tag at the M1 gate.
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
 - [x] **X-05** Audio system — Web Audio API; one-way event-bus → cues. **First cue landed (M1-11/E5):** `src/audio/cue.ts` lazy gesture-unlock + `CueBus` (sim stays Web-Audio-free). Health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.

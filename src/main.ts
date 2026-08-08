@@ -168,7 +168,8 @@ topbar.innerHTML =
   `<span class="brand">◆ SIGNAL HORIZON</span>` +
   `<span>· ts/three.js</span>` +
   `<span class="spacer"></span>` +
-  `<span class="hint">F11 fullscreen · click the right rail to summon a panel · drag title-bars to swap · drag gutters to resize</span>` +
+  // The hint is DENSE but must not truncate at narrow widths (the sweep's eyeball).
+  `<span class="hint">rail to summon · title-bars to swap · gutters to resize</span>` +
   `<span class="hint" style="margin-left:auto"></span>`;
 
 const wmCanvas = document.createElement("div");
