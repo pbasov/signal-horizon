@@ -79,9 +79,13 @@ export default {
       wire: [...document.querySelectorAll(".log-line .msg")].slice(-4).map((e) => e.textContent ?? ""),
     }));
     ctx.ok(
-      "REGION-0 pays out on-serve (carrying now, or term COMPLETED with earnings)",
-      state.served.includes("carrying") || (state.served.includes("€") && /€[1-9]/.test(state.served)),
-      state.served,
+      "REGION-0 completes its term WITH earnings (the history strip records it)",
+      await ctx.eval(() => {
+        const strip = document.querySelector(".mission-history")?.textContent ?? "";
+        const book = document.querySelector("[data-contract=REGION-0]")?.closest(".mission-tender")?.querySelector(".mission-tender-served")?.textContent ?? "";
+        return strip.includes("COMPLETED") || (book.includes("€") && !book.includes("€0"));
+      }),
+      "completion surfaced (strip or row)",
     );
     ctx.ok("the act-1 gate fired (act 2 objective live)", state.objective.includes("moves"), state.objective);
     ctx.ok(

@@ -407,7 +407,21 @@ export class MissionTop implements PanelHandle {
       this.tenderSig = sig;
       this.tendersHost.textContent = "";
       this.tenderEls.clear();
-      for (const t of s.tenders) {
+      // FL-UX: history is a STRIP, not a row — FAILED (and completed) tenders collapse to
+      // one dim line ("equatorial metro — FAILED · lapsed unsigned after 2h"); the parse is
+      // where history lives in detail. The FACE of the book is the live market only.
+      const historyRows = s.tenders.filter((t) => t.state === "failed" || t.state === "completed");
+      const liveRows = s.tenders.filter((t) => t.state !== "failed" && t.state !== "completed");
+      if (historyRows.length > 0) {
+        const strip = el(
+          "div",
+          "mission-history",
+          historyRows.map((t) => `${t.label} — ${t.state.toUpperCase()}`).join("  ·  "),
+        );
+        strip.title = "Past tenders. Detail lives in THE PARSE (REVIEW).";
+        this.tendersHost.appendChild(strip);
+      }
+      for (const t of liveRows) {
         const row = el("div", "mission-tender");
         const head = el("div", "mission-tender-head");
         head.appendChild(el("span", "mission-tender-label", t.label));
