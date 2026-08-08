@@ -1,0 +1,90 @@
+/**
+ * X-04 — THE VAULT: browser-storage save slots (localStorage), built on the pure
+ * checkpoint envelope (sim/net/persist.ts). Zero sim imports beyond the envelope —
+ * this module is presentation/service layer and CAN touch storage + wall clocks.
+ *
+ * DESIGN:
+ *  - Slots: "quick" (V) + "autosave" (SysMaint) + up to 3 named (future). localStorage so
+ *    saves survive browser restarts with no server. Quota errors are caught and reported
+ *    as a string (the caller surfaces them on the wire — never crash the game on a full disk).
+ *  - AUTOSAVE: the frame loop calls maybeAutosave on a sim-time cadence (no wall timers —
+ *    pausing the game must pause autosaves too).
+ *  - The vault is honest about what it restores: the fold hash is printed on load so a
+ *    resumed run CANNOT silently diverge from the canonical one (the parse's honesty law).
+ */
+
+import {
+  checkpointToJSON,
+  readCheckpoint,
+  type NetCheckpoint,
+  NET_SAVE_VERSION,
+} from "./sim/net/persist";
+
+const PREFIX = "signalhorizon.net.v1.";
+const SLOTS = ["quick", "autosave", "a", "b"] as const;
+export type VaultSlot = (typeof SLOTS)[number];
+
+/** localStorage can be absent (private mode, hard privacy) — degrade to no-vault, never throw. */
+function storage(): Storage | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write a checkpoint into a slot. Returns null on success, or the failure string. */
+export function saveToVault(slot: VaultSlot, cp: NetCheckpoint): string | null {
+  const store = storage();
+  if (!store) return "browser storage unavailable";
+  try {
+    store.setItem(PREFIX + slot, checkpointToJSON(cp));
+    return null;
+  } catch (e) {
+    return `save failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/** Read + VALIDATE a slot. version/shape failures read as "no save" (never a half-load). */
+export function readVault(slot: VaultSlot): NetCheckpoint | null {
+  const store = storage();
+  if (!store) return null;
+  const raw = store.getItem(PREFIX + slot);
+  if (raw === null) return null;
+  try {
+    const back = readCheckpoint(JSON.parse(raw));
+    if (back === null) return null; // bad envelope = forget it exists (never crash on save rot)
+    return {
+      version: NET_SAVE_VERSION,
+      tick: back.tick,
+      tSim: back.meta.tSim,
+      balanceEur: back.meta.balanceEur,
+      act: back.meta.act,
+      savedAtMs: back.meta.savedAtMs,
+      session: back.session,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** List which slots hold saves (for a future load board). */
+export function vaultContents(): { slot: VaultSlot; savedAtMs: number; tSim: number; act: number; balanceEur: number }[] {
+  const out: { slot: VaultSlot; savedAtMs: number; tSim: number; act: number; balanceEur: number }[] = [];
+  for (const slot of SLOTS) {
+    const cp = readVault(slot);
+    if (cp !== null) out.push({ slot, savedAtMs: cp.savedAtMs, tSim: cp.tSim, act: cp.act, balanceEur: cp.balanceEur });
+  }
+  return out;
+}
+
+/** Clear one slot (or all — a full NG+ wipe affordance). */
+export function clearVault(slot?: VaultSlot): void {
+  const store = storage();
+  if (!store) return;
+  if (slot !== undefined) {
+    store.removeItem(PREFIX + slot);
+    return;
+  }
+  for (const s of SLOTS) store.removeItem(PREFIX + s);
+}

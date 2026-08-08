@@ -61,6 +61,9 @@ import { BuildSession } from "./sim/m2/session";
 // (roster + REGION-0 contract + wallet + scenario cursor); applyNetAction is the SHARED
 // applier live + replay use; the world planner gives the truthful consequence preview.
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
+import { checkpointNet } from "./sim/net/persist";
+import { saveToVault, readVault } from "./vault";
+import { netStateHash } from "./sim/net/canon";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
@@ -2394,6 +2397,9 @@ let prevCue: CueDemandSlice | null = null;
  * it onto the one-way bus (drained by the frame loop). The sim never sees audio.
  */
 let lastNetCursor = -1;
+// X-04 — the vault's cadence trackers (sim-time; no wall clocks anywhere near the sim path).
+let lastVaultSaveS = -1e9;
+let lastNetCursor_VAULT = -1;
 
 function tickSim(t: number): void {
   // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
@@ -2411,6 +2417,13 @@ function tickSim(t: number): void {
     lastNetCursor = newCursor;
     const beat = NET_ACT_BEAT[newCursor] ?? null;
     if (beat) log.append({ tSim: t, sev: "info", entity: "ACT", value: String(newCursor + 1), msg: beat });
+  }
+
+  // X-04 — AUTOSAVE cadence (a sim-time budget: pause stops autosaving too). Every 120 sim-s.
+  if (netSession.cursor !== lastNetCursor_VAULT || clock.seconds - lastVaultSaveS >= 120) {
+    lastVaultSaveS = clock.seconds;
+    lastNetCursor_VAULT = netSession.cursor;
+    if (APP_MODE === "net") vaultSave("autosave", true);
   }
 
   // THE CACHE / M2-BUILD SIM IS CACHE-MODE ONLY. In net mode the connectivity game is the
@@ -3221,6 +3234,10 @@ window.addEventListener("keydown", (e) => {
       r1Armed = false;
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
+    } else if (k === "v") {
+      vaultSave("quick");
+    } else if (k === "V") {
+      vaultLoad("quick");
     } else if (k === "c" || k === "C") {
       // UX sweep fix (this branch was unreachable — it lived AFTER the net-mode `return`,
       // so the documented C shortcut NEVER fired since R1): in net mode C places the
@@ -3540,3 +3557,47 @@ function frame(now: number): void {
 }
 
 requestAnimationFrame(frame);
+// ── X-04 — THE VAULT verbs (save/load to browser storage) ─────────────────────
+
+/** SAVE a checkpoint into a vault slot; report on the WIRE. Readout-only metadata on the
+ * envelope (tick/balance/act/wall). The truth is the folded snapshot: restoring restarts
+ * the run bit-exact. */
+function vaultSave(slot: "quick" | "autosave", quiet = false): void {
+  if (APP_MODE !== "net") return; // cache mode keeps its own flow for now (X-04 follow-up)
+  const cp = checkpointNet(netSession, clock.tick, Date.now());
+  const problem = saveToVault(slot, cp);
+  if (quiet && problem === null) return; // autosaves stay silent unless they FAILED
+  log.append({
+    tSim: clock.seconds,
+    sev: problem === null ? "info" : "warn",
+    entity: "VAULT",
+    value: `${slot} · act ${cp.act + 1}`,
+    msg:
+      problem === null
+        ? `checkpoint saved — €${Math.round(cp.balanceEur).toLocaleString("en-US")} · act ${cp.act + 1} (${SLOT_LABELS[slot]})`
+        : problem,
+  });
+}
+
+/** LOAD the quick checkpoint — restore the session and the clock to it. */
+function vaultLoad(slot: "quick" | "autosave"): void {
+  if (APP_MODE !== "net") return;
+  const cp = readVault(slot);
+  if (cp === null) {
+    log.append({ tSim: clock.seconds, sev: "warn", entity: "VAULT", value: slot, msg: "no checkpoint in that slot" });
+    return;
+  }
+  netSession.restore(cp.session as ReturnType<NetSession["snapshot"]>);
+  clock.setTick(cp.tick);
+  // Render-side fresh state: the pending-launch freshness ring + aim draft should reset.
+  const hh = netStateHash(netSession);
+  log.append({
+    tSim: clock.seconds,
+    sev: "info",
+    entity: "VAULT",
+    value: `${slot} · fold ${hh.toString(16)}`,
+    msg: `resumed €${Math.round(netSession.balance).toLocaleString("en-US")} · act ${netSession.cursor + 1} — the fold hash proves the restore is the run`,
+  });
+  // Rebuild: the renders all read the session per frame (the restore is the truth).
+}
+const SLOT_LABELS: Record<"quick" | "autosave", string> = { quick: "quick", autosave: "auto" };

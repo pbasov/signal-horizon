@@ -124,6 +124,9 @@ export class StatusStrip {
       keys.append(" phase ");
       appendKeys(keys, "R");
       keys.append(" cam");
+      // X-04 — the vault keys.
+      appendKeys(keys, "V");
+      keys.append(" vault ");
     } else {
       // M1-cache verbs (unchanged).
       appendKeys(keys, "1-3");
