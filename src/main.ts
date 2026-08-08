@@ -3406,7 +3406,40 @@ function clamp01floor(f: number): number {
 // --- main loop --------------------------------------------------------------
 let last = performance.now();
 
+
+// ── perf instrumentation (X-02; wall clocks at the RENDER boundary only — the sim never
+// sees them). Ring-of-120 frame ms + per-section ms; window.__perf() dumps percentiles. ──
+type PerfSection = "sim" | "ephem" | "frameState" | "panels" | "netSlices" | "orrery" | "logMisc";
+const PERF_SECTIONS: PerfSection[] = ["sim", "ephem", "frameState", "panels", "netSlices", "orrery", "logMisc"];
+const perfRings: Record<string, number[]> = Object.fromEntries([...PERF_SECTIONS, "frame"].map((k) => [k, [] as number[]]));
+let perfSectionAcc: Partial<Record<PerfSection, number>> = {};
+
+function perfMark(name: PerfSection, t0: number): number {
+  const now = performance.now();
+  perfSectionAcc[name] = (perfSectionAcc[name] ?? 0) + (now - t0);
+  return now;
+}
+function perfFlush(frameMs: number): void {
+  perfRings.frame.push(frameMs);
+  if (perfRings.frame.length > 120) perfRings.frame.shift();
+  for (const sec of PERF_SECTIONS) perfRings[sec].push(perfSectionAcc[sec] ?? 0);
+  for (const sec of PERF_SECTIONS) if (perfRings[sec].length > 120) perfRings[sec].shift();
+  perfSectionAcc = {};
+}
+function perfP(arr: number[], p: number): number {
+  const srt = [...arr].sort((a, b) => a - b);
+  return srt.length === 0 ? 0 : srt[Math.max(0, Math.min(srt.length - 1, Math.floor((srt.length - 1) * p)))];
+}
+(window as unknown as Record<string, unknown>).__perf = () => ({
+  frameMsP50: perfP(perfRings.frame, 0.5),
+  frameMsP95: perfP(perfRings.frame, 0.95),
+  sections: Object.fromEntries(PERF_SECTIONS.map((sec) => [sec, { p50: perfP(perfRings[sec], 0.5), p95: perfP(perfRings[sec], 0.95) }])),
+  frames: perfRings.frame.length,
+});
+
 function frame(now: number): void {
+  const frameT0 = performance.now();
+  let m = frameT0;
   const wallDt = (now - last) / 1000;
   last = now;
   // Fixed-tick drain: schedule wall time, then run all owed sim ticks.
@@ -3414,6 +3447,7 @@ function frame(now: number): void {
   while (clock.nextTick() !== null) {
     tickSim(clock.seconds);
   }
+  m = perfMark("sim", m);
 
   // Render at the latest sim time (interpolation deferred — analytic Kepler
   // means position(t) is exact for any t, so no visual error from using the
@@ -3423,6 +3457,7 @@ function frame(now: number): void {
   const ow = oneWaySeconds(dist);
   const los = earthMarsLos(eph, t);
   lastBlackedOut = los.inCorridor;
+  m = perfMark("ephem", m);
 
   // E10c — the foreshadow nudge: once the margin first enters the watch band
   // (approach > 0), surface the looming blackout + the speed control, one-shot.
@@ -3533,6 +3568,7 @@ function frame(now: number): void {
     // (X-02). Render/read-only — a pure SELECT over existing truth, no sim mutation.
     fleetPanel.render(fleetRenderState());
   }
+  m = perfMark("panels", m);
   // net/ Act-3b — surface the live fault + trace state into SYSTEM.LOG (edge-triggered, render-only:
   // the amber-pulse degradation / telegraphed countdown + the first resilience shortfall).
   drainNetFaultLog();
@@ -3547,11 +3583,15 @@ function frame(now: number): void {
   // log; it never mutates sim state). Dirty-checked, so it costs nothing when not shown.
   if (shell.visibleHosts().includes("parse")) refreshParse();
   // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
+  m = perfMark("netSlices", m);
   orrery.setReadout(deriveReadout(fs));
   orrery.update(wallDt);
+  m = perfMark("orrery", m);
   shell.tickChrome();
   // Drain the one-way cue bus into the synth (no-op until a gesture unlocks audio).
   audio.pump(cueBus);
+  m = perfMark("logMisc", m);
+  perfFlush(performance.now() - frameT0);
 
   requestAnimationFrame(frame);
 }
