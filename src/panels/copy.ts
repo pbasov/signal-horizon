@@ -83,3 +83,13 @@ export const STACK_BATCH_DISCOUNT = (pct: string): string =>
 /** FL-04 — slot-class labels for the bus silhouette (redundant with the slot glyphs). */
 export const SLOT_G_LABEL = "GROUND-FACING";
 export const SLOT_S_LABEL = "SAT-FACING";
+
+/** R3 — the WIRE act-transition beats (indexed by the NEW scenario cursor; 0 = boot, silent).
+ * World-flavor arrivals — facts about what changed, never instructions. */
+export const NET_ACT_BEAT: readonly string[] = [
+  "",
+  "second demand on the board — the polar metro moves, and it pays to be HELD, not visited",
+  "the corridor and the backhaul are live — your success just became shared load",
+  "the first failure is out there counting down — what survives is what you shaped",
+  "Mars is asking — light takes minutes each way; the frontier doesn't do 'now'",
+];

@@ -107,6 +107,7 @@ import {
   WIRE_UNDERBURN,
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
+  NET_ACT_BEAT,
   PAD_RISK_BAND,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
@@ -2376,6 +2377,8 @@ let prevCue: CueDemandSlice | null = null;
  * AUDIO: after the pure step, derive any cue from the demand transition and push
  * it onto the one-way bus (drained by the frame loop). The sim never sees audio.
  */
+let lastNetCursor = -1;
+
 function tickSim(t: number): void {
   // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
   // scenario emit (REGION-0 onto the board) + serve/breach + revenue + the gate. A net action
@@ -2385,6 +2388,14 @@ function tickSim(t: number): void {
   // the scenario is live the instant net mode boots (the contract is offered before launch).
   // ALWAYS stepped (net mode is the live game; cache mode steps it too, harmlessly inert).
   netSession.step(eph, t, DT);
+  // R3 — WIRE beat on every ACT ADVANCE: the cursor IS the arrival record; edge-trigger one
+  // log line per gate so the acts read as events on the WIRE, not silent state changes.
+  if (netSession.cursor !== lastNetCursor) {
+    const newCursor = netSession.cursor;
+    lastNetCursor = newCursor;
+    const beat = NET_ACT_BEAT[newCursor] ?? null;
+    if (beat) log.append({ tSim: t, sev: "info", entity: "ACT", value: String(newCursor + 1), msg: beat });
+  }
 
   // THE CACHE / M2-BUILD SIM IS CACHE-MODE ONLY. In net mode the connectivity game is the
   // whole world; stepping the cache session here is what leaked the mars_imagery/EARTH→MARS
