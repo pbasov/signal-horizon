@@ -2686,7 +2686,15 @@ export class Orrery {
         ring.line.visible = false;
         continue;
       }
+      // UX sweep (backlog follow-up): in a NEAR-FIELD preset, heliocentric rings of OTHER
+      // bodies are stray distant dashes (they're rendered around the rebase origin, miles
+      // off-screen-relative-to-nothing). Hide them; they return at pull-back (dist ≥ 4.2).
+      const nearField = this.tgt.dist < 4.2;
       const parent = this.ctx.eph.parentOf(id);
+      if (nearField && parent === "sun" && id !== this.focusId) {
+        ring.line.visible = false;
+        continue;
+      }
       const parentAbs = this.ctx.eph.position(parent, t);
       const pos = ring.line.geometry.getAttribute("position") as THREE.BufferAttribute;
       const arr = pos.array as Float32Array;

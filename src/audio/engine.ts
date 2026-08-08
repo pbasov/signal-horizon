@@ -146,6 +146,7 @@ export function buildPlateIR(
 
 /** Engine state probe surface for tests + the playest scenes. */
 export interface AudioEngineProbe {
+  muted?: boolean;
   ctxState: string;
   voices: number;
   cuesPlayed: number;
@@ -180,6 +181,15 @@ export class NetAudioEngine {
 
   /** Master reverb mix (0..0.4). "Slight" tops out at 0.18 by the house rule. */
   reverbMix = 0.16;
+  /** Hard mute (U key) — persists via the vault's prefs shelf. */
+  private muted = false;
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (this.master) this.master.gain.value = muted ? 0 : 0.8;
+  }
+  get isMuted(): boolean {
+    return this.muted;
+  }
 
   armUnlock(target: Window | HTMLElement = window): void {
     const unlock = () => {
@@ -328,6 +338,7 @@ export class NetAudioEngine {
       lastKinds: [...this.lastKinds],
       humGain: this.humGain?.gain.value ?? 0,
       reverbMix: this.reverbMix,
+      muted: this.muted,
     };
   }
 }

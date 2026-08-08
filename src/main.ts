@@ -63,7 +63,7 @@ import { BuildSession } from "./sim/m2/session";
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
 import { checkpointNet } from "./sim/net/persist";
 import { runBootSequence } from "./panels/boot";
-import { saveToVault, readVault } from "./vault";
+import { saveToVault, readVault, loadPrefs, storePrefs } from "./vault";
 import { netStateHash } from "./sim/net/canon";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
@@ -3173,6 +3173,12 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
 
 // X-05 — the boot sequence (once per session; never in the debug screenshots paths — those
 // boot fast and silent for the shot).
+// X-04a — prefs re-apply at boot (mono display + muted go first so the first paint listens).
+{
+  const prefs = loadPrefs();
+  if (prefs.mono) document.documentElement.classList.add("cvd-mono");
+  netAudio.setMuted(prefs.muted);
+}
 if (!netDebugView && !netLiveDebugView) {
   runBootSequence(app, { version: "NET FLIGHTSOFT rev FIRST-LIGHT", seed: String(NET_RNG_SEED) });
 }
@@ -3269,12 +3275,24 @@ window.addEventListener("keydown", (e) => {
       // X-03 — the 1-bit purist monochrome toggle (colour-off fully playable, the exit check).
       const el = document.documentElement;
       el.classList.toggle("cvd-mono");
+      storePrefs({ mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,
         sev: "info",
         entity: "DISPLAY",
         value: el.classList.contains("cvd-mono") ? "mono" : "colour",
         msg: el.classList.contains("cvd-mono") ? "1-bit purist mode — meaning rides shape/word/dither" : "signal colour restored",
+      });
+    } else if (k === "u" || k === "U") {
+      // X-05 — hard mute (persists). No cross-typed cues to manage; the canary stays silent.
+      netAudio.setMuted(!netAudio.isMuted);
+      storePrefs({ mono: document.documentElement.classList.contains("cvd-mono"), muted: netAudio.isMuted });
+      log.append({
+        tSim: clock.seconds,
+        sev: "info",
+        entity: "AUDIO",
+        value: netAudio.isMuted ? "MUTED" : "live",
+        msg: netAudio.isMuted ? "hard muted — U to unmute" : "audio live",
       });
     } else if (k === "v") {
       vaultSave("quick");

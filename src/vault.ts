@@ -88,3 +88,36 @@ export function clearVault(slot?: VaultSlot): void {
   }
   for (const s of SLOTS) store.removeItem(PREFIX + s);
 }
+
+// ── X-04a — the PREFS shelf: render-layer preferences (audio volume / the mono display mode)
+// persist BESIDE the vault — same storage story, same never-crash law, but NOT sim state:
+
+export interface StoredPrefs {
+  mono: boolean;
+  muted: boolean;
+}
+
+const PREFS_KEY = "signalhorizon.prefs.v1";
+
+export function loadPrefs(): StoredPrefs {
+  const store = storage();
+  if (!store) return { mono: false, muted: false };
+  try {
+    const raw = store.getItem(PREFS_KEY);
+    if (raw === null) return { mono: false, muted: false };
+    const p = JSON.parse(raw) as Partial<StoredPrefs>;
+    return { mono: p.mono === true, muted: p.muted === true };
+  } catch {
+    return { mono: false, muted: false };
+  }
+}
+
+export function storePrefs(p: StoredPrefs): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {
+    /* quota shrug */
+  }
+}
