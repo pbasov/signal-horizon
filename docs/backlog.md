@@ -116,7 +116,7 @@
 - [x] **FL-12** `timeToServiceS` (forward-scan isPointServed) + pad facts. (P4-C3)
 - [x] **FL-13** ring-grab orbit drag: `onNetDragOrbit`, ring hit-test, pointer priority (ring → globe aim → camera), 15 Hz solve throttle, `__dragOrbitProbe` + scripted pointer test. HIGH risk. (P4-C4)
 - [x] **FL-14** ring-pinned live readout + pooled multi-arc launches + per-member deploy pops. (P4-C5)
-- [~] **FL-15** style overhaul (post-verbs): a) palette→tokens; b) bundled fonts + cap9/ui11/body13/head16; c) gutter/rail/min-size consolidation + kill fake controls; d) visible dither + redundant focus + preset-tab CSS; e) pixel cursor + boot. (P5)
+- [x] **FL-15** style overhaul (post-verbs): a) palette→tokens; b) bundled fonts + cap9/ui11/body13/head16; c) gutter/rail/min-size consolidation + kill fake controls; d) visible dither + redundant focus + preset-tab CSS; e) pixel cursor + boot. (P5)
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, DEFERRED to M2 per user 2026-08-08 — massKg is the anchor, not dead code); WM minimize/collapse op.
 > - **Verification method:** every phase gated by the Playwright playtest loop (see memory `playwright-playtest-loop`) + 725 tests / tsc / build / boot smoke. NOTE: the MCP-driven Chromium pins its viewport at 1920×1080 — "GUI doesn't fill the window" while looking at THAT window is the pinned viewport, not the app (resolved 2026-07-02).
 
