@@ -22,9 +22,9 @@ console.log("cursor:", (await evalx(() => window.__netState?.()))?.cursor, JSON.
 const before = (await evalx(() => window.__netState?.()))?.sats.length;
 const dbgPad = async () => await evalx(() => document.querySelector("[data-net=arm]") ? "pad-open" : "pad-closed");
 console.log("pad before L:", await dbgPad());
-await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "l" })));
+await page.keyboard.press("l");
 await page.waitForTimeout(300);
-console.log("pad after L:", await dbgPad());
+console.log("pad after L:", await dbgPad(), "sawKey:", await evalx(() => window.__sawKey));
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true })));
 await page.waitForTimeout(1000);
 const after = await evalx(() => window.__netState?.());

@@ -1220,7 +1220,7 @@ function netConstellation(): void {
   const c = netSession.contractById(ACT2_CONTRACT_ID);
   if (c === null || !c.activeAxes.has("availability")) return;
   const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
-  if (leo === undefined) return;
+  if (leo === undefined) { console.warn("[NC2] no LEO preset"); return; }
   const sugg = suggestPhasing(eph, c.region, leo, ACT2_SLA_AVAIL, t, [...netSession.grounds]);
   // Launch the size the player DIALED on the ladder (defaults to the measured zero-gap minimum),
   // not the fixed viable-but-imperfect suggestion — the player owns the coverage-vs-capex call.
@@ -3196,6 +3196,14 @@ window.addEventListener("keydown", (e) => {
       r1Armed = false;
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
+    } else if (k === "c" || k === "C") {
+      // UX sweep fix (this branch was unreachable — it lived AFTER the net-mode `return`,
+      // so the documented C shortcut NEVER fired since R1): in net mode C places the
+      // suggested phased CONSTELLATION as one batch (the §3.3 assist + §3.4 batch verb).
+      const r1 = netSession.contractById(ACT2_CONTRACT_ID);
+      if (r1 !== null && r1.state !== "completed" && r1.state !== "failed" && r1.activeAxes.has("availability")) {
+        netConstellation();
+      }
     }
     return; // net mode: nothing else is a key (the rest are panel buttons / cache-only verbs).
   }
