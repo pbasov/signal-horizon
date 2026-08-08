@@ -51,10 +51,6 @@ export default {
       [...document.querySelectorAll("[data-net=accept]")].map((b) => b.getAttribute("data-contract")),
     );
     ctx.ok("REGION-1 offered at the act-2 opening", r1.includes("REGION-1"), r1.join(","));
-    await ctx.eval(() => {
-      const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-1");
-      b?.click();
-    });
     // The WEATHER: the REGION-C tender should have lapsed on the board by now (its clock
     // out-ran a fast-forwarded opener). Only assert if present.
     const decayedC = await ctx.eval(() => {
@@ -102,6 +98,19 @@ export default {
     await ctx.settle(200);
     await ctx.click("[data-net=launch]");
     await ctx.settle(200);
+
+    // Pace the fiction honestly: get the FULL fleet up, THEN sign REGION-1 (sustained-dark
+    // signing burns the breach grace for nothing — the lesson the board teaches is "sign
+    // what you can serve", and at 1000× the scene has to play that way too).
+    const fleetUp = await untilState(ctx, "fleet-up", (s) => s.sats.length >= 7, 60000);
+    ctx.ok("both constellation batches deployed (≥7 sats live)", fleetUp !== null, `roster ${fleetUp?.sats.length ?? 0}`);
+    // Underburn fix-ups may appear with EITHER batch — press them all again.
+    await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
+    await ctx.settle(500);
+    await ctx.eval(() => {
+      const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-1");
+      b?.click();
+    });
 
     // Hold: REGION-1's rolling availability must gear up to the bar; the act-2 gate is the
     // honest proof (constellation + fill hold it through a full hand-off cycle).

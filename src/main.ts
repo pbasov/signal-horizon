@@ -2911,6 +2911,23 @@ function ledgerFleetState(): LedgerFleetState {
   // per-member deploy pops currently live (age < 3 s).
   pops: [...netFreshDeployAge.entries()].map(([id, age]) => ({ id, age: Math.round(age * 10) / 10 })),
 });
+// Per-contract live solve (the playtest acts-2/3 scenes need the rolling availability +
+// binding constraint the same way the scenario does).
+(window as unknown as Record<string, unknown>).__regionProbe = (id: string) => {
+  if (!netMode) return null;
+  const c = netSession.contractById(id);
+  if (!c) return null;
+  const solve = netSession.lastSolveFor(id);
+  return {
+    id,
+    state: c.state,
+    servedFrac: c.lastServedFraction,
+    rollAvail: c.lastAvailability,
+    breachS: c.breachSecondsAccum,
+    binding: solve?.bindingConstraint ?? null,
+    path: solve?.path ?? null,
+  };
+};
 (window as unknown as Record<string, unknown>).__netDebug = () => {
   const c = netSession.contracts.find((x) => x.state === "active") ?? netSession.contracts[0];
   const solve = c ? netSession.lastSolveFor(c.id) : null;
