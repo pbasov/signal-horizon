@@ -70,7 +70,7 @@ for (const f of files) {
       await page.screenshot({ path: out });
       return out;
     },
-    eval: (fn) => page.evaluate(fn),
+    eval: (fn, ...evalArgs) => page.evaluate(fn, ...evalArgs),
     key: (k) => page.evaluate((kk) => window.dispatchEvent(new KeyboardEvent("keydown", { key: kk, bubbles: true })), k),
     async click(sel) {
       const found = await page.evaluate((s) => {

@@ -85,8 +85,8 @@ import { windowAvailability } from "./sim/net/availability";
 import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
-import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS } from "./sim/net/contract";
-import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N } from "./sim/net/scenario";
+import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS, offerNetContract } from "./sim/net/contract";
+import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N, NET_ACT2_REGION } from "./sim/net/scenario";
 import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
@@ -1405,8 +1405,8 @@ function drainNetAct4Log(): void {
       entity: "MARS-1",
       value: "FRONTIER",
       msg:
-        "ACT 4 — distance changes everything. A Mars colony needs data. Launch a MARS RELAY " +
-        "(; to select, L to launch) — but the signal crawls minutes one-way: your real-time playbook breaks.",
+        "ACT 4 — distance changes everything. A Mars colony needs data, and the deep-space relay " +
+        "is the only road there — but the signal crawls minutes one-way: your real-time playbook breaks.",
     });
   }
   // (2) The FIRST Mars data arrival — fired once the sample freezes (the data arrives OLD by sight).
@@ -2295,10 +2295,23 @@ function seedNetMarsDebugView(): void {
  * goldens are provably untouched. NOT recorded to the SaveGame log (a render seed, not player input).
  */
 function seedNetLiveNetworkDebugView(): void {
-  const t = clock.seconds;
+  const leo = NET_PLANNER_PRESETS.find((p) => p.id === "LEO_SWEEP");
+  // (1) The LIVE NETWORK (world view): the GEO bird up and serving + the polar REGION-1 up on
+  //     the board + the N=4 constellation. We add the act-2 offer DIRECTLY (this is a render
+  //     seed — the scenario's state-gated journey is the golden's job) and sign both, then
+  //     step well past every deploy pipeline with the clock advancing.
+  if (netSession.contractById(ACT2_CONTRACT_ID) === null && leo) {
+    netSession.addContract(
+      offerNetContract(ACT2_CONTRACT_ID, NET_ACT2_REGION, {
+        activeAxes: new Set(["connectivity", "availability"]),
+        slaAvail: ACT2_SLA_AVAIL,
+        trafficClass: "availability",
+        offerWindowS: 1e9,
+        offeredAtS: clock.seconds,
+      }),
+    );
+  }
   const geo = NET_PLANNER_PRESETS.find((p) => p.id === "GEO_PARK") ?? NET_PLANNER_PRESETS[0];
-  const leo = NET_PRESETS.find((p) => p.id === "LEO_SWEEP");
-  // (1) ACT 1 — the parked GEO over REGION-0, then accept it (one served region→sat→ground beam).
   applyNetAction(eph, netSession, netLaunchAction({
     presetId: geo.id,
     semiMajorM: geo.draft.semiMajorM,
@@ -2306,32 +2319,22 @@ function seedNetLiveNetworkDebugView(): void {
     subLonRad: geo.draft.subLonRad,
     count: 1,
   }, clock.tick), DT);
-  netSession.step(eph, t, DT);
-  applyNetAction(eph, netSession, netAcceptAction(ACT1_CONTRACT_ID, clock.tick), DT);
-  // (2) Step until the act2 gate fires (REGION-0 served+paid opens act2 — the scenario emits REGION-1).
-  //     Bounded: state-gated, so a small budget of fixed ticks reaches it deterministically.
-  for (let i = 0; i < 200 && netSession.cursor < 2; i++) netSession.step(eph, t, DT);
-  // (3) ACT 2 — the N=4 LEO_SWEEP constellation as ONE batch (the §3.4 hand-off constellation), then
-  //     accept the availability-axis REGION-1. The beam MIGRATES from the setting sat to the rising
-  //     one each re-solve (the hand-off, drawn). Only if the LEO preset + the act2 contract are live.
-  if (leo !== undefined && netSession.contractById(ACT2_CONTRACT_ID) !== null) {
+  if (leo !== undefined) {
     applyNetAction(eph, netSession, netLaunchAction({
       presetId: leo.id,
-      semiMajorM: leo.semiMajorM,
-      incRad: leo.incRad,
-      subLonRad: leo.subLonRad,
+      semiMajorM: leo.draft.semiMajorM,
+      incRad: leo.draft.incRad,
+      subLonRad: leo.draft.subLonRad,
       count: ACT2_ZERO_GAP_N,
       phaseSpreadRad: (2 * Math.PI) / ACT2_ZERO_GAP_N,
     }, clock.tick), DT);
-    netSession.step(eph, t, DT);
-    applyNetAction(eph, netSession, netAcceptAction(ACT2_CONTRACT_ID, clock.tick), DT);
   }
-  // (4) Enable escalation so the shared-link utilisation grows (the §4.3 congestion colour warms by
-  //     sight). Same flag the act3a beat flips; pure (no physics). Then step a bounded run so the
-  //     constellation holds REGION-1 served, the hand-off plays, and the load aggregates onto sats.
+  applyNetAction(eph, netSession, netAcceptAction(ACT1_CONTRACT_ID, clock.tick), DT);
+  applyNetAction(eph, netSession, netAcceptAction(ACT2_CONTRACT_ID, clock.tick), DT);
   netSession.enableEscalation();
-  for (let i = 0; i < 400; i++) netSession.step(eph, t + i * DT, DT);
-  clock.setTick(clock.tick + 400);
+  const t0 = clock.seconds;
+  for (let i = 1; i < 7200; i++) netSession.step(eph, t0 + i * DT, DT);
+  clock.setTick(clock.tick + 7200);
   netSession.step(eph, clock.seconds, DT);
   log.append({
     tSim: clock.seconds,
