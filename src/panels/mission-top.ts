@@ -416,9 +416,9 @@ export class MissionTop implements PanelHandle {
         const strip = el(
           "div",
           "mission-history",
-          historyRows.map((t) => `${t.label} — ${t.state.toUpperCase()}`).join("  ·  "),
+          historyRows.map((t) => `${t.id} ${t.state.toUpperCase()}`).join("  ·  "),
         );
-        strip.title = "Past tenders. Detail lives in THE PARSE (REVIEW).";
+        strip.title = "Past tenders (contract ids; labels collide across renewals — the id is the identity). Detail lives in THE PARSE (REVIEW).";
         this.tendersHost.appendChild(strip);
       }
       for (const t of liveRows) {
