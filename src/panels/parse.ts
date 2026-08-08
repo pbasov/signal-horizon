@@ -270,6 +270,10 @@ export interface NetReview {
   contracts: NetReviewContract[];
   /** Fleet totals. */
   satCount: number;
+  /** §4.12 — the GROUND TRUTH numbers: serve-share (signed-world lit share; coarse — carried
+   * from the terms' own accums) + the NET FLOW the hour's run wrote (closing vs opening). */
+  serveShare: number;
+  walletFlowEur: number;
   /** Witness flags: what the run demonstrably SHOWED. */
   escalated: boolean;
   reTamed: boolean;
@@ -321,6 +325,24 @@ export function renderNetReview(panel: ParsePanel, v: NetReview): void {
     cg.appendChild(line);
   }
   body.appendChild(cg);
+
+  // §4.12 — THE ONE NUMBER(S) to grind: served share (how often the signed world was lit) +
+  // capex efficiency (each € deployed earned X back). Facts, never verdicts.
+  const one = group("THE ONE NUMBERS");
+  const r1 = el("div", "row");
+  r1.append(el("span", "label", "SERVE UPTIME — tender-seconds lit"));
+  const v1 = el("span", "v" + (v.serveShare >= 0.8 ? " green" : v.serveShare >= 0.5 ? " cyan" : ""));
+  v1.textContent = `${Math.round(v.serveShare * 100)}%`;
+  r1.append(v1);
+  one.appendChild(r1);
+  const r2 = el("div", "row");
+  r2.append(el("span", "label", "NET FLOW — wallet vs opening"));
+    const net = v.walletFlowEur; // the FLOW, honest.
+  const v2 = el("span", "v" + (net > 0 ? " green" : ""));
+  v2.textContent = `${net >= 0 ? "+" : "−"}€${Math.abs(Math.round(net)).toLocaleString("en-US")}`;
+  r2.append(v2);
+  one.appendChild(r2);
+  body.appendChild(one);
 
   // WHAT THE RUN SHOWED — the witnessed concepts (the acts are state, this is the record).
   const wg = group("WHAT THE RUN SHOWED");

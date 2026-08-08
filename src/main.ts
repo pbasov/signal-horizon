@@ -3113,9 +3113,23 @@ function refreshParse(force = false): void {
       netSession.contracts.map((c) => `${c.id}:${c.state}:${Math.round(c.earnedEur)}`).join("|")].join(";");
     if (!force && sig === lastNetParseSig) return;
     lastNetParseSig = sig;
+    // §4.12 — the two numbers: serve-share = Σ served-seconds over Σ ACTIVE sim-seconds of
+    // signalled tenders; capex = the open..now wallet fact: payroll costs are session-start
+    // anchored money spent (opening − balance when net-negative counts as capex+opex spent).
+    // Serve-share (coarse, no schema change): completed contracts ratio = served/term;
+    // actives read the INSTANT served fraction (legible + honest; the long-run history lives
+    // per-row in the account book's "on-air" seconds).
+    const shareParts: number[] = [];
+    for (const c of netSession.contracts) {
+      if (c.state === "completed") shareParts.push(c.termSeconds > 0 ? Math.min(1, c.servedSecondsAccum / c.termSeconds) : 1);
+      else if (c.state === "active") shareParts.push(Math.min(1, c.lastServedFraction));
+    }
+    const serveShare = shareParts.length > 0 ? shareParts.reduce((a, b) => a + b, 0) / shareParts.length : 0;
     renderNetReview(parse, {
       openingEur: NET_OPENING_BALANCE,
       balanceEur: netSession.balance,
+      serveShare,
+      walletFlowEur: netSession.balance - NET_OPENING_BALANCE,
       // NET sim-time is mission-ELAPSED: lastStepS is the session's stepped clock, and it
       // shares the boot ephemeris epoch — so subtract the act-1 emit time (the opener's
       // offeredAtS, the session's own t0) for a legible "how long have I been running".
