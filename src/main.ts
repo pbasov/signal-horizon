@@ -60,7 +60,7 @@ import { BuildSession } from "./sim/m2/session";
 // net/ Act-1 — the connectivity game (design §5/§6). NetSession is the live mutable world
 // (roster + REGION-0 contract + wallet + scenario cursor); applyNetAction is the SHARED
 // applier live + replay use; the world planner gives the truthful consequence preview.
-import { NetSession, NET_RNG_SEED, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
+import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
   NET_PLANNER_PRESETS,
@@ -141,7 +141,7 @@ import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audi
 import { SystemLog } from "./panels/log";
 import { Telemetry } from "./panels/telemetry";
 import { Finance } from "./panels/finance";
-import { ParsePanel } from "./panels/parse";
+import { ParsePanel, renderNetReview } from "./panels/parse";
 import { Contracts } from "./panels/contracts";
 import { FleetPanel } from "./panels/fleet";
 import { StatusStrip } from "./panels/status";
@@ -2997,7 +2997,49 @@ function setWmPreset(i: number): void {
  * view-open) re-renders regardless, so opening the panel always reflects the log.
  */
 let lastParseAppended = -1;
+let lastNetParseSig = "";
+// R3 — the net parse is DERIVED (no log to watch) but still event-shaped: re-render when the
+// "run signature" changes (cursor, wallet bucket, contract count, witness flags). The two
+// callers that open the view pass force — the honest part is the projection is pure.
 function refreshParse(force = false): void {
+  if (netMode) {
+    // NET MODE — renderNetReview off the session snapshot (derived from folded state only).
+    // Signature-gated: the parse rebuilds only when the run record actually changed.
+    const snap = netSession.snapshot();
+    const sig = [snap.scenarioCursor, snap.gateTicks.length, Math.round(netSession.balance), netSession.contracts.length,
+      netSession.sats.length, snap.escalationOn, snap.act3aReTameWitnessed, snap.faultWeathered,
+      netSession.contracts.map((c) => `${c.id}:${c.state}:${Math.round(c.earnedEur)}`).join("|")].join(";");
+    if (!force && sig === lastNetParseSig) return;
+    lastNetParseSig = sig;
+    renderNetReview(parse, {
+      openingEur: NET_OPENING_BALANCE,
+      balanceEur: netSession.balance,
+      // NET sim-time is mission-ELAPSED: lastStepS is the session's stepped clock, and it
+      // shares the boot ephemeris epoch — so subtract the act-1 emit time (the opener's
+      // offeredAtS, the session's own t0) for a legible "how long have I been running".
+      tSim:
+        snap.lastStepS -
+        Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([snap.lastStepS])),
+      act: netSession.cursor,
+      gateTSim: snap.gateTicks.map((g) => g * DT),
+      contracts: netSession.contracts.map((c) => ({
+        id: c.id,
+        label: c.label,
+        state: c.state,
+        payPerSecond: c.payPerSecond,
+        earnedEur: c.earnedEur,
+        servedSeconds: c.servedSecondsAccum,
+        earnedTotalHr: 0,
+      })),
+      satCount: netSession.sats.length,
+      escalated: snap.escalationOn === 1,
+      reTamed: snap.act3aReTameWitnessed === 1,
+      faultsWeathered: snap.faultWeathered,
+      overBuiltSats: snap.wasteLoggedSats,
+      reachedMars: snap.marsSample !== null,
+    });
+    return;
+  }
   if (!force && session.events.appended === lastParseAppended) return;
   lastParseAppended = session.events.appended;
   const ctx: RunContext = {

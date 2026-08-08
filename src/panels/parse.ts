@@ -204,9 +204,10 @@ export class ParsePanel implements PanelHandle {
 
 // --- tiny DOM helpers (the finance.ts/telemetry.ts pattern) -----------------
 
-function el(tag: string, className: string): HTMLElement {
+function el(tag: string, className: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
   node.className = className;
+  if (text !== undefined) node.textContent = text;
   return node;
 }
 
@@ -234,4 +235,102 @@ function setVal(r: HTMLElement, text: string, warmth: Warmth): void {
   const v = r.lastElementChild as HTMLElement;
   v.className = `v ${warmth}`;
   v.textContent = text;
+}
+
+/**
+ * R3 (SD-51 follow-on) — THE NET-MODE PARSE. The REVIEW desktop in net mode shows the
+ * connectivity run-at-rest: legible, honest, DERIVED ENTIRELY from the folded NetSession
+ * snapshot (no new sim state, no event log — replay-identical by construction; §4.12's
+ * "the parse is truthful because it reads the truth layer" holds without a fold change).
+ */
+export interface NetReviewContract {
+  id: string;
+  label: string;
+  state: string;
+  payPerSecond: number;
+  earnedEur: number;
+  servedSeconds: number;
+  earnedTotalHr: number;
+}
+
+export interface NetReview {
+  /** Wallet trajectory anchors. */
+  openingEur: number;
+  balanceEur: number;
+  /** Sim-time the run has covered + the current act (cursor) + gate stamps (sim-seconds). */
+  tSim: number;
+  act: number;
+  gateTSim: number[];
+  /** The per-contract account book. */
+  contracts: NetReviewContract[];
+  /** Fleet totals. */
+  satCount: number;
+  /** Witness flags: what the run demonstrably SHOWED. */
+  escalated: boolean;
+  reTamed: boolean;
+  faultsWeathered: number;
+  overBuiltSats: number;
+  reachedMars: boolean;
+}
+
+export function renderNetReview(panel: ParsePanel, v: NetReview): void {
+  (panel as unknown as { hasRun: boolean }).hasRun = true;
+  const body = (panel as unknown as { body: HTMLElement }).body;
+  body.replaceChildren();
+
+  // THE HEADLINE: the wallet story in one line (opening → now) + how much the hour showed.
+  const hg = group("THE RUN AT REST");
+  const delta = v.balanceEur - v.openingEur;
+  const head = el("div", "parse-note");
+  head.textContent =
+    `Wallet €${v.openingEur.toLocaleString("en-US")} → €${Math.round(v.balanceEur).toLocaleString("en-US")}` +
+    ` (${delta >= 0 ? "+" : "−"}€${Math.abs(Math.round(delta)).toLocaleString("en-US")}) · ` +
+    `${v.satCount} sats · ${Math.floor(v.tSim / 60)}m sim`;
+  hg.appendChild(head);
+  body.appendChild(hg);
+
+  // THE ACT BOOK: every beat with its gate stamp (still-open beats read as in-progress).
+  const ag = group("THE ACTS");
+  const ACTS = ["First light", "Hold a region that moves", "Your own success congests it", "It breaks. Does your network?", "The frontier"];
+  ACTS.forEach((title, i) => {
+    const line = el("div", "row");
+    const gated = v.gateTSim[i] !== undefined;
+    const lab = el("span", "label", `act ${i + 1} · ${title}`);
+    const val = el("span", "v" + (gated ? " green" : i <= v.act ? " cyan" : ""));
+    val.textContent = gated ? `gated ${Math.floor(v.gateTSim[i] / 60)}:${String(Math.floor(v.gateTSim[i] % 60)).padStart(2, "0")}` : i <= v.act ? "live" : "—";
+    line.append(lab, val);
+    ag.appendChild(line);
+  });
+  body.appendChild(ag);
+
+  // THE ACCOUNT BOOK: per-contract pay / earned / time-on-air.
+  const cg = group("THE ACCOUNT BOOK");
+  if (v.contracts.length === 0) cg.appendChild(el("div", "parse-note", "No tenders seen yet."));
+  for (const c of v.contracts) {
+    const line = el("div", "row");
+    const lab = el("span", "label", `${c.id} · ${c.state}`);
+    const val = el("span", "v" + (c.earnedEur >= 0 ? " green" : " red"));
+    val.textContent = `€${Math.round(c.earnedEur).toLocaleString("en-US")} · €${c.payPerSecond.toFixed(1)}/s · ${Math.round(c.servedSeconds)}s on-air`;
+    line.append(lab, val);
+    line.title = c.label;
+    cg.appendChild(line);
+  }
+  body.appendChild(cg);
+
+  // WHAT THE RUN SHOWED — the witnessed concepts (the acts are state, this is the record).
+  const wg = group("WHAT THE RUN SHOWED");
+  const witness = (text: string, on: boolean | number) => {
+    const line = el("div", "row");
+    const lab = el("span", "label", text);
+    const val = el("span", "v" + (on ? " green" : ""));
+    val.textContent = typeof on === "number" ? (on > 0 ? `×${on}` : "—") : on ? "yes" : "—";
+    line.append(lab, val);
+    wg.appendChild(line);
+  };
+  witness("Demand grew where you served (escalation)", v.escalated);
+  witness("You re-engineered under strain (re-tame)", v.reTamed);
+  witness("Faults weathered, service held", v.faultsWeathered);
+  witness("Sats built past the measured need (idle capex)", v.overBuiltSats);
+  witness("Reached the frontier (the Mars relay is out there)", v.reachedMars);
+  body.appendChild(wg);
 }

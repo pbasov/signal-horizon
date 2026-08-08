@@ -122,17 +122,16 @@ export const NET_PRESET_SPECS: PresetSpec[] = [
     ],
   },
   {
-    // REVIEW (key 2) — the at-rest reading room: the full-height WIRE beside the finance
-    // ledger and the fleet strip. No loop beat REQUIRES this desktop; it is the parse's
-    // future home.
+    // REVIEW (key 2) — the at-rest reading room: THE PARSE wide on the left beside the WIRE + the
+    // finance ledger (the §4.12 record where it belongs). Was "the parse's future home"; homed, R3.
     name: "REVIEW",
     columns: [
-      { weight: 0.55, rows: [{ weight: 1, host: "system-log" }] },
+      { weight: 0.5, rows: [{ weight: 1, host: "parse" }] },
       {
-        weight: 0.45,
+        weight: 0.5,
         rows: [
+          { weight: 1.0, host: "system-log" },
           { weight: 1.0, host: "finance" },
-          { weight: 1.0, host: "ledger-fleet" },
         ],
       },
     ],
