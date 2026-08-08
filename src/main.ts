@@ -2903,6 +2903,11 @@ function ledgerFleetState(): LedgerFleetState {
         sats: netSession.sats.map((x) => ({ id: x.id, aKm: Math.round((x.orbit.aM - A1_BODY_RADIUS_M) / 1000) })),
         balance: Math.round(netSession.balance),
         contracts: netSession.contracts.map((c) => ({ id: c.id, state: c.state, avail: c.lastAvailability, servedFrac: c.lastServedFraction })),
+        // Mission-ELAPSED sim-seconds (the scene scheduler keys off THIS, not wall time —
+        // at 1000× wall time is meaningless). Same t0 shift the parse uses.
+        tSim:
+          netSession.snapshot().lastStepS -
+          Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([netSession.snapshot().lastStepS])),
       }
     : null;
 (window as unknown as Record<string, unknown>).__launchTheatre = () => ({

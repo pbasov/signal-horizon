@@ -9,7 +9,9 @@ await page.evaluate(() => document.querySelector("[data-net=pad-toggle]")?.click
 await page.waitForTimeout(200);
 await page.evaluate(() => { const i = document.querySelector("[data-net=param-subLonDeg]"); i.value = "0"; i.dispatchEvent(new Event("change", { bubbles: true })); });
 await page.evaluate(() => document.querySelector("[data-net=arm]")?.click());
+await page.waitForTimeout(250);
 await page.evaluate(() => document.querySelector("[data-net=launch]")?.click());
+await page.waitForTimeout(250);
 for (let i = 0; i < 6; i++) await page.keyboard.press(".");
 await page.waitForTimeout(2000);
 await page.evaluate(() => document.querySelector("[data-net=accept]")?.click());
@@ -37,6 +39,8 @@ await page.evaluate(() => { const b = [...document.querySelectorAll("[data-net=a
 for (let i = 0; i < 40; i++) {
   const s = await st();
   const c1 = s?.contracts.find(c => c.id === "REGION-1");
+  const probe = await page.evaluate(() => window.__regionProbe?.("REGION-1"));
+  if (i % 5 === 0) console.log("probe", JSON.stringify(probe));
   if (i % 5 === 0) console.log(`avail=${c1?.avail?.toFixed?.(2)} frac=${c1?.servedFrac?.toFixed?.(2)} state=${c1?.state} cursor=${s?.cursor}`);
   if (s?.cursor >= 2) { console.log("GATE-2!"); break; }
   await page.waitForTimeout(400);

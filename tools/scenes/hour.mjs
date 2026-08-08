@@ -43,7 +43,19 @@ export default {
     await ctx.click("[data-net=accept]");
     const g1 = await untilState(ctx, "gate-1", (s) => s.cursor >= 1, 30000);
     ctx.ok("ACT-1 GATE: first light served + earning", g1 !== null, g1 ? `cursor ${g1.cursor}` : "timeout");
-    await ctx.shot("act1-done");
+
+
+    // ── The sustaining loop: sign the REGION-0 renewal once it is offered (the hour's real
+    // economy move — and the act-3a squeeze's fuel: the GEO BROADCAST pipe stays loaded). ──
+    const renew = await untilState(ctx, "renewal-offered", (s) => s.contracts.some((c) => c.id === "REGION-0+R1" && c.state === "offered"), 90000);
+    ctx.ok("REGION-0's renewal appears when its term completes", renew !== null, renew ? "REGION-0+R1 offered" : "timeout");
+    if (renew) {
+      await ctx.eval(() => {
+        const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-0+R1");
+        b?.click();
+      });
+      await ctx.settle(300);
+    }
 
     // ══ ACT 2 — hold the polar metro: a CONSTELLATION, attrition and all ═════
     // The polar metro is offered (availability active). Sign it, then launch the set.
@@ -84,7 +96,7 @@ export default {
     // typed fields): set the draft to the same LEO sweep and count 4.
     await ctx.click("[data-net=pad-toggle]");
     await ctx.settle();
-    await ctx.setParam("altKm", 150);
+    await ctx.setParam("altKm", 310);
     await ctx.setParam("incDeg", 90);
     await ctx.setParam("subLonDeg", 45);
     await ctx.eval(() => {
@@ -112,6 +124,29 @@ export default {
       b?.click();
     });
 
+    // The honest act-2 LOOP: check held-ness (rolling avail vs the 99% bar); while a gap
+    // exists, add TWO more polar sats (phase-spread 180°) — the attrition holes are the
+    // point of the act; the player answers with more iron. The parse records the overbuild.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const held = await ctx.eval(() => window.__regionProbe?.("REGION-1"));
+      if (held && held.state === "active" && held.rollAvail >= 0.99) break;
+      ctx.eval(() => {
+        const minus = document.querySelector("[data-net=count-minus]");
+        const cur = document.querySelector(".mission-count")?.textContent ?? "4";
+        for (let i = Number(cur); i > 2; i--) minus?.click();
+      }).catch(() => {});
+      await ctx.setParam("phaseSpreadDeg", 180);
+      await ctx.setParam("subLonDeg", 45 + attempt * 47); // walk the in-plane anchor
+      await ctx.settle(300);
+      await ctx.click("[data-net=arm]");
+      await ctx.settle(200);
+      await ctx.click("[data-net=launch]");
+      await ctx.settle(2500); // deploys land
+      await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
+      await ctx.settle(300);
+    }
+    await ctx.settle(3000); // let the rolling window fill
+
     // Hold: REGION-1's rolling availability must gear up to the bar; the act-2 gate is the
     // honest proof (constellation + fill hold it through a full hand-off cycle).
     const g2 = await untilState(ctx, "gate-2", (s) => s.cursor >= 2, 120000, 400);
@@ -128,7 +163,7 @@ export default {
       ctx.ok("act-3a offers the corridor + backhaul", board.includes("REGION-2") || board.includes("corridor"), board.slice(0, 120));
 
       // The corridor constellation: 3× equatorial LEOs, ACCESS-S fitted, evenly spread.
-      await ctx.setParam("altKm", 150);
+      await ctx.setParam("altKm", 310);
       await ctx.setParam("incDeg", 0);
       await ctx.setParam("subLonDeg", 1.5);
       // Fit ACCESS-S into G1 (the FIT assist does it: latency tender ⇒ spot beam).
@@ -188,7 +223,7 @@ export default {
         b?.click();
       });
       await ctx.click("[data-net=fit]"); // BROADCAST fit for the connectivity target
-      await ctx.setParam("altKm", 150);
+      await ctx.setParam("altKm", 310);
       await ctx.setParam("incDeg", 0);
       await ctx.setParam("subLonDeg", -2);
       await ctx.settle(300);
