@@ -50,6 +50,8 @@ function blackoutVerdict(h: BlackoutHandling): { text: string; warmth: Warmth } 
 export class ParsePanel implements PanelHandle {
   readonly title = "THE PARSE";
   readonly content: HTMLElement;
+  /** Net mode: the parse reads the connectivity run (no cache efficiency line). */
+  netMode = false;
 
   /** The mounted record (rebuilt on each render); null shows the placeholder. */
   private body: HTMLElement;
@@ -198,6 +200,8 @@ export class ParsePanel implements PanelHandle {
   }
 
   subtitle(): string {
+    // R3 — net mode renders THE RUN AT REST (no cache efficiency metric); the subtitle says so.
+    if (this.netMode) return "RUN AT REST";
     return this.hasRun ? `· EFF ${Math.round(this.efficiency * 100)}%` : "· AT REST";
   }
 }
@@ -257,7 +261,8 @@ export interface NetReview {
   /** Wallet trajectory anchors. */
   openingEur: number;
   balanceEur: number;
-  /** Sim-time the run has covered + the current act (cursor) + gate stamps (sim-seconds). */
+  /** Mission-ELAPSED seconds (post the act-1 emit) + the current act (cursor) +
+   * gate stamps AS MISSION-ELAPSED seconds (already t0-shifted by the caller). */
   tSim: number;
   act: number;
   gateTSim: number[];

@@ -2549,6 +2549,7 @@ const finance = new Finance(netMode);
 // no sim state; refreshParse() folds the truthful event log into a RunParse and
 // hands it over whenever the player opens the PARSE view (preset 6 / key G).
 const parse = new ParsePanel();
+parse.netMode = netMode;
 // M2d — THE CONTRACTS BOARD (GDD §4.9 / §3): the coverage-revenue loop made glanceable.
 // Holds no sim state; main.ts hands it a per-frame ContractsRenderState projected from
 // the live BuildSession (offers + active served% + the earn).
@@ -3048,7 +3049,9 @@ function refreshParse(force = false): void {
         snap.lastStepS -
         Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([snap.lastStepS])),
       act: netSession.cursor,
-      gateTSim: snap.gateTicks.map((g) => g * DT),
+      gateTSim: snap.gateTicks.map(
+        (g) => g * DT - Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([snap.lastStepS])),
+      ),
       contracts: netSession.contracts.map((c) => ({
         id: c.id,
         label: c.label,
