@@ -2895,6 +2895,16 @@ function ledgerFleetState(): LedgerFleetState {
 (window as unknown as Record<string, unknown>).__dragOrbitProbe = (x: number, y: number) =>
   orrery.__dragOrbitProbe(x, y);
 // FL-14 — probe the LIVE multi-arc pool + deploy pops (scripted verification).
+// Playtest scenes — coarse live net state for scripted playthroughs (read-only).
+(window as unknown as Record<string, unknown>).__netState = () =>
+  netMode
+    ? {
+        cursor: netSession.cursor,
+        sats: netSession.sats.map((x) => ({ id: x.id, aKm: Math.round((x.orbit.aM - A1_BODY_RADIUS_M) / 1000) })),
+        balance: Math.round(netSession.balance),
+        contracts: netSession.contracts.map((c) => ({ id: c.id, state: c.state, avail: c.lastAvailability, servedFrac: c.lastServedFraction })),
+      }
+    : null;
 (window as unknown as Record<string, unknown>).__launchTheatre = () => ({
   // pending events with arcs in flight (each should pool its own line now),
   events: netMode ? netSession.launchEvents.map((ev) => ({ id: ev.id, members: ev.members.map((m) => m.outcome) })) : [],
