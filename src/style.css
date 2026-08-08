@@ -1167,3 +1167,33 @@ body {
   margin-bottom: 3px;
   letter-spacing: 0.04em;
 }
+
+/* ---- the boot sequence (once per session, §8 retro-OS beat) -------------------- */
+.boot-seq {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 320ms linear;
+}
+.boot-seq.done { opacity: 0; pointer-events: none; }
+.boot-box {
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  background-image: var(--dither-dense);
+  padding: 18px 24px 16px;
+  min-width: 460px;
+  max-width: 620px;
+}
+.boot-title {
+  color: var(--fg);
+  font-size: var(--ts-head);
+  font-weight: 700;
+  letter-spacing: 0.22em;
+}
+.boot-sub { color: var(--fg-dim); font-size: var(--ts-cap); letter-spacing: 0.2em; margin: 4px 0 12px; }
+.boot-log { font-size: var(--ts-ui); line-height: 1.5; min-height: 3.8em; }
+.boot-line { color: var(--cyan); }

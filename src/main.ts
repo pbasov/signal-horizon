@@ -62,6 +62,7 @@ import { BuildSession } from "./sim/m2/session";
 // applier live + replay use; the world planner gives the truthful consequence preview.
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
 import { checkpointNet } from "./sim/net/persist";
+import { runBootSequence } from "./panels/boot";
 import { saveToVault, readVault } from "./vault";
 import { netStateHash } from "./sim/net/canon";
 import { applyNetAction } from "./sim/net/apply-action";
@@ -1292,6 +1293,9 @@ const netCountdownBucket = new Map<string, number>();
  * one-shot "FAILED — sat lost" line fires once on the drop edge (the warned hard failure). */
 const netDroppedSeen = new Set<string>();
 /** The cadence (sim-seconds) the live telegraphed countdown re-surfaces at as it ticks down. */
+// X-05 — tender-lapse edge tracker (state transitions read by the frame; sim untouched).
+const tenderLapseState = new Map<string, string>();
+
 const NET_COUNTDOWN_BUCKET_S = 5;
 function drainNetFaultLog(): void {
   if (!netMode || !netSession.faultsEnabled) return;
@@ -3167,6 +3171,12 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
   shell.setFocus("orrery");
 }
 
+// X-05 — the boot sequence (once per session; never in the debug screenshots paths — those
+// boot fast and silent for the shot).
+if (!netDebugView && !netLiveDebugView) {
+  runBootSequence(app, { version: "NET FLIGHTSOFT rev FIRST-LIGHT", seed: String(NET_RNG_SEED) });
+}
+
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
 tickSim(clock.seconds);
 
@@ -3613,6 +3623,24 @@ function frame(now: number): void {
   if (shell.visibleHosts().includes("parse")) refreshParse();
   // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
   m = perfMark("netSlices", m);
+  // X-05 — tender lapses are an edge event (the board owes you the word the offer window
+  // closed): state transition offered→{failed|lapsed}, once per id.
+  if (netMode) {
+    for (const c of netSession.contracts) {
+      const wasIntent = tenderLapseState.get(c.id);
+      if (wasIntent === "offered" && c.state === "failed") {
+        log.append({
+          tSim: t,
+          sev: "info",
+          entity: "MARKET",
+          value: c.id,
+          msg: `${c.label} — the offer window closed unsigned; the market moved on`,
+        });
+        netAudio.play("tender_lapsed");
+      }
+      tenderLapseState.set(c.id, c.state);
+    }
+  }
   orrery.setReadout(deriveReadout(fs));
   orrery.update(wallDt);
   m = perfMark("orrery", m);
