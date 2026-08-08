@@ -58,6 +58,26 @@ describe("R1 — copy lint: goals, never instructions", () => {
   }
 });
 
+/** Sim files whose strings can reach the player (the scenario's fallback SHORTFALL
+ * messages render on the MISSION book face). The copy law applies there too — and they must
+ * never leak internal API names (\bnet_*  means the sim's wire format is talking to the player). */
+const SIM_FILES = ["../sim/net/scenario.ts"];
+const SIM_BANNED: { name: string; re: RegExp }[] = [
+  ...BANNED,
+  { name: "internal API name in player-facing copy", re: /`[^`]*\bnet_[a-z]/ },
+];
+
+for (const f of SIM_FILES) {
+  it(`${f} shortfall copy stays lawful (no instructions / no API names)`, () => {
+    const src = readFileSync(join(here, f), "utf8");
+    const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    for (const b of SIM_BANNED) {
+      const m = noComments.match(b.re);
+      expect(m === null ? "" : `${f}: banned pattern \"${b.name}\" near \"${m![0].slice(0, 60)}\"`).toBe("");
+    }
+  });
+}
+
 // ── FL-02 — the TOKENS-ONLY chrome law (GDD §8 / DD-1): panels never hardcode a hex
 // colour; tone lives in style.css custom properties (--cyan, --amber, …). The allowlist
 // below is the day-one baseline of pre-existing violations — FL-15a shrinks it to EMPTY;

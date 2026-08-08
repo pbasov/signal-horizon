@@ -63,6 +63,10 @@ export interface MissionTopState {
   padFact: string | null;
   /** FL-10 — the honest launch-risk line (null while failures are dark: act 1 + maiden). */
   riskBand: string | null;
+  /** R3 — the live SCENARIO FALLBACK (the stuck-assist): a fact-shortfall string surfaced by
+   * the current beat while the player is stuck (null = nothing to assist). Lives on the BOOK
+   * face, right under the objective — the formerly homeless assist strings. */
+  shortfall: string | null;
 }
 
 export interface MissionTopActions {
@@ -155,6 +159,7 @@ export class MissionTop implements PanelHandle {
   private readonly bookFace: HTMLElement;
   private readonly vObjTitle: HTMLElement;
   private readonly vObjDetail: HTMLElement;
+  private readonly vShortfall: HTMLElement;
   private readonly tendersHost: HTMLElement;
   private tenderSig = "";
   private tenderEls = new Map<string, { state: HTMLElement; served: HTMLElement; facts: HTMLElement; bet: HTMLElement }>();
@@ -200,6 +205,10 @@ export class MissionTop implements PanelHandle {
     this.vObjTitle = el("div", "net-obj-title", "");
     this.vObjDetail = el("div", "net-obj-detail", "");
     objGroup.append(this.vObjTitle, this.vObjDetail);
+    // R3 — the SHORTFALL line: the stuck-assist (facts that name the shortfall, LAW 1/2),
+    // right under the objective where a stuck player is already looking.
+    this.vShortfall = el("div", "mission-shortfall", "");
+    objGroup.appendChild(this.vShortfall);
     this.tendersHost = el("div", "group mission-tenders");
     this.bookFace.append(objGroup, this.tendersHost);
     this.content.appendChild(this.bookFace);
@@ -389,6 +398,8 @@ export class MissionTop implements PanelHandle {
     const obj = MISSION_OBJECTIVES[Math.max(0, Math.min(s.act, MISSION_OBJECTIVES.length - 1))];
     this.vObjTitle.textContent = obj.title;
     this.vObjDetail.textContent = obj.detail;
+    this.vShortfall.textContent = s.shortfall ?? "";
+    this.vShortfall.style.display = s.shortfall ? "" : "none";
 
     // Rebuild tender rows only on a signature change; refresh live numbers in place.
     const sig = s.tenders.map((t) => `${t.id}:${t.state}:${t.terms}`).join("|");

@@ -2761,6 +2761,8 @@ function missionTopState(): MissionTopState {
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
     padFact: r1PadFact(),
+    // R3 — the scenario's stuck-assist now has a MISSION surface (book face, under the objective).
+    shortfall: netSession.currentShortfall(t)?.message ?? null,
     // FL-10 — the honest risk band (null while failures are dark; rates from the ONE set of
     // constants the session rolls against).
     riskBand: (() => {

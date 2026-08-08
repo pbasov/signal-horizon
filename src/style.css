@@ -1144,3 +1144,15 @@ body {
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* R3 — the MISSION-book shortfall line: the stuck-assist, set apart from the objective
+   detail by a left rule (a position channel; amber is signal, not chrome). */
+.mission-shortfall {
+  color: var(--amber);
+  font-size: var(--ts-cap);
+  line-height: 1.35;
+  margin-top: 3px;
+  border-left: 2px solid var(--amber);
+  padding-left: 5px;
+}
+.mission-shortfall:empty { display: none; }

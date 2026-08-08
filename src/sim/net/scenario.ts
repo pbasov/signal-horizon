@@ -289,7 +289,9 @@ const ACT1: Beat = {
     if (!idledOut && !wrongOrbit) return null;
     return {
       subjectId: c.id,
-      message: `footprint does not reach ${c.label}; try the GEO PARK preset`,
+      message:
+        `${c.label} sits dark — the draft's footprint does not reach it. ` +
+        `A parked GEO above the region holds the light all day; a LEO only visits.`,
       suggestPresetId: "GEO_PARK",
     };
   },
@@ -361,10 +363,10 @@ const ACT2: Beat = {
     return {
       subjectId: c.id,
       message:
-        `${c.label}: a single satellite cannot HOLD this region — it MOVES and sets each ` +
-        `pass, so availability sawtooths below the ${(c.slaAvail * 100).toFixed(0)}% bar. ` +
-        `Coverage requires a CONSTELLATION — sats phased so one rises as another sets. ` +
-        `You have ${have}; place ~${ACT2_ZERO_GAP_N} evenly-phased LEOs (spread their phase / add one).`,
+        `${c.label} moves — one satellite VISITS, never HOLDS it: its passes rise and set, ` +
+        `and the availability bar is ${(c.slaAvail * 100).toFixed(0)}%, so a lone bird sawtooths below it. ` +
+        `Only a phased constellation holds a moving region (one rises as another sets). ` +
+        `Yours today: ${have} sats; the pad's phasing ladder reads how many the geometry wants.`,
       suggestPresetId: "LEO_SWEEP",
     };
   },
@@ -454,10 +456,9 @@ const ACT3A: Beat = {
     return {
       subjectId: c.id,
       message:
-        `${c.label}: the shared link${satId !== null ? ` via ${satId}` : ""} carries combined ` +
-        `load ${carried.toFixed(2)} — its peak exceeds capacity, so a comfortable contract dips ` +
-        `near-breach. Add a PARALLEL PATH (a second equatorial LEO) or set net_set_prefer(bw) on ` +
-        `${c.label} to route it around the congested sat.`,
+        `${c.label} shares one pipe${satId !== null ? ` via ${satId}` : ""} carrying combined ` +
+        `load ${carried.toFixed(2)} — peaks cross capacity, so a comfortable contract dips toward ` +
+        `breach. A parallel path on its own orbit, or a spread route-bias, is the durable split.`,
       suggestPresetId: "LEO_SWEEP",
     };
   },
@@ -540,8 +541,8 @@ const ACT3B: Beat = {
       subjectId: sf?.subjectId ?? sat,
       message:
         sf?.message ??
-        `${sat} is faulting (${faults[0].cause}) — a single fault must not drop a served region. ` +
-          `Add a redundant/phased path so the network weathers it.`,
+        `${sat} is faulting (${faults[0].cause}) — one bird down drops every region it alone carried. ` +
+          `A network that keeps serving through it has a second path for everything it touches.`,
       suggestPresetId: "LEO_SWEEP",
     };
   },
