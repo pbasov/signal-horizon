@@ -321,6 +321,9 @@ export interface NetRenderState {
     orbitRing: Vec3[];
     /** Every batch member's park position at commit (N markers; a 0° spread stacks them). */
     memberPosM: Vec3[];
+    /** FL-UX DRAFT-BATCH — one surface blob per member (the sweep-band the comb only shows
+     * in time). nadir surface point + cap radius each. */
+    memberBlobs: { centerPosM: Vec3; radiusRad: number }[];
     /** The draft sat's CURRENT position on that ring (the phase marker — moves as PHASE changes), an
      * earth-relative world point. Null until a draft exists. */
     satPosM: Vec3 | null;
@@ -846,10 +849,16 @@ export class Orrery {
    * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
   private netFootprintMeshes: THREE.Mesh[] = [];
   private netFocusBlob?: THREE.Mesh;
+  private netMemberBlobs: THREE.Mesh[] = [];
 
   /** FL-UX probe: is the click-inspect blob drawn right now (its mesh's live visibility). */
   netBlobVisibility(): boolean {
     return this.netFocusBlob?.visible ?? false;
+  }
+
+  /** FL-UX probe: how many DRAFT-BATCH blobs are on-screen right now. */
+  netMemberBlobCount(): number {
+    return this.netMemberBlobs.filter((m) => m.visible).length;
   }
   /** Latest net render slice (region + footprints + availability), set per-frame by main.ts. */
   private netState: NetRenderState | null = null;
@@ -1110,6 +1119,16 @@ export class Orrery {
     this.netFocusBlob.visible = false;
     this.netFocusBlob.renderOrder = 6.7;
     this.scene.add(this.netFocusBlob);
+    // FL-UX — DRAFT-BATCH blobs: one DIM hugging patch per batch member (≤6 covers the max).
+    this.netMemberBlobs = [];
+    for (let i = 0; i < 6; i++) {
+      const m = this.buildSurfaceDisc([0.38, 0.75, 0.9]);
+      m.visible = false;
+      m.renderOrder = 6.55 + i * 0.01;
+      (m.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.22;
+      this.scene.add(m);
+      this.netMemberBlobs.push(m);
+    }
 
     // R2e (SD-45) — GROUND SITES: dish glyphs for the comms ground stations (violet-cyan)
     // and a warm triangle-read halo for the launch pad, each with a DOM label.
@@ -2193,8 +2212,28 @@ export class Orrery {
     } else if (ring) {
       ring.visible = false;
     }
-    // Batch member park markers (SD-45): visible while the pad is open.
+    // Batch member park markers (SD-45) + per-member coverage blobs (UX): the BATCH's
+    // coverage answer on the globe — each member's hugging blob shows where it actually
+    // lights, dimmer than the clicked-sat blob; disappears with the pad.
     const members = draft?.memberPosM ?? [];
+    {
+      const blobs = draft?.memberBlobs ?? [];
+      const body = this.netState?.body ?? null;
+      if (body && draft) {
+        const bodySceneR = this.netBodySceneRadius(body, focusAbs);
+        for (let i = 0; i < this.netMemberBlobs.length; i++) {
+          const m0 = this.netMemberBlobs[i];
+          if (i < blobs.length) {
+            this.orientSurfaceDisc(m0, blobs[i].centerPosM, body.centerPosM, bodySceneR, blobs[i].radiusRad, focusAbs, 1.3 + i * 0.02);
+            m0.visible = true;
+          } else {
+            m0.visible = false;
+          }
+        }
+      } else {
+        for (const m0 of this.netMemberBlobs) m0.visible = false;
+      }
+    }
     for (let i = 0; i < this.netDraftMembers.length; i++) {
       const mm = this.netDraftMembers[i];
       if (i < members.length && draft) {

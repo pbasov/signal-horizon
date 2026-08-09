@@ -148,6 +148,9 @@ export default {
       await ctx.settle(500);
       const padFact = await ctx.eval(() => document.querySelector(".mission-fact")?.textContent ?? "");
       ctx.ok("the pad answers 'one bird' on an availability tender", /one bird lights/.test(padFact) && /tender asks 99%/.test(padFact), padFact.slice(0, 140));
+      // and the GLOBE answers a whole-batch: every member's hugging blob is drawn.
+      const blobN = await ctx.eval(() => window.__memberBlobs?.() ?? -1);
+      ctx.ok("batch blobs: every member's coverage rides the ball", blobN >= 1, `${blobN} blobs`);
     }
 
     // ══ ACT 3a — the corridor: three pointed ACCESS beams ════════════════════

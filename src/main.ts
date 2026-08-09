@@ -1643,10 +1643,24 @@ function netDraftSlice(
   // at commit — a 0°-spread batch reads as N stacked markers (the €74k lesson, visible
   // before the money is spent); an even spread reads as a necklace.
   const memberPosM: Vec3[] = [];
+  const memberBlobs: { centerPosM: Vec3; radiusRad: number }[] = [];
+  // per-member blob radius = the FIT's honest footprint at this orbit (the draft's antennas).
+  const effCards2 = r1Cards.length > 0 ? r1Cards : [...DEFAULT_LOADOUT_CARD_IDS];
+  const memberLoadout = resolveLoadout(effCards2, NET_REF_LINK_DISTANCE_M);
   for (let i = 0; i < Math.max(1, netDraft.count); i++) {
     const m = draftToSat(netDraft, t, `PREVIEW-${i}`);
     m.orbit.m0Rad += i * (netDraft.count > 1 ? r1PhaseSpreadRad : 0);
-    memberPosM.push(add(solveOrbit(m.orbit, t)));
+    const rel = solveOrbit(m.orbit, t);
+    memberPosM.push(add(rel));
+    // The blob's surface point: the member's nadir on the toy body. (Honest geometry — the
+    // member is ∠i shifted in-plane; its flat tangent radius carries down from the sim's own
+    // footprint math.)
+    const len = Math.hypot(rel[0], rel[1], rel[2]) || 1;
+    const k = A1_BODY_RADIUS_M / len;
+    memberBlobs.push({
+      centerPosM: add([rel[0] * k, rel[1] * k, rel[2] * k]),
+      radiusRad: footprintRadiusRad(memberLoadout, len - A1_BODY_RADIUS_M),
+    });
   }
   const footprint =
     r > 0
@@ -1700,7 +1714,7 @@ function netDraftSlice(
       `DRAFT — €${Math.round(preview.costEur).toLocaleString("en-US")}${netDraft.count > 1 ? ` ×${netDraft.count}` : ""} · period ${Math.round(periodS)}s · ${serve}`,
     );
   }
-  return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM, altM: netDraft.semiMajorM - A1_BODY_RADIUS_M };
+  return { footprint, groundTrack, gap, orbitRing, satPosM, memberPosM, memberBlobs, altM: netDraft.semiMajorM - A1_BODY_RADIUS_M };
 }
 
 /**
@@ -2967,6 +2981,7 @@ function ledgerFleetState(): LedgerFleetState {
 (window as unknown as Record<string, unknown>).__satScreenPos = (id: string) => orrery.assetScreenPos(id);
 (window as any).__blobs = () => orrery.netBlobVisibility?.() ?? null;
 (window as any).__pickCands = () => orrery.pickCands();
+(window as any).__memberBlobs = () => orrery.netMemberBlobCount();
 // FL-14 — probe the LIVE multi-arc pool + deploy pops (scripted verification).
 // Playtest scenes — coarse live net state for scripted playthroughs (read-only).
 (window as unknown as Record<string, unknown>).__netState = () =>
