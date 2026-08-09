@@ -32,6 +32,15 @@ export default {
     const shortfallAtBoot = await ctx.eval(() => (document.querySelector(".mission-shortfall")?.textContent ?? "").trim());
     ctx.ok("no stuck-assist at cold boot (epoch bug stays dead)", shortfallAtBoot === "", shortfallAtBoot || "clean");
 
+    // THE self-reference guard: the chrome must be dark (one collapsed sweep turned --bg into
+    // var(--bg) once and the whole interior went white; "white UX is insane" must never return).
+    const chrome = await ctx.eval(() => ({
+      bgVar: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(),
+      panelBg: (() => { const p = document.querySelector(".mission-top"); return p ? getComputedStyle(p).backgroundColor : null; })(),
+      topbarBg: (() => { const t = document.querySelector(".topbar"); return t ? getComputedStyle(t).backgroundColor : null; })(),
+    }));
+    ctx.ok("chrome is near-black (the --bg token resolves, panels paint)", chrome.bgVar === "#0b0b12" && (chrome.panelBg === "rgb(11, 11, 18)" || chrome.topbarBg === "rgb(11, 11, 18)"), JSON.stringify(chrome));
+
     const wallet = await ctx.eval(() => document.querySelector(".lf-wallet")?.textContent ?? "");
     ctx.ok("wallet shows the retuned ante", wallet.includes("75,000"), wallet);
 

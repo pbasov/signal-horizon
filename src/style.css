@@ -7,7 +7,7 @@
 
 :root {
   /* --- chrome (monochrome) --- */
-  --bg: var(--bg);          /* cool blue-black, never dead black */
+  --bg: #0b0b12; /* cool blue-black, never dead black */
   --bg-2: #0e0e17;
   --fg: #ececf3;          /* near-white */
   --fg-dim: #9a9aa6;
