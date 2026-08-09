@@ -218,7 +218,7 @@ const replay = (sg: ReturnType<typeof saveGame>): ReplayResult => replayCanon(sg
 // renewals INHERIT the diurnal phase (the squeeze stays phase-anchored); the canon gains the
 // REGION-0+R1 accept (the witness rides the renewal generation). Gates fire at the SAME ticks.
 // Canon is extracted to sim/net/canon.ts; canon-balance.test.ts pins the wallet trajectory.
-const NET_REPLAY_GOLDEN = 17948230282099181132n;
+const NET_REPLAY_GOLDEN = 12755391225096450261n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {

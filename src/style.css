@@ -1221,3 +1221,7 @@ html.cvd-mono .mission-tender-state.active { color: var(--fg-dim); }
    hair of contrast. (Cheap + honest: the signal layer's meaning is shape/dither/position by
    design — desaturation never destroys information.) */
 html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
+
+/* UX — the next-act preview line (dim, unnamed mechanics: a name only). */
+.mission-next { color: var(--grey); font-size: var(--ts-cap); letter-spacing: 0.1em; margin-top: 2px; }
+.mission-next:empty { display: none; }

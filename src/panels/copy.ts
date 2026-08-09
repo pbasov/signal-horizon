@@ -93,3 +93,8 @@ export const NET_ACT_BEAT: readonly string[] = [
   "the first failure is out there counting down — what survives is what you shaped",
   "Mars is asking — light takes minutes each way; the frontier doesn't do 'now'",
 ];
+
+/** UX polish — the "can one bird do it" pad fact (availability tenders only): the comb's
+ * duty number in plain words. A fact, never a verdict. */
+export const PAD_AVAIL_FACT = (dutyPct: string, barPct: string): string =>
+  `one bird lights it ${dutyPct}% of the time — the tender asks ${barPct}%`;

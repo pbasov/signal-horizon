@@ -240,6 +240,11 @@ export interface NetRenderState {
     /** Angular radius of the footprint disc (radians). */
     radiusRad: number;
   }[];
+  /** FL-UX — the CLICK-INSPECT blob: when the player has clicked a net sat, its coverage blo
+   * rendered against the ball (a bent surface patch, not a plate): for BROADCAST, the nadir
+   * horizon cap; for a pointed spot-beam, a cap over the AIMED region only (honest: a beam
+   * pointed nowhere covers nothing). */
+  focusBlob: { centerPosM: Vec3; radiusRad: number } | null;
   /**
    * Act-2 — the AVAILABILITY SAWTOOTH meter (design §4.4 axis-2 / §6). The rolling held-
    * fraction over the trailing hand-off window vs the SLA bar, plus a short render-only ring
@@ -499,6 +504,24 @@ const NET_DRAFT_RING_SAMPLES = 96;
 const SAT_RING_SAMPLES = 96;
 /** Max launched-sat orbit rings drawn at once (a pool; the roster sat count is small). */
 const MAX_SAT_RINGS = 24;
+
+// SURFACE-CAP VERTEX (the FL-UX surface-hug): the still-flat unit disc gets pulled DOWN
+// toward the sphere — position.xy is the plate's unit radius; z bends by (1−cos(ρ)) in
+// plate-local units so the rim lands ON the ball, not on paper over it.
+const VERT_BENT = /* glsl */ `
+  uniform float uRadiusRad; // the cap's surface angular radius (radians)
+  uniform float uBend;      // 0 = flat plate, 1 = hug
+  out vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec3 pos = position;
+    float d = length(position.xy);
+    float rho = d * uRadiusRad;
+    float sag = (1.0 - cos(rho)) / max(1e-5, sin(uRadiusRad));
+    pos.z -= uBend * sag;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
 
 const VERT = /* glsl */ `
   out vec2 vUv;
@@ -822,6 +845,12 @@ export class Orrery {
    * cover→paid beat, generalized to a hand-off: several discs sweep so one slides on as
    * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
   private netFootprintMeshes: THREE.Mesh[] = [];
+  private netFocusBlob?: THREE.Mesh;
+
+  /** FL-UX probe: is the click-inspect blob drawn right now (its mesh's live visibility). */
+  netBlobVisibility(): boolean {
+    return this.netFocusBlob?.visible ?? false;
+  }
   /** Latest net render slice (region + footprints + availability), set per-frame by main.ts. */
   private netState: NetRenderState | null = null;
   private readonly _netDim = new THREE.Color(0.95, 0.6, 0.2); // amber: UNSERVED region.
@@ -1076,6 +1105,12 @@ export class Orrery {
     this.netQueueRing.visible = false;
     this.netQueueRing.renderOrder = 6.1;
     this.scene.add(this.netQueueRing);
+    // FL-UX — the CLICK-INSPECT blob: one surface patch, hot warm-cyan, BENT onto the ball.
+    this.netFocusBlob = this.buildSurfaceDisc([0.65, 0.95, 1.0]);
+    this.netFocusBlob.visible = false;
+    this.netFocusBlob.renderOrder = 6.7;
+    this.scene.add(this.netFocusBlob);
+
     // R2e (SD-45) — GROUND SITES: dish glyphs for the comms ground stations (violet-cyan)
     // and a warm triangle-read halo for the launch pad, each with a DOM label.
     for (let i = 0; i < 4; i++) {
@@ -1425,7 +1460,7 @@ export class Orrery {
     geo.setIndex(idx);
     const mat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
-      vertexShader: VERT,
+      vertexShader: VERT_BENT,
       fragmentShader: SURFACE_DISC_FRAG,
       transparent: true,
       // FLICKER FIX (net coverage). The discs flicker because the co-located region/footprint/gap
@@ -1444,6 +1479,9 @@ export class Orrery {
         uColor: { value: new THREE.Color(...color) },
         uCell: { value: 2.0 },
         uAlpha: { value: 1.0 },
+        // The surface-hug uniforms (0 radius = honestly flat).
+        uRadiusRad: { value: 0.0 },
+        uBend: { value: 1.0 },
       },
     });
     const mesh = new THREE.Mesh(geo, mat);
@@ -1710,6 +1748,25 @@ export class Orrery {
       }
     }
     for (let i = slot; i < this.netFootprintMeshes.length; i++) this.netFootprintMeshes[i].visible = false;
+
+    // FL-UX — the click-inspected blob (needs the operated body for its radius + centre).
+    if (this.netFocusBlob) {
+      if (ns?.focusBlob && body) {
+        (this.netFocusBlob.material as THREE.ShaderMaterial).uniforms.uAlpha.value = 0.85;
+        this.orientSurfaceDisc(
+          this.netFocusBlob,
+          ns.focusBlob.centerPosM,
+          body.centerPosM,
+          bodySceneR,
+          ns.focusBlob.radiusRad,
+          focusAbs,
+          3.0,
+        );
+        this.netFocusBlob.visible = true;
+      } else {
+        this.netFocusBlob.visible = false;
+      }
+    }
 
     // The availability sawtooth meter (the legible "motion is the antagonist" cue).
     this.paintNetAvailability(ns.availability);
@@ -2884,6 +2941,9 @@ export class Orrery {
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(this._surfM);
     mesh.matrixWorldNeedsUpdate = true; // we set the local matrix directly — refresh the world matrix.
+    // The surface-hug: bend this plate onto the ball at its own angular radius.
+    const sh = mesh.material as THREE.ShaderMaterial;
+    if (sh.uniforms.uRadiusRad) sh.uniforms.uRadiusRad.value = radiusRad;
   }
 
   /** §3 — the operated body's RENDER radius in scene units (the de-squashed/log-folded scale every
@@ -3718,6 +3778,7 @@ export class Orrery {
   private handleClick(clickX: number, clickY: number): void {
     const t = this.ctx.now();
     const focusAbs = this.ctx.eph.position(this.focusId, t);
+    (window as unknown as Record<string, unknown>).__lastClickDebug = { x: clickX, y: clickY };
     const cands: PickCandidate[] = [];
     const project = (id: string, abs: Vec3): void => {
       this.renderInto(this._rp, abs, focusAbs);
@@ -3739,11 +3800,45 @@ export class Orrery {
       for (const d of bs.datacenters) project(d.id, d.posM);
     }
     const hit = pickNearest(cands, clickX, clickY, PICK_TOLERANCE_PX);
+    (window as unknown as Record<string, unknown>).__lastPickDebug = { hit, n: cands.length, c0: cands[0] ? { id: cands[0].id, dx: cands[0].sx - clickX, dy: cands[0].sy - clickY } : null };
     if (hit === null) return;
     this.selectedId = hit;
     // Focus the camera only on a focusable BODY; assets/DCs select-only (keep the parent
     // framed so the orbit + the rest of the constellation stay on screen).
     if (FOCUS_ORDER.includes(hit)) this.focusId = hit;
+  }
+
+  /** Debug: all pickable candidates + their screen positions (what a click at X,Y would hit). */
+  pickCands(): { id: string; x: number; y: number }[] {
+    const t = this.ctx.now();
+    const focusAbs = this.ctx.eph.position(this.focusId, t);
+    const out: { id: string; x: number; y: number }[] = [];
+    const project = (id: string, abs: Vec3): void => {
+      this.renderInto(this._rp, abs, focusAbs);
+      this.tmpV.copy(this._rp).project(this.camera);
+      if (this.tmpV.z > 1) return;
+      const rect = this.canvas.getBoundingClientRect();
+      out.push({ id, x: rect.left + ((this.tmpV.x + 1) / 2) * rect.width, y: rect.top + ((1 - this.tmpV.y) / 2) * rect.height });
+    };
+    const bs = this.buildState;
+    if (bs) for (const a of bs.assets) project(a.id, a.posM);
+    return out;
+  }
+
+  /** Screen-space centre of an asset id (probe for tests/scenes; null if off/currently undrawn). */
+  assetScreenPos(id: string): { x: number; y: number } | null {
+    const a = this.buildState?.assets.find((x) => x.id === id);
+    if (!a) return null;
+    const t = this.ctx.now();
+    const focusAbs = this.ctx.eph.position(this.focusId, t);
+    this.renderInto(this._rp, a.posM, focusAbs);
+    this.tmpV.copy(this._rp).project(this.camera);
+    if (this.tmpV.z > 1) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: rect.left + ((this.tmpV.x + 1) / 2) * rect.width,
+      y: rect.top + ((1 - this.tmpV.y) / 2) * rect.height,
+    };
   }
 
   /** The currently selected asset/body id (click- or F-selected), or null. */

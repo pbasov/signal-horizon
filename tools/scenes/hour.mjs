@@ -142,6 +142,13 @@ export default {
     const g2 = await untilCursor(ctx, 2);
     ctx.ok("ACT-2 GATE: the polar metro HELD across a full hand-off cycle", g2 !== null, g2 ? `cursor ${g2.cursor} · €${g2.balance} · ${g2.sats.length} sats` : "timeout");
     await ctx.shot("10-act2-held");
+    // "Can one bird do it?" — the pad, open post-gate, must answer in numbers.
+    {
+      await ctx.eval(() => { const t = document.querySelector("[data-net=pad-toggle]"); if (t && !t.textContent?.includes("BACK")) t.click(); });
+      await ctx.settle(500);
+      const padFact = await ctx.eval(() => document.querySelector(".mission-fact")?.textContent ?? "");
+      ctx.ok("the pad answers 'one bird' on an availability tender", /one bird lights/.test(padFact) && /tender asks 99%/.test(padFact), padFact.slice(0, 140));
+    }
 
     // ══ ACT 3a — the corridor: three pointed ACCESS beams ════════════════════
     await simSleep(ctx, T.eqCorridor);

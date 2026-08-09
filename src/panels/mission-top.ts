@@ -159,6 +159,7 @@ export class MissionTop implements PanelHandle {
   private readonly bookFace: HTMLElement;
   private readonly vObjTitle: HTMLElement;
   private readonly vObjDetail: HTMLElement;
+  private readonly vObjNext: HTMLElement;
   private readonly vShortfall: HTMLElement;
   private readonly tendersHost: HTMLElement;
   private tenderSig = "";
@@ -205,6 +206,8 @@ export class MissionTop implements PanelHandle {
     this.vObjTitle = el("div", "net-obj-title", "");
     this.vObjDetail = el("div", "net-obj-detail", "");
     objGroup.append(this.vObjTitle, this.vObjDetail);
+    this.vObjNext = el("div", "mission-next", "");
+    objGroup.appendChild(this.vObjNext);
     // R3 — the SHORTFALL line: the stuck-assist (facts that name the shortfall, LAW 1/2),
     // right under the objective where a stuck player is already looking.
     this.vShortfall = el("div", "mission-shortfall", "");
@@ -398,6 +401,12 @@ export class MissionTop implements PanelHandle {
     const obj = MISSION_OBJECTIVES[Math.max(0, Math.min(s.act, MISSION_OBJECTIVES.length - 1))];
     this.vObjTitle.textContent = obj.title;
     this.vObjDetail.textContent = obj.detail;
+    // NEXT: the next act by name. The sequence makes sense (each is "the next thing you'd
+    // want if you'd won this"); reading ahead tells you what you'd have TODAY if you were
+    // already on the far side of the gate.
+    const nextObj = MISSION_OBJECTIVES[s.act + 1];
+    this.vObjNext.textContent = nextObj ? `next — ${nextObj.title.toLowerCase()}` : "";
+    this.vObjNext.style.display = nextObj ? "" : "none";
     this.vShortfall.textContent = s.shortfall ?? "";
     this.vShortfall.style.display = s.shortfall ? "" : "none";
 

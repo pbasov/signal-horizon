@@ -38,7 +38,6 @@
 import type { NetSession } from "./session";
 import {
   NET_ACT1_REGION,
-  NET_ACT1B_REGION,
   NET_ACT1_REGION_RADIUS_RAD,
   NET_ACT2_REGION_LAT_RAD,
   NET_ACT2_REGION_LON_RAD,
@@ -46,7 +45,7 @@ import {
   ACT4_MARS_CONTRACT_ID,
   type Region,
 } from "./endpoint";
-import { offerNetContract, NET_DEFAULT_PAY_PER_SECOND, type SlaAxis } from "./contract";
+import { offerNetContract, type SlaAxis } from "./contract";
 import type { FaultScript, TraceShortfall } from "./fault-types";
 
 /**
@@ -255,19 +254,8 @@ const ACT1: Beat = {
         signOnBonusUntilS: t + ACT1_SIGNON_WINDOW_S,
       }),
     );
-    // REGION-C — the richer but REPRICING deal: the market halves its pay every 1200 s the
-    // offer sits unsigned. Signing what you can't serve yet bleeds; waiting bleeds the pay.
-    session.addContract(
-      offerNetContract(ACT1B_CONTRACT_ID, NET_ACT1B_REGION, {
-        activeAxes: new Set<SlaAxis>(["connectivity"]),
-        trafficClass: "latency",
-        payPerSecond: NET_DEFAULT_PAY_PER_SECOND * ACT1B_PAY_MULT,
-        penaltyPerSecond: 2 * NET_DEFAULT_PAY_PER_SECOND * ACT1B_PAY_MULT,
-        offerWindowS: ACT1_OFFER_WINDOW_S,
-        offeredAtS: t,
-        payHalvingS: ACT1B_PAY_HALVING_S,
-      }),
-    );
+    // R-C REMOVED (user, 2026-08-09): the one-tender open. The decay machinery (FL-07)
+    // survives — renewals ride it when added; act 1 teaches the loop, not the market.
   },
   gate(session: NetSession): boolean {
     // The concept is FELT when ONE accepted contract is being SERVED (a path exists this

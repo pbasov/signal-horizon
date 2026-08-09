@@ -66,21 +66,29 @@ describe("FL-07 — decayedPayAtS / signOnBonusAtS", () => {
 });
 
 describe("FL-07 — acceptContract prices the signature", () => {
-  it("FREEZES the decayed pay + rebinds the penalty to 2× the frozen pay + credits the bonus", () => {
-    const s = act1Session();
+  it("FREEZES the decaying pay + rebinds the penalty to 2× the frozen pay + credits the bonus", () => {
+    const s = new NetSession();
+    s.step(eph, DT, DT);
+    // The decay exemplar moves house (REGION-C out of act 1): hand-place a decaying tender.
+    s.addContract(
+      offerNetContract("DECAY-TEST", NET_ACT1_REGION, {
+        payPerSecond: 2.0,
+        offeredAtS: DT,
+        payHalvingS: 1200,
+      }),
+    );
     const c0 = s.contractById("REGION-0")!;
-    // REGION-C decays; sign it after one half-life of sitting (t = 1200).
     const before = s.balance;
-    for (let t = 0; t < 1200; t += DT) s.step(eph, t, DT);
-    const c = s.contractById("REGION-C")!;
+    for (let t = DT; t < 1200; t += DT / 10) s.step(eph, t, DT / 10);
+    const c = s.contractById("DECAY-TEST")!;
     const offeredPay = c.payPerSecond;
-    const accepted = s.acceptContract("REGION-C", 1200)!;
+    const accepted = s.acceptContract("DECAY-TEST", 1200)!;
     expect(accepted).toBe(c);
     expect(c.payPerSecond).toBeCloseTo(offeredPay / 2, 3); // ≈ one half-life of decay
     expect(c.penaltyPerSecond).toBeCloseTo(2 * c.payPerSecond, 12); // the 2× asymmetry invariant
     expect(c.payHalvingS).toBe(Infinity); // signed terms stop repricing
     void c0;
-    expect(s.balance).toBeCloseTo(before, 6); // no bonus on REGION-C
+    expect(s.balance).toBeCloseTo(before, 6); // no bonus on DECAY-TEST
     expect(c.signOnBonusEur).toBe(0);
   });
 
@@ -98,10 +106,18 @@ describe("FL-07 — acceptContract prices the signature", () => {
     expect(s2.balance).toBeCloseTo(NET_OPENING_BALANCE, 6); // the bonus lapsed
   });
 
-  it("the market decays REGION-C on the BOARD (the unsigned pay the player sees)", () => {
-    const c = act1Session().contractById("REGION-C")!;
-    expect(decayedPayAtS(c, c.offeredAtS)).toBeCloseTo(NET_DEFAULT_PAY_PER_SECOND * 1.15, 9);
-    expect(decayedPayAtS(c, c.offeredAtS + 1200 * 3)).toBeCloseTo((NET_DEFAULT_PAY_PER_SECOND * 1.15) / 8, 9);
+  it("the market decays a hand-placed tender on the BOARD (the unsigned pay the player sees)", () => {
+    const s = new NetSession();
+    s.addContract(
+      offerNetContract("DECAY-TEST", NET_ACT1_REGION, {
+        payPerSecond: 2.0 * 1.15,
+        offeredAtS: 0,
+        payHalvingS: 1200,
+      }),
+    );
+    const c = s.contractById("DECAY-TEST")!;
+    expect(decayedPayAtS(c, c.offeredAtS)).toBeCloseTo(2.3, 9);
+    expect(decayedPayAtS(c, c.offeredAtS + 1200 * 3)).toBeCloseTo(2.3 / 8, 9);
   });
 });
 
@@ -109,14 +125,14 @@ describe("FL-07 — the economy theorem holds under texture", () => {
   it("no Act-1 tender's full term out-earns its own honest provisioning", () => {
     const stack = launchStackCost("smallsat", ["BROADCAST"], GEO_PARK.semiMajorM, 1);
     const s = act1Session();
-    for (const id of ["REGION-0", "REGION-C"]) {
+    for (const id of ["REGION-0"]) {
       const c = s.contractById(id)!;
       const fullTerm = decayedPayAtS(c, c.offeredAtS) * NET_DEFAULT_TERM_SECONDS + c.signOnBonusEur;
       expect(fullTerm).toBeLessThan(stack);
     }
   });
 
-  it("the Act-1 tenders LAPSE deterministically (the offer windows are real for act 1 too)", () => {
+  it("the Act-1 tender LAPSES deterministically (the offer window is real for act 1 too)", () => {
     const run = () => {
       const s = new NetSession();
       for (let t = DT; t <= 2 * 3600 + 120; t += DT) s.step(eph, t, DT);
@@ -124,7 +140,7 @@ describe("FL-07 — the economy theorem holds under texture", () => {
     };
     const a = run();
     const b = run();
-    // Both offered tenders must be GONE (the 2 h window lapsed; stepOfferedContract failed them).
+    // The opener's window must close (the 2 h window lapsed; stepOfferedContract failed it).
     expect(a.contracts.filter((c) => c.state === "offered")).toEqual([]);
     expect(a.contracts.map((c) => `${c.id}:${c.state}`)).toEqual(b.contracts.map((c) => `${c.id}:${c.state}`));
   });

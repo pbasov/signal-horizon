@@ -112,6 +112,7 @@ import {
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
   NET_ACT_BEAT,
+  PAD_AVAIL_FACT,
   PAD_RISK_BAND,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
@@ -1474,6 +1475,23 @@ function drainNetOnboarding(): void {
  * (link-budget surfacePointRelative) PLUS earth's ephemeris position, so the orrery rebases
  * them like any body. PURE reads of the net session; only consumed while netRenderMode is on.
  */
+/** FL-UX — the clicked-sat blob descriptor (bent patch on the ball): null unless the
+ * orrery's selection names a launched net sat this frame. */
+function netFocusBlobSlice(t: number, add: (rel: Vec3) => Vec3): { centerPosM: Vec3; radiusRad: number } | null {
+  const sel = orrery.selected();
+  if (sel === null) return null;
+  const sat = netSession.sats.find((x) => x.id === sel) ?? null;
+  if (sat === null) return null;
+  const rel = satPositionRelative(eph, sat, t);
+  const m = Math.hypot(rel[0], rel[1], rel[2]) || 1;
+  const altM = m - A1_BODY_RADIUS_M;
+  const k = A1_BODY_RADIUS_M / m;
+  return {
+    centerPosM: add([rel[0] * k, rel[1] * k, rel[2] * k]),
+    radiusRad: footprintRadiusRad(sat.loadout, altM),
+  };
+}
+
 function netRenderState(): import("./orrery/orrery").NetRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
@@ -1495,6 +1513,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       footprints: [],
       availability: null,
       mars: netMarsSlice(t),
+      focusBlob: netFocusBlobSlice(t, add),
       draft: netDraftSlice(t, add, null),
       servedLink: null,
       // P1 — the live network: even with no current teaching contract, draw any OTHER active served
@@ -1547,6 +1566,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     region,
     footprints,
     availability,
+    focusBlob: netFocusBlobSlice(t, add),
     mars: netMarsSlice(t),
     draft,
     servedLink,
@@ -2759,6 +2779,7 @@ function missionTopState(): MissionTopState {
   const target = r1TargetRegion();
   let comb: { windows: boolean[]; duty: number } | null = null;
   let combFleet: { windows: boolean[]; duty: number } | null = null;
+  let combDuty: number | null = null;
   let latencyMs: number | null = null;
   let timeToServeS = Infinity;
   let periodS = 0;
@@ -2778,6 +2799,7 @@ function missionTopState(): MissionTopState {
       combFleet = fleet.length > 0 ? combWindows(eph, target.region, grounds, fleet, t, spanS) : null;
       const union = combWindows(eph, target.region, grounds, [...fleet, ...members], t, spanS);
       comb = { windows: union.windows, duty: union.duty };
+      combDuty = union.duty;
       const cp = preview.contracts.find((x) => x.contractId === target.region.id);
       latencyMs = cp && Number.isFinite(cp.latencyFloorS) ? cp.latencyFloorS * 1000 : null;
       // FL-12 — WHEN does this draft first serve (not just whether): the pad fact line and
@@ -2827,7 +2849,13 @@ function missionTopState(): MissionTopState {
     combRegionLabel: target?.label ?? "no demand yet",
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
-    padFact: r1PadFact(),
+    padFact: r1PadFact() ?? (() => {
+      // The "can one bird do it" answer: only when the target carries an availability bar.
+      // duty = the draft's hold-rate over the region from the comb (facts, never verdicts).
+      const tc = netSession.contracts.find((x) => x.region.bodyId === "earth" && x.activeAxes.has("availability") && (x.state === "offered" || x.state === "active"));
+      if (!tc || r1Mode !== "pad" || combDuty === null) return null;
+      return PAD_AVAIL_FACT(`${Math.round(combDuty * 100)}%`, `${Math.round(tc.slaAvail * 100)}%`);
+    })(),
     // R3 — the scenario's stuck-assist now has a MISSION surface (book face, under the objective).
     shortfall: netSession.currentShortfall(t)?.message ?? null,
     // FL-10 — the honest risk band (null while failures are dark; rates from the ONE set of
@@ -2936,6 +2964,9 @@ function ledgerFleetState(): LedgerFleetState {
 // FL-13 (SD-49) — the ring-grab probe (scriptable pointer-priority verification).
 (window as unknown as Record<string, unknown>).__dragOrbitProbe = (x: number, y: number) =>
   orrery.__dragOrbitProbe(x, y);
+(window as unknown as Record<string, unknown>).__satScreenPos = (id: string) => orrery.assetScreenPos(id);
+(window as any).__blobs = () => orrery.netBlobVisibility?.() ?? null;
+(window as any).__pickCands = () => orrery.pickCands();
 // FL-14 — probe the LIVE multi-arc pool + deploy pops (scripted verification).
 // Playtest scenes — coarse live net state for scripted playthroughs (read-only).
 (window as unknown as Record<string, unknown>).__netState = () =>
