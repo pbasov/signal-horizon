@@ -104,19 +104,25 @@ export const PRESET_SPECS: PresetSpec[] = [
  */
 export const NET_PRESET_SPECS: PresetSpec[] = [
   {
-    // MISSION (key 1) — THE game screen (m1-redesign.md §2.1): 90% of play happens here and
-    // the loop never leaves it. The orrery is the input device on the left; the right rail
-    // stacks the MISSION book/pad (tenders ⇄ vehicle builder), the WIRE (SYSTEM.LOG), and
-    // the LEDGER·FLEET strip (wallet + per-sat pipes/beams).
+    // MISSION (key 1) — THE game screen (m1-redesign.md §2.1). The orrery owns the left with
+    // the WIRE tucked UNDER it (the log is part of the left column now: acts/caches/faults ride
+    // the eye-line of the globe); the right column is the MISSION pad on top and the fleet room
+    // big enough to read as a manifest — user's direct ask 2026-08-09: "the orrery takes too
+    // much space on the left, put the log under it, give the fleet more room".
     name: "MISSION",
     columns: [
-      { weight: 0.64, rows: [{ weight: 1, host: "orrery" }] },
       {
-        weight: 0.36,
+        weight: 0.6,
         rows: [
-          { weight: 2.3, host: "mission-top" },
-          { weight: 0.7, host: "system-log" },
-          { weight: 0.8, host: "ledger-fleet" },
+          { weight: 2.2, host: "orrery" },
+          { weight: 0.8, host: "system-log" },
+        ],
+      },
+      {
+        weight: 0.4,
+        rows: [
+          { weight: 1.6, host: "mission-top" },
+          { weight: 1.2, host: "ledger-fleet" },
         ],
       },
     ],

@@ -1225,3 +1225,8 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 /* UX — the next-act preview line (dim, unnamed mechanics: a name only). */
 .mission-next { color: var(--grey); font-size: var(--ts-cap); letter-spacing: 0.1em; margin-top: 2px; }
 .mission-next:empty { display: none; }
+
+/* FL-UX — fleet-chip inspect affordance: hover + selected state; the blob link lives here. */
+.lf-chip-head { cursor: pointer; }
+.lf-chip-head:hover .lf-chip-id { color: var(--cyan); }
+.lf-chip-head.sel .lf-chip-id { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }

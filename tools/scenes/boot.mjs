@@ -28,6 +28,15 @@ export default {
       tenders.map((t) => t.facts).join(" || "),
     );
 
+    // The field-focus rule: a typed "1"/"2" in a pad field must not swap desktops.
+    await ctx.click("[data-net=pad-toggle]");
+    await ctx.settle(300);
+    await ctx.eval(() => { const i = document.querySelector("[data-net=param-altKm]"); i.focus(); });
+    await ctx.page.keyboard.press("2");
+    await ctx.settle(200);
+    const tile = await ctx.eval(() => document.querySelector(".statusstrip")?.textContent?.slice(0, 30));
+    ctx.ok("typing digits in a field never swaps desktops", tile?.includes("MISSION"), tile);
+
     // R3-polish regression: the idle assist must NOT show at arrival (the epoch-time bug).
     const shortfallAtBoot = await ctx.eval(() => (document.querySelector(".mission-shortfall")?.textContent ?? "").trim());
     ctx.ok("no stuck-assist at cold boot (epoch bug stays dead)", shortfallAtBoot === "", shortfallAtBoot || "clean");
@@ -46,10 +55,12 @@ export default {
 
     await ctx.shot("01-boot");
 
-    // The fast time already ticks the tender's lapo clock (the offer window ticks down).
-    const pay0 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-served")][0]?.textContent);
+    // The lapse clock ticks: read the SIM time itself (the fragility readout lost us time).
+    await ctx.key(".");
+    const pay0 = await ctx.eval(() => window.__netState?.()?.tSim);
     await ctx.wait(4000);
-    const pay1 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-served")][0]?.textContent);
-    ctx.ok("the tender's lapse clock visibly counts down", pay0 !== pay1, `${pay0} → ${pay1}`);
+    const pay1 = await ctx.eval(() => window.__netState?.()?.tSim);
+    ctx.ok("the lapse clock visibly counts down (sim time advances)", pay1 - pay0 > 5, `${pay0.toFixed(1)} → ${pay1.toFixed(1)}`);
+    await ctx.key(",");
   },
 };

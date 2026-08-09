@@ -2765,6 +2765,10 @@ const missionTopPanel = new MissionTop({
 const ledgerFleetPanel = new LedgerFleet({
   onCycleBeam: (satId, slot) => r1CycleBeam(satId, slot),
   onCircularize: (satId) => r1Circularize(satId),
+  // A fleet chip click INSPECTS the sat — the orrery draws its blob without moving the camera.
+  onSelectSat: (satId) => {
+    orrery.selectedId = satId;
+  },
 });
 
 /** Current body-fixed sub-longitude (deg) of a live sat (the parked-GEO aim readout). */
@@ -2969,7 +2973,7 @@ function ledgerFleetState(): LedgerFleetState {
             : "ascent";
     return { id: ev.id, phase };
   });
-  return { balanceEur: netSession.balance, ratePerMin: r1FlowRate(), chips, pending };
+  return { balanceEur: netSession.balance, ratePerMin: r1FlowRate(), chips, pending, selectedId: orrery.selected() };
 }
 
 // DEV probe (SD-45 flicker hunt): sample the live serve verdict from the console.
@@ -3294,6 +3298,10 @@ if (import.meta.env.DEV) {
 // --- keyboard ---------------------------------------------------------------
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
+  // UX FIX — typing "1" into a typed pad field must NOT switch desktops: while an editable
+  // control owns focus, global keys stand down (Escape/Enter still work the field's contract).
+  const tgt = e.target as HTMLElement | null;
+  if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
   const k = e.key;
   // §3.1 — THE PLANNER DRAFT NUDGE KEYS (net mode, the headless-drivable ceiling control): the
   // arrow keys nudge the two parameters that matter first (§3.1) — Up/Down = ALTITUDE (the GEO/LEO

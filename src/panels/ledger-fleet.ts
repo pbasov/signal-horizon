@@ -36,6 +36,8 @@ export interface FleetChip {
 }
 
 export interface LedgerFleetState {
+  /** The current orrery selection (the marked chip also draws its blob up top). */
+  selectedId?: string | null;
   balanceEur: number;
   ratePerMin: number;
   chips: FleetChip[];
@@ -46,6 +48,8 @@ export interface LedgerFleetState {
 export interface LedgerFleetActions {
   onCycleBeam(satId: string, slot: number): void;
   onCircularize(satId: string): void;
+  /** Click-select a chip ⇒ the orrery draws that sat's coverage blob (its live career). */
+  onSelectSat(satId: string): void;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -101,7 +105,15 @@ export class LedgerFleet implements PanelHandle {
       for (const c of s.chips) {
         const chip = el("div", "lf-chip");
         const head = el("div", "lf-chip-head");
-        head.appendChild(el("span", "lf-chip-id", c.id));
+        // FL-UX — clicking a chip INSPECTS the bird: the orrery draws its coverage blob + the
+        // label marks it. (The WM's own drag gestures live on titlebars only, so a content click
+        // is free real estate.)
+        head.style.cursor = "pointer";
+        head.classList.toggle("sel", s.selectedId === c.id);
+        head.addEventListener("click", () => this.actions.onSelectSat(c.id));
+        head.title = "inspect on the orrery (its coverage blob draws)";
+        const idSpan = el("span", "lf-chip-id", c.id);
+        head.appendChild(idSpan);
         const orbitTxt =
           c.parkedLonDeg !== null
             ? `${c.tier} · parked over lon ${Math.round(c.parkedLonDeg)}° · ${Math.round(c.altKm)} km`
