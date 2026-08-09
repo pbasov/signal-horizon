@@ -20,11 +20,11 @@ export default {
         facts: row.querySelector(".mission-tender-facts")?.textContent ?? "",
       })),
     );
-    ctx.ok("two tenders on the board at boot", tenders.length === 2, tenders.map((t) => t.label).join(", "));
+    ctx.ok("the ONE tender is on the board at boot (REGION-C is gone, 2026-08-09)", tenders.length === 1, tenders.map((t) => t.label).join(", "));
     ctx.ok("both tenders OFFERED", tenders.every((t) => t.state === "OFFERED"));
     ctx.ok(
-      "tender texture: bonus clock on the opener, decay on the second",
-      tenders[0]?.facts.includes("sign-on") && tenders[1]?.facts.includes("halves"),
+      "tender texture: bonus clock on the opener",
+      tenders[0]?.facts.includes("sign-on"),
       tenders.map((t) => t.facts).join(" || "),
     );
 
@@ -46,10 +46,10 @@ export default {
 
     await ctx.shot("01-boot");
 
-    // The fast time should already tick the tenders. Wait a beat; the decay must visibly move.
-    const pay0 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-bet")][1]?.textContent);
+    // The fast time already ticks the tender's lapo clock (the offer window ticks down).
+    const pay0 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-served")][0]?.textContent);
     await ctx.wait(4000);
-    const pay1 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-bet")][1]?.textContent);
-    ctx.ok("REGION-C board pay visibly DECAYS while unsigned", pay0 !== pay1, `${pay0} → ${pay1}`);
+    const pay1 = await ctx.eval(() => [...document.querySelectorAll(".mission-tender-served")][0]?.textContent);
+    ctx.ok("the tender's lapse clock visibly counts down", pay0 !== pay1, `${pay0} → ${pay1}`);
   },
 };

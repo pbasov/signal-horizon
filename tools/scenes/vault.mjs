@@ -34,9 +34,9 @@ export default {
     ctx.ok("the slot holds a checkpoint envelope", envelope !== null && envelope.length > 1000, envelope ? `${envelope.length} bytes` : "empty");
     ctx.ok("envelope is version-tagged", envelope?.includes("\"version\":1") ?? false);
 
-    // WRECK: sign the decaying REGION-C while dark (a real mistake — it bleeds) + speed past.
+    // WRECK: sign the polar tender dark (mistake, it bleeds ×2) and let it ride a while.
     await ctx.eval(() => {
-      const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-C");
+      const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-1");
       b?.click();
     });
     for (let i = 0; i < 6; i++) await ctx.key(".");
@@ -55,7 +55,7 @@ export default {
     ctx.ok("resume restores the checkpoint's world (fold reads right)", resumed !== null, `${beforeSave?.balance} → ${resumed?.balance}`);
     ctx.ok(
       "the wrecked sign never happened in the resumed world",
-      resumed && resumed.contracts.find((c) => c.id === "REGION-C")?.state === "offered",
+      resumed && resumed.contracts.find((c) => c.id === "REGION-1")?.state === "offered",
       resumed?.contracts.map((c) => c.id + ":" + c.state).join(","),
     );
 
