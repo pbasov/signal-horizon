@@ -16,6 +16,8 @@ The product you sell is *knowledge moved across distance*; the speed of light is
 | 5 | [decisions.md](decisions.md) | **Decision Log** — design (DD-N) + engineering (SD-N) decisions, status, rationale. | Living |
 | 6 | [sim-render-contract.md](sim-render-contract.md) | **Sim ↔ Render Contract** — the f64-truth / f32-render boundary. Stack-agnostic interface spec. | v1 |
 | 7 | [tiling-wm-spec.md](tiling-wm-spec.md) | **Tiling WM Spec (DD-10)** — zone-grid + mouse zone-snapping + presets. | ACCEPTED |
+| 8 | [m1-redesign.md](m1-redesign.md) | **M1 Redesign — FIRST LIGHT** — the from-scratch gameplay/launcher/UX redesign (supersedes M1 Parts II–IV's presentation layer). LAW 1 + LAW 2 live here. | ACCEPTED (SD-45) |
+| 9 | [routing-screen.md](routing-screen.md) | **The Routing Screen — TRACE** — GDD §5 view #4 built: the two-level FLOWS/PIPES routing table, its levers, its orrery coupling, and its build ramp. | ACCEPTED (SD-53) |
 
 ## Reference
 

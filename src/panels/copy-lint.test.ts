@@ -61,7 +61,13 @@ describe("R1 — copy lint: goals, never instructions", () => {
 /** Sim files whose strings can reach the player (the scenario's fallback SHORTFALL
  * messages render on the MISSION book face). The copy law applies there too — and they must
  * never leak internal API names (\bnet_*  means the sim's wire format is talking to the player). */
-const SIM_FILES = ["../sim/net/scenario.ts"];
+const SIM_FILES = [
+  "../sim/net/scenario.ts",
+  // SD-53: trace.ts's shortfall messages ARE player copy — main.ts drains them into SYSTEM.LOG
+  // today and the ROUTING SCREEN renders their fix clauses. They were outside the law until now;
+  // the "set prefer-bw on X" tail (a solver parameter, named at the player) is what found the gap.
+  "../sim/net/trace.ts",
+];
 const SIM_BANNED: { name: string; re: RegExp }[] = [
   ...BANNED,
   { name: "internal API name in player-facing copy", re: /`[^`]*\bnet_[a-z]/ },

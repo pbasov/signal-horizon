@@ -22,7 +22,7 @@
  *        connectivity → "no path; launch a covering sat"           ({@link "addCoveringSat"})
  *        availability → "availability breaks ~N/orbit; phase a sat" ({@link "addPhasedSat"})
  *        latency      → "latency floor {ms}ms; a shorter route cuts it" ({@link "shorterRoute"})
- *        bandwidth    → "trunk via [sat] saturated by N; parallel path/prefer-bw" ({@link "addParallelPath"})
+ *        bandwidth    → "trunk via [sat] saturated by N; a parallel path or a wider antenna" ({@link "addParallelPath"})
  *   2. OPTIMISATION/RESILIENCE — the §3a optimizer pull (the act3b gate's layer-1 target):
  *        OVER-PROVISION (waste) → a sat running far under capacity while another contract
  *          breaches ({@link "shareIdleCapacity"}).
@@ -91,9 +91,50 @@ export interface TraceInput {
   /** The aggregate shared load `satId → Σ offeredLoad` this step (the over-provision parse +
    * the bandwidth "carries N contracts" readout). Absent/empty before act3a ⇒ no congestion face. */
   loadBySat?: ReadonlyMap<string, number>;
+  /**
+   * SD-53 (S1) — the aggregate shared load per PIPE (`satId:slotIdx` → Σ offeredLoad), the
+   * denominator the ROUTER itself uses (SD-45: capacity is per-antenna, not per-sat). When present
+   * it supersedes {@link loadBySat} for the bandwidth readout + the over-provision parse.
+   */
+  loadByPipe?: ReadonlyMap<string, number>;
+  /**
+   * SD-53 (S1) — per-PIPE capacity (`satId:slotIdx` → the antenna's own `capacityUnits`, already
+   * derated by any active degradation fault). **Absent ⇒ the legacy uniform
+   * {@link NET_LINK_CAPACITY_UNITS} is used**, which is what every pre-SD-53 caller gets.
+   *
+   * WHY THIS EXISTS: the router denominates congestion against `AntennaSpec.capacityUnits`
+   * (1.2 … 4.0) while this file's messages hardcoded 1.50 — so a GATEWAY at 3.0u was "75% full"
+   * to the solver and "exceeds capacity 1.50" to the trace. Two surfaces, one antenna, two
+   * capacities. That is the "a record that lied" failure (GDD §4.12); this closes it.
+   */
+  capByPipe?: ReadonlyMap<string, number>;
+  /**
+   * SD-53 (S3) — the contract ids that HAVE a redundant bridge (some OTHER sat's link to the same
+   * region closes right now). When present the SPOF face is exact; **absent ⇒ the coarse
+   * `sats.length <= 1` heuristic**, which is silent on the commonest real SPOF (a twelve-sat fleet
+   * where exactly one bird reaches a region). An under-firing risk warning is worse than none.
+   */
+  redundantById?: ReadonlySet<string>;
   /** Sim-time of the step (the countdown/recovery readouts + the loss-stamp wording). */
   t: number;
 }
+
+/**
+ * SD-53 (S4) — the canonical KIND-OF-FIX clause per {@link ShortfallFixKind} (§7.4: "it points at
+ * the gap and the kind of hardware/positioning that closes it" — and stops). Exported so a view
+ * can compose its OWN live numbers with this clause instead of re-printing
+ * {@link TraceShortfall.message} verbatim: the message's numbers are a snapshot of the solve, a
+ * panel's numbers are this frame's, and two adjacent numbers that disagree are the "the UI lied"
+ * bug. One clause, one source. Names a class of hardware/geometry, never a control (LAW 2).
+ */
+export const FIX_CLAUSE: Record<ShortfallFixKind, string> = {
+  addCoveringSat: "nothing in view closes the link — a sat covering this region does.",
+  addPhasedSat: "no sat covers it in this window — one more phased into this plane holds it across the gap.",
+  shorterRoute: "a shorter LEO or relay route cuts it.",
+  addParallelPath: "a parallel path or a wider antenna carries it.",
+  shareIdleCapacity: "capacity sits idle elsewhere in the fleet — an antenna pointed here would share it.",
+  addRedundantPath: "one sat carries it — a second bridge in this plane survives a fault.",
+};
 
 // ── kind-of-fix mapping (the §7.4 binding-constraint → fix vocabulary) ────────────
 
@@ -118,13 +159,15 @@ function fixKindForAxis(axis: RouterAxis): ShortfallFixKind {
  *   - connectivity → "no path; launch a covering sat"
  *   - availability → "availability breaks ~each orbit; add a phased sat in this plane"
  *   - latency      → "latency floor {ms}ms via this path; a shorter LEO/relay route cuts it"
- *   - bandwidth    → "trunk via [sat] saturated by N shared contracts; add a parallel path / prefer-bw"
+ *   - bandwidth    → "trunk via [sat] saturated by N shared contracts; a parallel path or a wider antenna"
  */
 function bindingConstraintMessage(
   contract: Contract,
   solve: SolveResult,
   axis: RouterAxis,
   loadBySat: ReadonlyMap<string, number> | undefined,
+  loadByPipe: ReadonlyMap<string, number> | undefined,
+  capByPipe: ReadonlyMap<string, number> | undefined,
 ): string {
   switch (axis) {
     case "connectivity":
@@ -145,14 +188,21 @@ function bindingConstraintMessage(
       );
     }
     case "bandwidth": {
-      // The chosen bridging sat is path[1] (region → sat → ground). The shared count is how many
-      // contracts the aggregate routed over it (the "trunk saturated by N" readout).
+      // The chosen bridging sat is path[1] (region → sat → ground); the chosen PIPE is the one
+      // antenna on it that actually carries the traffic. Capacity and load are denominated
+      // per-PIPE when the caller supplies the maps (SD-53 S1 — the router's own denominator),
+      // and only fall back to the legacy uniform constant when it does not.
       const satId = solve.path?.[1] ?? null;
-      const carried = satId !== null ? (loadBySat?.get(satId) ?? contract.offeredLoad) : contract.offeredLoad;
+      const pipe = solve.pipe;
+      const cap = (pipe !== null ? capByPipe?.get(pipe) : undefined) ?? NET_LINK_CAPACITY_UNITS;
+      const carried =
+        (pipe !== null ? loadByPipe?.get(pipe) : undefined) ??
+        (satId !== null ? loadBySat?.get(satId) : undefined) ??
+        contract.offeredLoad;
       const via = satId !== null ? ` via ${satId}` : "";
       return (
         `${contract.label}: trunk${via} saturated — combined load ${carried.toFixed(2)} exceeds ` +
-        `capacity ${NET_LINK_CAPACITY_UNITS.toFixed(2)}; add a parallel path or set prefer-bw on ${contract.label}.`
+        `capacity ${cap.toFixed(2)}; add a parallel path or a wider antenna.`
       );
     }
   }
@@ -208,7 +258,7 @@ export function diagnose(input: TraceInput): TraceReport {
   // `input.t` is part of the snapshot (the SYSTEM.LOG / loss-stamp wording the session renders via
   // renderFaultLine/renderLossStamp at the same t), but diagnose itself passes the fault states +
   // losses through verbatim — it does not need t for the parse, so it is not destructured here.
-  const { solves, sats, faults, loadBySat } = input;
+  const { solves, sats, faults, loadBySat, loadByPipe, capByPipe, redundantById } = input;
   const shortfalls: TraceShortfall[] = [];
   const losses: LossStamp[] = [];
 
@@ -230,7 +280,7 @@ export function diagnose(input: TraceInput): TraceReport {
     const axis: RouterAxis = solve.bindingConstraint ?? "connectivity";
     shortfalls.push({
       subjectId: contract.id,
-      message: bindingConstraintMessage(contract, solve, axis, loadBySat),
+      message: bindingConstraintMessage(contract, solve, axis, loadBySat, loadByPipe, capByPipe),
       kindOfFix: fixKindForAxis(axis),
       bindingConstraint: axis,
       losses: myLosses,
@@ -240,22 +290,26 @@ export function diagnose(input: TraceInput): TraceReport {
   // ── (2a) OVER-PROVISION (waste) — a bridging sat running far under capacity WHILE another ──
   // contract breaches (the §3a optimizer pull). Surfaced per under-loaded sat carrying a served
   // contract. Reads the roster+paths+loadBySat; re-derives nothing.
-  if (loadBySat !== undefined && anyUnserved) {
-    const idleThreshold = TRACE_OVERPROVISION_FRACTION * NET_LINK_CAPACITY_UNITS;
+  if ((loadBySat !== undefined || loadByPipe !== undefined) && anyUnserved) {
     const reported = new Set<string>();
     for (const { solve } of solves) {
       if (solve === null || !solve.served) continue;
       const satId = solve.path?.[1] ?? null;
       if (satId === null || reported.has(satId)) continue;
-      const load = loadBySat.get(satId) ?? 0;
-      if (load < idleThreshold) {
+      // SD-53 (S1): the idle threshold is a fraction of THIS PIPE's own capacity when the caller
+      // supplies the map — an ACCESS-S at 0.7u and a GATEWAY at 0.7u are not equally idle.
+      const pipe = solve.pipe;
+      const cap = (pipe !== null ? capByPipe?.get(pipe) : undefined) ?? NET_LINK_CAPACITY_UNITS;
+      const load =
+        (pipe !== null ? loadByPipe?.get(pipe) : undefined) ?? loadBySat?.get(satId) ?? 0;
+      if (load < TRACE_OVERPROVISION_FRACTION * cap) {
         reported.add(satId);
-        const pct = Math.round((load / NET_LINK_CAPACITY_UNITS) * 100);
+        const pct = cap > 0 ? Math.round((load / cap) * 100) : 0;
         shortfalls.push({
           subjectId: satId,
           message:
             `${satId} runs at ${pct}% of capacity — idle headroom while another contract breaches; ` +
-            `this contract could SHARE it (re-route / prefer-bw).`,
+            `an antenna pointed here would share it.`,
           kindOfFix: "shareIdleCapacity",
           bindingConstraint: null,
         });
@@ -274,12 +328,13 @@ export function diagnose(input: TraceInput): TraceReport {
     if (contract.state !== "active") continue;
     const satId = solve.path?.[1] ?? null;
     if (satId === null) continue;
-    // Redundancy heuristic over the roster+paths: a contract whose served path rides ONE sat and
-    // whose roster offers no SECOND sat that could carry it (≤1 sat in the roster) has no redundant
-    // bridge — one fault drops it. (≥2 sats ⇒ assume a redundant builder, no SPOF surfaced.) The
-    // session's richer re-run-excluding-the-sat check refines this when it wires the trace; the
-    // pure view flags the unmistakable single-sat case the act3b gate's layer-1 target needs.
-    const isSpof = sats.length <= 1;
+    // SD-53 (S3) — REDUNDANCY, exactly when the caller can answer it. `redundantById` holds the
+    // contracts for which some OTHER sat's link to the same region closes right now (the view
+    // computes it with one bridge search per served flow, excluding the chosen sat). When it is
+    // absent we fall back to the coarse roster heuristic: a contract whose served path rides ONE
+    // sat out of a ≤1-sat roster has no redundant bridge. That fallback is deliberately silent on
+    // a large fleet where only one bird reaches the region — which is why the exact set exists.
+    const isSpof = redundantById !== undefined ? !redundantById.has(contract.id) : sats.length <= 1;
     const faulting = faultedSatIds.has(satId);
     if (isSpof || faulting) {
       shortfalls.push({

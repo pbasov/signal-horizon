@@ -116,7 +116,7 @@ import {
   PAD_RISK_BAND,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
-import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier } from "./sim/net/sat";
+import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
 import { launchStackCost, launchVehicleCost, footprintRadiusRad, timeToServiceS, A1_GEO_PERIOD_S } from "./sim/net/world";
@@ -1755,6 +1755,85 @@ const netLinkReroute = new Map<string, number>();
 /** How fast the re-route flash decays per frame (≈ a half-second pulse at 60fps) — render-only. */
 const NET_REROUTE_DECAY = 0.04;
 
+// ── SD-53 (P0) — THE PER-FRAME NET MEMO (docs/routing-screen.md §9.2 D1/D4/D7) ─────────────
+//
+// Three reads that every net surface wants, each of which used to be recomputed independently by
+// each surface — an existing O(n²) in the shipping build, not a cost the routing screen invents:
+//
+//   · loadByPipe   — `session.loadOnPipe(pipe)` REBUILDS THE WHOLE MAP on every call
+//                    (session.ts:991). `netServedLinksSlice` called it once per served contract
+//                    and `ledgerFleetState` once per antenna slot in the fleet.
+//   · capByPipe    — the antenna's OWN `capacityUnits`, DERATED by an active degradation fault.
+//                    The router haircuts *load* by 1/factor into a throwaway map (session.ts:1185)
+//                    while `loadOnPipe` returns raw load, so `raw / (cap × factor)` is algebraically
+//                    the ratio the router actually routed against. Every surface that shows
+//                    utilisation must use it or it contradicts the sim during every degradation.
+//   · line-of-sight (sat → region) — one `bridgeForPoint` per pair; `ledgerFleetState`'s beam-sight
+//                    and the beam-pointer slice each ran their own.
+//
+// Built at most ONCE per frame (keyed on the sim time the frame renders at) and shared. Pure read
+// of the live session — no sim mutation, nothing folded, no golden movement.
+interface NetFrameMemo {
+  t: number;
+  loadByPipe: Map<string, number>;
+  capByPipe: Map<string, number>;
+  /** `${satId}|${lat}|${lon}` → does that sat close a link to that surface point right now? */
+  los: Map<string, boolean>;
+}
+let netMemoCache: NetFrameMemo | null = null;
+
+function netFrameMemo(t: number): NetFrameMemo {
+  if (netMemoCache !== null && netMemoCache.t === t) return netMemoCache;
+  const loadByPipe = new Map<string, number>();
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") continue;
+    const solve = netSession.lastSolveFor(c.id);
+    const pipe = solve?.pipe;
+    if (pipe === null || pipe === undefined) continue;
+    loadByPipe.set(pipe, (loadByPipe.get(pipe) ?? 0) + c.offeredLoad);
+  }
+  // Derate every pipe on a degrading sat by the same factor the router applied.
+  const derate = new Map<string, number>();
+  for (const f of netSession.faults) {
+    if (f.kind !== "degradation") continue;
+    const factor = f.degradedCapacityFactor;
+    if (factor > 0 && factor < 1) derate.set(f.satId, Math.min(derate.get(f.satId) ?? 1, factor));
+  }
+  const capByPipe = new Map<string, number>();
+  for (const sat of netSession.sats) {
+    const f = derate.get(sat.id) ?? 1;
+    for (let i = 0; i < sat.loadout.length; i++) {
+      capByPipe.set(beamPipeKey(sat.id, i), sat.loadout[i].capacityUnits * f);
+    }
+  }
+  netMemoCache = { t, loadByPipe, capByPipe, los: new Map() };
+  return netMemoCache;
+}
+
+/** Memoised line-of-sight: does `satId` close a link to this surface point at `t`? One
+ * `bridgeForPoint` per (sat, point) per frame, shared by every surface that asks. */
+function netSees(t: number, sat: NetSat, latRad: number, lonRad: number): boolean {
+  const memo = netFrameMemo(t);
+  const key = `${sat.id}|${latRad.toFixed(6)}|${lonRad.toFixed(6)}`;
+  const hit = memo.los.get(key);
+  if (hit !== undefined) return hit;
+  const grounds = [...netSession.grounds];
+  const sees =
+    grounds.length > 0 && bridgeForPoint(eph, { latRad, lonRad }, grounds, [sat], t).satId !== null;
+  memo.los.set(key, sees);
+  return sees;
+}
+
+/** The live load on one pipe, off the per-frame memo (never `session.loadOnPipe` per row). */
+function netPipeLoad(t: number, pipe: string): number {
+  return netFrameMemo(t).loadByPipe.get(pipe) ?? 0;
+}
+
+/** The EFFECTIVE capacity of one pipe: the antenna's own rating × any degradation haircut. */
+function netPipeCap(t: number, pipe: string): number {
+  return netFrameMemo(t).capByPipe.get(pipe) ?? 0;
+}
+
 /**
  * P1 (GDD §5 survival condition) — DRAW THE LIVE NETWORK for EVERY active served contract. Generalizes
  * the P0 single served-beam to all contracts + multi-hop/constellation paths: for each active contract
@@ -1845,15 +1924,15 @@ function netBeamPointersSlice(
   add: (rel: Vec3) => Vec3,
 ): { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[] {
   const out: { fromPosM: Vec3; toPosM: Vec3; blind: boolean }[] = [];
-  const grounds = [...netSession.grounds];
   for (const sat of netSession.sats) {
     for (let slot = 0; slot < sat.loadout.length; slot++) {
       const target = netSession.beams.get(beamPipeKey(sat.id, slot));
       if (target === undefined || target === "") continue;
       const c = netSession.contracts.find((x) => x.region.id === target);
       if (!c || c.region.bodyId !== "earth") continue;
-      const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
-      const sees = grounds.length > 0 && bridgeForPoint(eph, point, grounds, [sat], t).satId !== null;
+      // SD-53 (P0): one memoised bridge search per (sat, region) per frame, shared with
+      // ledgerFleetState's beam-sight and the routing table.
+      const sees = netSees(t, sat, c.region.latRad, c.region.lonRad);
       out.push({
         fromPosM: add(satPositionRelative(eph, sat, t)),
         toPosM: add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
@@ -1888,9 +1967,11 @@ function netServedLinksSlice(
     ];
     if (ground !== undefined) points.push(add(surfacePointRelative(ground.latRad, ground.lonRad, t)));
     // §4.3 utilisation of the serving PIPE (its own capacity, R0) — green headroom → red over-cap.
+    // SD-53 (P0): both reads come off the per-frame memo, and the capacity is DERATED by any
+    // degradation fault — so the arc's colour is the ratio the router actually routed against.
     const pipe = solve.pipe;
-    const cap = pipe !== null ? netSession.pipeCapacity(pipe) : 0;
-    const util = pipe !== null && cap > 0 ? netSession.loadOnPipe(pipe) / cap : 0;
+    const cap = pipe !== null ? netPipeCap(t, pipe) : 0;
+    const util = pipe !== null && cap > 0 ? netPipeLoad(t, pipe) / cap : 0;
     // RE-ROUTE detection: the bridging sat changed since the last served frame ⇒ flash the new path.
     live.add(c.id);
     const prevSat = netLinkLastSat.get(c.id);
@@ -2927,12 +3008,12 @@ function r1FlowRate(): number {
 function ledgerFleetState(): LedgerFleetState {
   const t = clock.seconds;
   const grounds = [...netSession.grounds];
-  /** GEOMETRY FACT for a pointed beam: does THIS sat see its target region right now? */
+  /** GEOMETRY FACT for a pointed beam: does THIS sat see its target region right now?
+   * SD-53 (P0): memoised per frame — this used to be one full bridge search per aimed antenna. */
   const beamSight = (sat: (typeof netSession.sats)[number], targetRegionId: string): boolean => {
     const c = netSession.contracts.find((x) => x.region.id === targetRegionId);
     if (!c || grounds.length === 0) return false;
-    const point = { latRad: c.region.latRad, lonRad: c.region.lonRad };
-    return bridgeForPoint(eph, point, grounds, [sat], t).satId !== null;
+    return netSees(t, sat, c.region.latRad, c.region.lonRad);
   };
   const chips: FleetChip[] = netSession.sats.map((sat) => {
     // A PARKED sat's current sub-longitude IS its aim — surface it (the €74k
@@ -2954,8 +3035,9 @@ function ledgerFleetState(): LedgerFleetState {
           type: a.type,
           target,
           pointable: isPointable(a),
-          loadU: netSession.loadOnPipe(beamPipeKey(sat.id, slot)),
-          capU: a.capacityUnits,
+          loadU: netPipeLoad(t, beamPipeKey(sat.id, slot)),
+          // SD-53 (P0): the DERATED capacity — a sick sat's chip must not claim its healthy rating.
+          capU: netPipeCap(t, beamPipeKey(sat.id, slot)),
           sight: isPointable(a) && target !== "" ? beamSight(sat, target) : null,
         };
       }),

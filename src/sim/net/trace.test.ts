@@ -3,13 +3,14 @@ import {
   diagnose,
   renderLossStamp,
   renderFaultLine,
+  FIX_CLAUSE,
   TRACE_OVERPROVISION_FRACTION,
   type ContractSolve,
 } from "./trace";
 import type { SolveResult, RouterAxis } from "./router";
 import type { Contract, SlaAxis } from "./contract";
 import { offerNetContract } from "./contract";
-import type { FaultState, LossStamp } from "./fault-types";
+import type { FaultState, LossStamp, ShortfallFixKind } from "./fault-types";
 import { NET_ACT1_REGION, NET_ACT2_REGION_LAT_RAD, type Region } from "./endpoint";
 import { NET_LINK_CAPACITY_UNITS, NET_REF_LINK_DISTANCE_M } from "./link-budget";
 import type { NetSat } from "./sat";
@@ -343,5 +344,146 @@ describe("trace.diagnose — fault-state SYSTEM.LOG lines + report shape", () =>
       t: 10,
     });
     expect(r.shortfalls).toHaveLength(0);
+  });
+});
+
+// ── SD-53 (P0) — the pure sim fixes the ROUTING SCREEN depends on ─────────────────────
+// docs/routing-screen.md §9.3. Three of them close real divergences between what the ROUTER
+// computed and what the TRACE said about it; the fourth is the shared fix-clause vocabulary.
+
+describe("SD-53 S1 — capacity is denominated PER PIPE when the caller can say so", () => {
+  it("a GATEWAY pipe at 3.00u against its own 4.00u antenna reads 4.00, not the uniform 1.50", () => {
+    const c = activeContract("REGION-2", REGION_2, ["connectivity", "bandwidth"], { offeredLoad: 1.4 });
+    const solve = unserved({ region: "REGION-2", axis: "bandwidth", path: ["REGION-2", "SAT-GW", "GROUND-0"] });
+    const r = diagnose({
+      solves: [solveOf(c, solve)],
+      sats: [sat("SAT-GW")],
+      loadByPipe: new Map([["SAT-GW:0", 3.0]]),
+      capByPipe: new Map([["SAT-GW:0", 4.0]]),
+      t: 10,
+    });
+    const s = r.shortfalls[0];
+    expect(s.kindOfFix).toBe("addParallelPath");
+    expect(s.message).toContain("3.00"); // the pipe's own load…
+    expect(s.message).toContain("4.00"); // …against the pipe's own capacity.
+    // The bug this closes: the message used to state 1.50 for every antenna in the game.
+    expect(s.message).not.toContain(NET_LINK_CAPACITY_UNITS.toFixed(2));
+  });
+
+  it("with no pipe maps the wording is byte-identical to the pre-SD-53 fallback", () => {
+    const c = activeContract("REGION-2", REGION_2, ["connectivity", "bandwidth"], { offeredLoad: 1.4 });
+    const solve = unserved({ region: "REGION-2", axis: "bandwidth", path: ["REGION-2", "SAT-LEO", "GROUND-0"] });
+    const r = diagnose({
+      solves: [solveOf(c, solve)],
+      sats: [sat("SAT-LEO")],
+      loadBySat: new Map([["SAT-LEO", 2.8]]),
+      t: 10,
+    });
+    expect(r.shortfalls[0].message).toContain(NET_LINK_CAPACITY_UNITS.toFixed(2));
+    expect(r.shortfalls[0].message).toContain("2.80");
+  });
+
+  it("the OVER-PROVISION threshold is a fraction of THAT antenna, not of 1.50", () => {
+    // 0.70u on a 4.00u GATEWAY is idle (17%); the same 0.70u on a 1.20u ACCESS-S is not (58%).
+    const idle = activeContract("REGION-2", REGION_2, ["connectivity"]);
+    const dark = activeContract("REGION-1", REGION_1, ["connectivity"]);
+    const mk = (cap: number) =>
+      diagnose({
+        solves: [
+          solveOf(idle, served("REGION-2", "SAT-BIG")),
+          solveOf(dark, unserved({ region: "REGION-1", axis: "connectivity" })),
+        ],
+        sats: [sat("SAT-BIG")],
+        loadByPipe: new Map([["SAT-BIG:0", 0.7]]),
+        capByPipe: new Map([["SAT-BIG:0", cap]]),
+        t: 10,
+      }).shortfalls.find((s) => s.kindOfFix === "shareIdleCapacity");
+    expect(mk(4.0)).toBeDefined();
+    expect(mk(4.0)?.message).toMatch(/18% of capacity/); // 0.7 / 4.0
+    expect(mk(1.2)).toBeUndefined();
+  });
+});
+
+describe("SD-53 S3 — the SPOF face is exact when the caller supplies the redundancy set", () => {
+  const twelveSats = Array.from({ length: 12 }, (_, i) => sat(`SAT-${i}`));
+
+  it("a big fleet where only ONE bird reaches the region IS flagged (the coarse heuristic is not)", () => {
+    const c = activeContract("REGION-0", NET_ACT1_REGION, ["connectivity"]);
+    const base = { solves: [solveOf(c, served("REGION-0", "SAT-3"))], sats: twelveSats, t: 10 };
+    // Coarse fallback (sats.length <= 1): silent on a twelve-sat fleet — the shipped blind spot.
+    expect(diagnose(base).shortfalls.find((s) => s.kindOfFix === "addRedundantPath")).toBeUndefined();
+    // Exact: the caller says "REGION-0 has no second bridge right now".
+    const exact = diagnose({ ...base, redundantById: new Set<string>() });
+    const spof = exact.shortfalls.find((s) => s.kindOfFix === "addRedundantPath");
+    expect(spof).toBeDefined();
+    expect(spof?.subjectId).toBe("REGION-0");
+    expect(spof?.message).toMatch(/SAT-3/);
+  });
+
+  it("a contract WITH a second bridge is silent even on a one-sat roster", () => {
+    const c = activeContract("REGION-0", NET_ACT1_REGION, ["connectivity"]);
+    const r = diagnose({
+      solves: [solveOf(c, served("REGION-0", "SAT-ONLY"))],
+      sats: [sat("SAT-ONLY")], // the coarse heuristic WOULD fire here…
+      redundantById: new Set([c.id]), // …but the caller knows better.
+      t: 10,
+    });
+    expect(r.shortfalls.find((s) => s.kindOfFix === "addRedundantPath")).toBeUndefined();
+  });
+
+  it("a faulting bridge still reads as brittle even when a redundant path exists", () => {
+    const c = activeContract("REGION-0", NET_ACT1_REGION, ["connectivity"]);
+    const fault: FaultState = {
+      satId: "SAT-SICK",
+      kind: "degradation",
+      cause: "lowOrbit",
+      startedAtS: 0,
+      degradedCapacityFactor: 0.5,
+      failsAtS: Infinity,
+      recoversAtS: 30,
+    };
+    const r = diagnose({
+      solves: [solveOf(c, served("REGION-0", "SAT-SICK"))],
+      sats: [sat("SAT-SICK"), sat("SAT-B")],
+      faults: [fault],
+      redundantById: new Set([c.id]),
+      t: 10,
+    });
+    expect(r.shortfalls.find((s) => s.kindOfFix === "addRedundantPath")?.message).toMatch(/faulting/i);
+  });
+});
+
+describe("SD-53 S4 — FIX_CLAUSE is one canonical clause per fix kind", () => {
+  it("covers every ShortfallFixKind and names hardware/geometry, never a control", () => {
+    const kinds: ShortfallFixKind[] = [
+      "addCoveringSat",
+      "addPhasedSat",
+      "shorterRoute",
+      "addParallelPath",
+      "shareIdleCapacity",
+      "addRedundantPath",
+    ];
+    for (const k of kinds) {
+      const clause = FIX_CLAUSE[k];
+      expect(clause.length).toBeGreaterThan(10);
+      // LAW 2: a fix clause never names a control, a key, or a button.
+      expect(clause).not.toMatch(/\bpress\b|\bclick\b|\bbutton\b|\bkey\b|prefer-bw|net_/i);
+    }
+  });
+});
+
+describe("SD-53 S2 — the shortfall copy never names a solver parameter at the player", () => {
+  it("the bandwidth tail asks for hardware, not for a control setting", () => {
+    const c = activeContract("REGION-2", REGION_2, ["connectivity", "bandwidth"], { offeredLoad: 1.4 });
+    const r = diagnose({
+      solves: [
+        solveOf(c, unserved({ region: "REGION-2", axis: "bandwidth", path: ["REGION-2", "SAT-LEO", "GROUND-0"] })),
+      ],
+      sats: [sat("SAT-LEO")],
+      loadBySat: new Map([["SAT-LEO", 2.8]]),
+      t: 10,
+    });
+    for (const s of r.shortfalls) expect(s.message).not.toMatch(/prefer-bw/i);
+    expect(r.shortfalls[0].message).toMatch(/wider antenna/);
   });
 });

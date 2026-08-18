@@ -652,3 +652,53 @@ A first-hand Playwright playtest confirmed the verdict with specifics: **zero de
 **X-03 STARTED (2026-08-08) — purist mode v1.** Key `M` toggles `html.cvd-mono`: every signal token rebinds to machine-white tones AND the orrery canvas runs a CSS grayscale+contrast filter (the honest merge — signal layer's meaning lives in shape/dither/position by design, so desaturation destroys nothing). Proven at the instrument level (computed --cyan + chip bg + canvas filter: 5/5 assertions). Owed for exit: the selectable deuter/protan/tritan palettes and the per-milestone colour-off playthrough tag in the canon balance scene.
 
 **X-02..X-05 + SWEEP SHIPPED (2026-08-08) — the autonomous day-2 sweep.** One arc: VAULT (quick+autosave localStorage slots, JSON-safe envelope, fold-hash receipts, prefs shelf) → PROCEDURAL AUDIO engine (deterministic plate IR, the rise/fall cue grammar, the strain-detuned health bed, ambient arpeggio; every beat wired: commits/deploys/no-seps/underburns/signs/renewals/gates/faults/dips/mars/vault/clicks) → PURIST mode v1 (M key; tokens + canvas grayscale; instrument-proven) → PERF instrumented (frame p95 1.3ms at 1000× on the mature net; the bias: panels + orrery share the top at ~0.5ms) → fuzz soak green → REVIEW's ONE NUMBERS (serve-share + net wallet flow) → boot sequence, parse-subtitle honesty, tender history strip, mission-elapsed clocks everywhere. Swept underactable leftover bits in the follow-ups list still open (WM split/tab gestures, ephemeris pool, pixel-cursor asset, cache-mode vault port). Tests: 812 unit + 64 playtest assertions green. The machine layer of the M1 gate now runs on rails: playtest soaks the hour in ~2 minutes.
+
+### SD-53 — THE ROUTING SCREEN: TRACE, a two-level flow/pipe table (supersedes the SD-44 ROUTING desktop)
+
+**Status: ACCEPTED (design), 2026-08-19.** Full spec: `docs/routing-screen.md`. GDD §5 primary view #4
+("the game's mtr") has been sim-truth and no view since the solver landed: `diagnose()` is fully
+implemented in `src/sim/net/trace.ts` and `src/main.ts:1366-1390` drains all of it — every shortfall,
+every `renderLossStamp` — into SYSTEM.LOG, which is exactly the "log line" GDD §4.3 forbids. Meanwhile
+M1 §7.3's "first thing the player tunes" reaches the player only as MISSION's two-state ROUTE toggle,
+with no surface that explains why moving it would help. SD-53 builds the missing view.
+
+**The decision it serves:** "of everything short of its SLA right now — or closest to it — which do I
+act on with a free lever, and which do I let bleed until the next launch?"
+
+**Shape (the resolution of the three-vision workflow):** a TWO-LEVEL table, not one.
+- **FLOWS** — one row per active contract (keyed `contract.id`, never `region.id`), ranked into three
+  named bands DARK → TIGHT → CLEAR, each row showing the binding axis and the two raw numbers that
+  decide it (`4.6 ms / 3.0 ms budget (153%)`), the real path (`via NET-SAT-2 · GATEWAY → GROUND-0`),
+  the why-now line, and — **on the collapsed row, never behind a disclosure** — the §7.4 binding
+  constraint + kind of fix. This is §5 #4's "pick a flow".
+- **PIPES** — one row per serving antenna with every rider's fair-share against its committed floor,
+  and **the Σfloor notch on the capacity bar**: the sum of promises, visible *before* the peak bites
+  (M1 §4.3's explicit mandate for this surface).
+
+**Six load-bearing calls:**
+1. **No printed composite "margin" scalar and no headroom gauge.** The band ordering survives; the
+   invented number dies. One bar semantic on the screen: fullness.
+2. **No pre-commit reroute preview** (the condemned SD-44 pattern). Its lawful replacement is the
+   *candidate read* — dashed arcs for every other pipe whose link closes **right now**, plus the count
+   as a fact — and the *re-route event* after commit, with real animation budget.
+3. **Arc colour stays utilisation.** `Orrery.utilColor` is pinned by `orrery-net-mode.test.ts`;
+   contract identity hue rides the row rule, region fill, hop pips and bar segments instead.
+4. **Two prefer stops, not three.** `w_stab` is hard-zero; a STABILITY stop that does nothing
+   measurable is the sharpest LAW-1 risk on a screen whose claim is that its numbers are true.
+5. **Panel first, desktop later.** `trace` ships rail-summonable with no preset and no `3` key; the
+   TRACE desktop is P4 and gated on a playtest proving the full-height globe is needed.
+6. **The unit `u` is defined on screen** and every axis pair carries its ratio percentage.
+
+**Four sim changes (pure, unfolded, golden-neutral):** per-pipe capacity threaded into `diagnose`'s
+bandwidth message and over-provision threshold (a real bug — a GATEWAY at 3.0 u is 75 % full to the
+router and "exceeds capacity 1.50" to the trace); the `set prefer-bw on X` tail reworded (it names a
+control) with `../sim/net/trace.ts` added to the copy-lint SIM_FILES; `redundantById` accepted so the
+SPOF face stops resting on `sats.length <= 1`; and an exported `FIX_CLAUSE` map.
+
+**Consequences:** `src/panels/link-load.ts` and `ROUTING·PREFER`/`netPreferControl()` are deleted
+(absorbed); the shortfall drain into SYSTEM.LOG is removed and the loss drain halved to first-occurrence
+only; `howto.ts`'s retired ROUTING string goes with them; `loadByPipe` and the line-of-sight solve are
+hoisted into per-frame memos shared with `netServedLinksSlice` and `ledgerFleetState` (fixing an existing
+O(n²)); net-side rail/preset coverage assertions are added to `window-rail.test.ts`, which today pins
+cache mode only. Net panel count 6 → 7 hosts, two dead files deleted. **TRACE is the last net desktop
+before the M1 gate.**
