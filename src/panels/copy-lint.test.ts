@@ -34,7 +34,6 @@ const FILES = [
   "onboarding.ts",
   "status-board.ts",
   "coverage-roster.ts",
-  "link-load.ts",
   "net-planner.ts",
   "contracts.ts",
   "finance.ts",

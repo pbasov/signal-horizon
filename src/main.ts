@@ -3936,15 +3936,14 @@ function setWmPreset(i: number): void {
   // net/ M1 (SD-44 PHASE 1) — set the orrery CAMERA by the desktop NAME so each operating desktop opens
   // at the right framing: OVERVIEW + CONNECTIVITY → EARTH (near-body, where sats + footprints read
   // large); ROUTING → ORBITS (pulled back so the live links read across the constellation). BUSINESS +
-  // REFERENCE don't mount the orrery, so the camera is left as-is.
+  // desktops that don't mount the orrery leave the camera as-is.
   if (netMode) {
-    if (wmPresetName === "OVERVIEW" || wmPresetName === "CONNECTIVITY") orrery.setPreset(0); // EARTH
-    else if (wmPresetName === "ROUTING") orrery.setPreset(2); // ORBITS
+    // SD-53: the OVERVIEW / CONNECTIVITY / ROUTING camera branches that used to live here were DEAD
+    // — SD-45 deleted those three desktops from NET_PRESET_SPECS and nothing has matched these
+    // literals since. Preset names are load-bearing strings with no type linking them to the specs,
+    // so dead branches here are invisible; the next reader inherits the confusion. Removed.
     // #14 — HERO globe framing per desktop. The bare EARTH preset frames the toy globe at ~3px (its
-    // scene radius is tiny); only a sphere-FILL dolly makes it legible. OVERVIEW is the triage glance,
-    // so frame Earth as a clear central hero with room for the constellation around it; CONNECTIVITY
-    // (where you launch) frames it a touch larger so the regions/footprints read. ROUTING stays pulled
-    // back (fill 0) so the live links read across the whole constellation.
+    // scene radius is tiny); only a sphere-FILL dolly makes it legible.
     // R1 (SD-45): MISSION is the one primary desktop — the globe is the hero there, framed
     // so a full GEO ring (≈2.8× the globe radius) FITS with margin: fill 0.24 ⇒ ring
     // diameter ≈ 0.67 of the pane height (user report: 0.38 clipped the orbits off-screen).
@@ -3954,10 +3953,10 @@ function setWmPreset(i: number): void {
     if (wmPresetName === "MISSION") r1HeroDesired = netSession.sats.length === 0 ? 0.45 : 0.24;
     else r1HeroDesired = 0;
   }
-  // PARSE lives on the REFERENCE desktop now (the §4.12 reviewable-at-rest record). Force-fold the run
+  // PARSE lives on REVIEW (the §4.12 reviewable-at-rest record). Force-fold the run
   // summary on entry so it reflects the live log even on a paused run (the per-frame caller is dirty-
   // checked). In cache mode PARSE still lives on REVIEW. Summoning PARSE via the rail does the same.
-  if (wmPresetName === "REFERENCE" || wmPresetName === "REVIEW") refreshParse(true);
+  if (wmPresetName === "REVIEW") refreshParse(true);
 }
 
 /**
@@ -4208,7 +4207,7 @@ window.addEventListener("keydown", (e) => {
   else if (k === "g" || k === "G") {
     // G — TOGGLE THE PARSE (§4.12 reviewable-at-rest record). PARSE is a panel summoned via the right
     // rail. G is the keyboard parity: SUMMON it into the focused tile if it is off-screen, else jump to
-    // its at-rest home desktop (REFERENCE in net mode, REVIEW in cache mode). Summoning folds the run.
+    // its at-rest home desktop (REVIEW in both modes). Summoning folds the run.
     if (shell.visibleHosts().includes("parse")) {
       const home = "REVIEW"; // R1 (SD-45): net mode reads at REVIEW too.
       setWmPreset(presets.findIndex((p) => p.name === home));

@@ -789,8 +789,6 @@ body {
 .net-stepper .net-btn { padding: 0 7px; min-width: 0; line-height: 1.7; }
 .net-stepper-n { min-width: 1.4em; text-align: center; color: var(--cyan); font-weight: 700; }
 /* LINK·LOAD allocation ledger — the per-contract served-vs-floor split under a shared sat. */
-.linkload-ledger { color: var(--fg-dim); font-size: var(--ts-cap); letter-spacing: 0.01em; margin-top: 2px; }
-.linkload-ledger.red { color: var(--red); }
 /* Price-the-bet verdict tones on the offered-contract underwrite line. */
 .net-contract-prog.amber { color: var(--amber); }
 .net-contract-prog.green { color: var(--green); }
@@ -817,26 +815,6 @@ body {
 .roster-dark.amber { color: var(--amber); font-weight: 700; }
 .roster-dark.green { color: var(--green); }
 .roster-dark.dim { color: var(--grey); font-style: italic; }
-
-/* LINK·LOAD rows: per-bridging-sat utilisation. A head (id + %), a 1-bit bar whose WIDTH carries the
-   load (redundant with the % number + colour), then a meta line (sharing contracts + binding axis). */
-.linkload-rows { display: flex; flex-direction: column; gap: 5px; margin: 3px 0 1px; }
-.linkload-row { border: 1px solid var(--line-dim); padding: 3px 6px 4px; }
-.linkload-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.linkload-head .linkload-id { color: var(--fg); font-weight: 700; font-size: var(--ts-ui); letter-spacing: 0.02em; }
-.linkload-pct { font-size: var(--ts-ui); text-align: right; }
-.linkload-bar {
-  height: 6px;
-  margin: 3px 0 2px;
-  background: var(--bg-2);
-  border: 1px solid var(--line-dim);
-  overflow: hidden;
-}
-.linkload-bar-fill { height: 100%; width: 0; background: var(--green); }
-.linkload-bar-fill.green { background: var(--green); }
-.linkload-bar-fill.amber { background: var(--amber); }
-.linkload-bar-fill.red { background: var(--red); }
-.linkload-meta { color: var(--fg-dim); font-size: 10px; }
 
 /* HOW IT WORKS cards: one bordered explainer per concept. The LIVE card (current act) gets a cyan
    title; LOCKED (future) cards dim with a "LOCKED" tag (a word, not just dimming). 1-bit chrome. */
