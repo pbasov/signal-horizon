@@ -126,6 +126,8 @@ import {
   TRACE_BLEEDS, TRACE_DARK_FOR, TRACE_DERATED, TRACE_FLOODLIGHT, TRACE_LAST_LOSS, TRACE_MARS_LIGHT,
   TRACE_MARS_NO_ALTERNATIVE, TRACE_MARS_VIA, TRACE_NODE_CARRYING, TRACE_NODE_FAILS, TRACE_NODE_RECOVERS,
   TRACE_NO_BRIDGE, TRACE_NO_SIGHT, TRACE_OVERFLOW, TRACE_OVERPROMISED, TRACE_TIGHT_FOR, TRACE_UNAIMED, TRACE_VIA,
+  TRACE_PICK_ALREADY_SERVED, TRACE_PICK_CURRENT, TRACE_PICK_IN_VIEW, TRACE_PICK_NO_SIGHT, TRACE_PICK_STOW,
+  TRACE_PICK_STOW_CARRYING, TRACE_PICK_STOW_IDLE,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
@@ -2322,7 +2324,13 @@ function r1CycleBeam(satId: string, slot: number): void {
     .map((c) => c.region.id);
   const cycle = [...targets, ""];
   const cur = netSession.beams.get(beamPipeKey(satId, slot)) ?? "";
-  const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
+  r1AssignBeam(satId, slot, cycle[(cycle.indexOf(cur) + 1) % cycle.length]);
+}
+
+/** SD-53 — point one antenna at ONE named target (`""` stows it). The fleet strip's cycle and the
+ * routing screen's picker are the same verb with different affordances; both land here, and both
+ * go out as one recorded `net_assign_beam` so live == replay. */
+function r1AssignBeam(satId: string, slot: number, next: string): void {
   const res = applyAndRecordNetAction(netAssignBeamAction(satId, slot, next, clock.tick));
   if (res && res.kind === "beam_assigned") {
     // SD-53 — pointing an antenna is a commit with a real cost (it un-serves whoever it left), so
@@ -2926,7 +2934,17 @@ const tracePanel = new Trace({
     if (parsed !== null) orrery.selectedId = parsed.satId;
   },
   onRoute: (contractId, pos) => netSetPrefer(contractId, pos),
-  onRepoint: (satId, slotIdx) => r1CycleBeam(satId, slotIdx),
+  // REPOINT opens a PICKER; it does not blind-cycle. Re-pointing is free and instant but it
+  // un-serves whoever the antenna was on, so the consequence is stated before the commit, per
+  // option — not discovered afterwards by a curious click.
+  onRepoint: (satId, slotIdx) => {
+    const key = beamPipeKey(satId, slotIdx);
+    traceRepointOpen = traceRepointOpen === key ? null : key;
+  },
+  onRepointPick: (satId, slotIdx, regionId) => {
+    traceRepointOpen = null;
+    r1AssignBeam(satId, slotIdx, regionId);
+  },
   onHoverLoss: () => {},
   onHoverPipe: () => {},
   onToggleIdle: () => {
@@ -2987,6 +3005,8 @@ const TRACE_REROUTE_FRAMES = 90;
 let traceSelectedFlowId: string | null = null;
 /** Whether the idle-pipe summary is expanded into rows. */
 let traceIdleExpanded = false;
+/** The pipe whose REPOINT target picker is open (`satId:slotIdx`), or null. One at a time. */
+let traceRepointOpen: string | null = null;
 /** Minimum sim-seconds between two stamps on one link before they count as separate outages. */
 const TRACE_LOSS_MIN_SPACING_S = 8;
 
@@ -3354,6 +3374,8 @@ function traceState(): TraceState {
         riders,
         anyStarved: riders.some((r) => r.flag === "starved"),
         pointable: isPointable(a),
+        repointOpen: traceRepointOpen === key,
+        repointOptions: traceRepointOpen === key ? traceRepointOptions(t, sat, key, target) : [],
       });
     }
   }
@@ -3463,6 +3485,55 @@ function traceAccrueHistory(t: number): void {
   }
 }
 
+
+/**
+ * SD-53 — the REPOINT picker's options and the FACTS on each (docs/routing-screen.md §6.1).
+ *
+ * Every option states the consequence before the commit: whether this satellite can actually reach
+ * that region right now (pointing does not bend physics), and who is riding this antenna today —
+ * because re-pointing is free and instant, and it un-serves them. It never ranks the options and
+ * never marks one as the answer; the player is choosing who to protect, and that is the decision
+ * this whole screen exists to serve.
+ */
+function traceRepointOptions(
+  t: number,
+  sat: NetSat,
+  pipe: string,
+  currentTarget: string,
+): import("./panels/trace").RepointOption[] {
+  const out: import("./panels/trace").RepointOption[] = [];
+  const carrying = netSession.contracts.filter(
+    (c) => c.state === "active" && netSession.lastSolveFor(c.id)?.pipe === pipe,
+  );
+  for (const c of netSession.contracts) {
+    if (c.state !== "active" && c.state !== "offered") continue;
+    if (c.region.bodyId !== "earth") continue;
+    if (out.some((o) => o.regionId === c.region.id)) continue;
+    const sees = netSees(t, sat, c.region.latRad, c.region.lonRad);
+    const isCurrent = currentTarget === c.region.id;
+    const servedElsewhere = netSession.lastSolveFor(c.id)?.served ?? false;
+    const note = isCurrent
+      ? TRACE_PICK_CURRENT
+      : !sees
+        ? TRACE_PICK_NO_SIGHT
+        : servedElsewhere
+          ? TRACE_PICK_ALREADY_SERVED
+          : TRACE_PICK_IN_VIEW;
+    out.push({ regionId: c.region.id, label: c.label, sees, note, current: isCurrent });
+  }
+  // STOW is always an option, and it states its own cost the same way.
+  out.push({
+    regionId: "",
+    label: TRACE_PICK_STOW,
+    sees: true,
+    note:
+      carrying.length === 0
+        ? TRACE_PICK_STOW_IDLE
+        : TRACE_PICK_STOW_CARRYING(carrying.map((c) => c.label).join(", ")),
+    current: currentTarget === "",
+  });
+  return out;
+}
 
 /**
  * SD-53 — the routing screen's AUDIO EDGES. GDD §5 makes audio a second information channel, not a

@@ -430,6 +430,63 @@ export default {
       );
     }
 
+    // ── 7c. THE REPOINT PICKER — the free lever, with its consequence stated first ──────
+    {
+      const closed = await ctx.eval(() => document.querySelectorAll("[data-net=repoint-pick]").length);
+      ctx.ok("the picker is closed until asked for", closed === 0, `${closed} options showing`);
+
+      const opened = await ctx.eval(() => {
+        const b = document.querySelector("[data-net=repoint]");
+        if (!b) return null;
+        b.click();
+        return { sat: b.getAttribute("data-sat"), slot: b.getAttribute("data-slot") };
+      });
+      await ctx.settle(350);
+      const picker = await ctx.eval(() =>
+        [...document.querySelectorAll("[data-net=repoint-pick]")].map((b) => ({
+          region: b.getAttribute("data-region"),
+          text: b.textContent ?? "",
+          blind: b.className.includes("blind"),
+          current: b.className.includes("active"),
+        })),
+      );
+      if (opened !== null) {
+        ctx.ok("REPOINT opens a target picker rather than blind-cycling", picker.length >= 2, `${picker.length} options`);
+        ctx.ok(
+          "every option states the consequence of committing there",
+          picker.every((o) => /in view|not in view|pointed here now|points at nothing/.test(o.text)),
+          picker.map((o) => o.text).join(" | "),
+        );
+        ctx.ok(
+          "STOW is offered and says what it would drop",
+          picker.some((o) => o.region === "" && /points at nothing/.test(o.text)),
+          picker.find((o) => o.region === "")?.text ?? "(no stow option)",
+        );
+        ctx.ok(
+          "an unreachable target is SHOWN and reads unavailable on two channels",
+          picker.every((o) => !o.blind || /not in view/.test(o.text)),
+          picker.filter((o) => o.blind).map((o) => o.text).join(" | ") || "(all reachable)",
+        );
+        ctx.ok("no option is marked as the answer", !/best|recommend|optimal/i.test(picker.map((o) => o.text).join(" ")));
+
+        // Committing lands one recorded action and closes the picker.
+        const target = picker.find((o) => o.region !== "" && !o.blind && !o.current) ?? picker.find((o) => o.region === "");
+        const before = await ctx.eval(() => [...document.querySelectorAll(".log-line .msg")].length);
+        await ctx.eval((r) => {
+          const b = [...document.querySelectorAll("[data-net=repoint-pick]")].find((x) => x.getAttribute("data-region") === r);
+          b?.click();
+        }, target?.region ?? "");
+        await ctx.settle(400);
+        const after = await ctx.eval(() => ({
+          lines: [...document.querySelectorAll(".log-line .msg")].length,
+          open: document.querySelectorAll("[data-net=repoint-pick]").length,
+          last: [...document.querySelectorAll(".log-line .msg")].slice(-1)[0]?.textContent ?? "",
+        }));
+        ctx.ok("committing a target closes the picker", after.open === 0, `${after.open} options still showing`);
+        ctx.ok("the commit lands one beam action on the WIRE", after.lines > before && /beam/.test(after.last), after.last);
+      }
+    }
+
     // ── 8. the lawfulness sweep over everything the panel actually rendered ──────
     const text = await ctx.eval(() => document.querySelector(".trace")?.textContent ?? "");
     ctx.ok("no pre-commit verdict anywhere on the board", !/WILL SERVE|NEED \d|HOLDS ✓|RECOMMENDED/i.test(text), text.slice(0, 100));

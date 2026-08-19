@@ -206,3 +206,13 @@ export const TRACE_TIP_BAND =
 /** SD-53 — a flow's path just MOVED. The row names where it came from for a beat while the globe
  * flashes the new path: a re-route is an event you watch, not a line you find in a log later. */
 export const TRACE_REROUTED = (fromPipe: string): string => `re-routed from ${fromPipe}`;
+
+/** SD-53 — the REPOINT picker's per-option FACTS. Each states the consequence of committing this
+ * antenna to that target, before the commit — never a ranking, never a recommendation. */
+export const TRACE_PICK_CURRENT = "pointed here now";
+export const TRACE_PICK_NO_SIGHT = "not in view from this satellite";
+export const TRACE_PICK_ALREADY_SERVED = "in view · already carried elsewhere";
+export const TRACE_PICK_IN_VIEW = "in view · dark";
+export const TRACE_PICK_STOW = "STOW";
+export const TRACE_PICK_STOW_IDLE = "points at nothing · nobody riding";
+export const TRACE_PICK_STOW_CARRYING = (labels: string): string => `points at nothing · drops ${labels}`;

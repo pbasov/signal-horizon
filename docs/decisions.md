@@ -768,3 +768,26 @@ the row states.
 Also: the re-route edge (`re-routed from NET-SAT-2 · GATEWAY` for a beat after a path moves — GDD
 §4.3 says a re-route is theatre, not a log line) and three edge-triggered cues, `link_lost`,
 `rider_starved`, `beam_committed`, following the shipped rise-good/fall-bad grammar.
+
+**SD-53 — the REPOINT picker (2026-08-19).** The first cut shipped REPOINT wired to the fleet
+strip's blind cycle, which the cold-player review had already named a footgun: it un-serves whoever
+the antenna was on the moment you poke it out of curiosity, and it never says what you are about to
+point at. Replaced with the §6.1 target picker — one option per live demand plus STOW, each stating
+the consequence of committing there and nothing else:
+
+```
+corridor metro     · pointed here now
+coastal backhaul   · in view · already carried elsewhere
+equatorial metro   · in view · dark
+polar metro        · not in view from this satellite
+STOW               · points at nothing · drops corridor metro
+```
+
+No option is ranked and none is marked as the answer — the player is choosing who to protect, which
+is the decision the whole screen exists to serve. An unreachable target is SHOWN rather than hidden
+(pointing does not bend physics, and hiding the impossible one leaves the player wondering where it
+went) and reads unavailable on two channels: a dashed border and the stated reason in the label.
+`r1CycleBeam` and the picker now land in one shared `r1AssignBeam(satId, slot, target)`, so the
+fleet strip and the routing screen are the same verb with different affordances and one recorded
+`net_assign_beam` behind both. Seven scene assertions, including that committing lands exactly one
+beam line on the WIRE and closes the picker.

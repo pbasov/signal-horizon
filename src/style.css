@@ -1371,3 +1371,16 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 /* SD-53 — the row's re-route marker: the path MOVED, and for a beat the row says where from.
    Warm because it is an event, not a state. */
 .trace-cands.rerouted { color: var(--amber); }
+/* SD-53 — the REPOINT target picker: one option per reachable demand, each stating what committing
+   this antenna there would do. A blind cycle button was the footgun this replaces. */
+.pipe-picker { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 1px 6px; }
+.pipe-pick {
+  width: 100%; text-align: left; font-size: var(--ts-cap); padding: 2px 6px;
+  text-transform: none; letter-spacing: 0.02em;
+}
+/* An option this satellite cannot actually reach still SHOWS — pointing does not bend physics, and
+   hiding the impossible one leaves the player wondering where it went. It reads as unavailable on
+   two channels: the dashed border and the stated reason in the label. */
+.pipe-pick.blind { color: var(--grey); border-style: dashed; }
+.pipe-pick.active { border-color: var(--cyan); }
+.pipe-repoint.active { color: var(--cyan); border-color: var(--cyan); }

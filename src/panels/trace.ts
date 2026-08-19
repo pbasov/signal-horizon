@@ -123,6 +123,29 @@ export interface TracePipe {
   /** True when any rider is under its floor — the word `STARVING` joins the state cell. */
   anyStarved: boolean;
   pointable: boolean;
+  /** True while this pipe's target picker is open (exactly one is open at a time). */
+  repointOpen: boolean;
+  /**
+   * Where this antenna COULD be pointed, each option carrying the facts that decide it — never a
+   * recommendation. A blind cycle button ("click to advance the target") is a footgun: it un-serves
+   * whoever the beam was on the moment you poke it out of curiosity, and it never says what you are
+   * about to point at. This is the same verb with the consequence stated first.
+   */
+  repointOptions: RepointOption[];
+}
+
+/** One target an antenna could be pointed at, and the facts about pointing it there. */
+export interface RepointOption {
+  /** The region id the beam would be assigned to; `""` STOWS the beam (points it nowhere). */
+  regionId: string;
+  label: string;
+  /** Does this satellite close a link to that region RIGHT NOW? Pointing does not bend physics. */
+  sees: boolean;
+  /** The consequence, stated: who is riding this pipe today, or that the target is already served
+   * elsewhere, or that the beam is currently where you are hovering. */
+  note: string;
+  /** True for the option the beam is already on. */
+  current: boolean;
 }
 
 /** One promise, ranked. */
@@ -231,7 +254,10 @@ export interface TraceActions {
   onSelectPipe(pipe: string): void;
   /** The SAME verb MISSION's tender rows already use — one action, one representation. */
   onRoute(contractId: string, pos: number): void;
+  /** Open (or close) this antenna's target picker. Changes nothing about the sim. */
   onRepoint(satId: string, slotIdx: number): void;
+  /** Commit the beam to a target (`""` stows it) — one `net_assign_beam`, replay-safe. */
+  onRepointPick(satId: string, slotIdx: number, regionId: string): void;
   onHoverLoss(key: string | null): void;
   onHoverPipe(pipe: string | null): void;
   onToggleIdle(): void;
@@ -325,6 +351,7 @@ interface PipeRowEls {
   overflow: HTMLElement;
   riders: HTMLElement;
   riderEls: Map<string, { root: HTMLElement; label: HTMLElement; nums: HTMLElement; flag: HTMLElement }>;
+  picker: HTMLElement;
 }
 
 export class Trace implements PanelHandle {
@@ -664,9 +691,10 @@ export class Trace implements PanelHandle {
     barLine.append(barHousing, overflow);
 
     const riders = el("div", "pipe-riders");
-    root.append(head, barLine, riders);
+    const picker = el("div", "pipe-picker");
+    root.append(head, barLine, riders, picker);
     this.pipesHost.appendChild(root);
-    return { root, head, id, target, load, derate, pct, state, repoint, barHousing, segs, notch, overflow, riders, riderEls: new Map() };
+    return { root, head, id, target, load, derate, pct, state, repoint, barHousing, segs, notch, overflow, riders, riderEls: new Map(), picker };
   }
 
   private paintPipeRow(e: PipeRowEls, p: TracePipe): void {
@@ -681,6 +709,7 @@ export class Trace implements PanelHandle {
     setText(e.state, `${stateWord(p.state)}${p.anyStarved ? " · STARVING" : ""}`);
     e.state.className = `pipe-state ${p.state}${p.anyStarved ? " starving" : ""}`;
     setShown(e.repoint, p.pointable);
+    e.repoint.classList.toggle("active", p.repointOpen);
 
     // Segments: one per rider, in rider-line order, each with its own dither texture so the
     // attribution survives monochrome-purist mode.
@@ -725,6 +754,26 @@ export class Trace implements PanelHandle {
         e.riderEls.set(r.contractId, { root: row, label, nums, flag });
       }
     }
+    // THE TARGET PICKER — every option states what it would do before you do it.
+    setShown(e.picker, p.repointOpen);
+    if (p.repointOpen) {
+      const sig = p.repointOptions.map((o) => `${o.regionId}:${o.sees ? 1 : 0}:${o.current ? 1 : 0}`).join("|");
+      if (e.picker.getAttribute("data-sig") !== sig) {
+        e.picker.setAttribute("data-sig", sig);
+        e.picker.replaceChildren();
+        for (const o of p.repointOptions) {
+          const b = btn(`net-btn pipe-pick${o.current ? " active" : ""}${o.sees ? "" : " blind"}`, () =>
+            this.actions.onRepointPick(p.satId, p.slotIdx, o.regionId),
+          );
+          b.setAttribute("data-net", "repoint-pick");
+          b.setAttribute("data-region", o.regionId);
+          b.setAttribute("data-pipe", p.pipe);
+          b.textContent = `${o.label} · ${o.note}`;
+          e.picker.appendChild(b);
+        }
+      }
+    }
+
     for (const r of p.riders) {
       const re = e.riderEls.get(r.contractId);
       if (re === undefined) continue;
