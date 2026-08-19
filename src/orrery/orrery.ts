@@ -358,6 +358,21 @@ export interface NetRenderState {
    * VISIBLE before it breaches. `rerouteAge ∈ [0,1]` rises to 1 the instant the path's bridging sat
    * changed (a set/fault re-route) and decays — the orrery flashes the new path so the self-healing
    * re-route reads, rather than snapping invisibly. Empty until ≥1 active contract is served. */
+  /**
+   * SD-53 — THE TRACED FLOW (GDD §5 view #4 / §4.3a: "pick a flow … the orrery renders its actual
+   * current path"). The contract id selected in the routing table, or null. The traced path renders
+   * at full strength while every OTHER served path drops to {@link NET_TRACE_DIM} — so the answer
+   * to "where does this one actually go" is a picture, not a row of ids. Render-only.
+   */
+  tracedContractId: string | null;
+  /**
+   * SD-53 — THE CANDIDATE ARCS. For the traced flow, one dashed arc region→sat for every OTHER
+   * satellite whose link to that region CLOSES RIGHT NOW. This is the lawful answer to the fact
+   * that the route-bias lever frequently cannot move anything: it is geometry recomputed this
+   * frame, not a preview of what the solver would choose (which would be a pre-commit verdict).
+   * When the lever does nothing, the absence of a second arc is the reason, made spatial.
+   */
+  candidateArcs: { fromPosM: Vec3; toPosM: Vec3 }[];
   servedLinks: {
     /** The contract id this path serves (the re-route tracker keys on it). */
     contractId: string;
@@ -496,6 +511,13 @@ const MAX_NET_FOOTPRINTS = 12;
  * headroom for the multi-hop relay graph of Acts 2–3). The pooled LineSegments holds
  * MAX_NET_LINKS·MAX_NET_LINK_HOPS segments; per-frame the writer fills the in-use prefix. */
 const MAX_NET_LINKS = 16;
+/** SD-53 — how far an UNTRACED path's colour is pulled down while another flow is traced. Dim
+ * enough that the traced path is unmistakable, bright enough that the rest of the network is still
+ * a network. The utilisation ramp itself is untouched (Orrery.utilColor is pinned by a test) — this
+ * scales the result, so a congesting sibling still reads warm, just quieter. */
+const NET_TRACE_DIM = 0.3;
+/** Max candidate arcs drawn at once (other pipes whose link to the traced region closes now). */
+const MAX_NET_CANDIDATES = 12;
 const MAX_NET_LINK_HOPS = 4;
 /** §3 — the DRAFT ground-track dashed-line vertex cap (the previewLaunch ground-track is sampled
  * at NET_GROUND_TRACK_SAMPLES=64 over one period; the line draws a dash per adjacent pair). */
@@ -928,6 +950,8 @@ export class Orrery {
    * reroute made legible). Built once with a fixed segment cap; positions+colours rewritten per frame
    * from {@link NetRenderState.servedLinks} (render-only, no per-frame alloc). */
   private netServedLinks?: THREE.LineSegments;
+  /** SD-53 — dashed region→sat arcs for the traced flow's other reachable pipes. */
+  private netCandidateLines?: THREE.LineSegments;
   private netBeamLines?: THREE.LineSegments;
   private netBlindBeamLines?: THREE.LineSegments;
   private netLaunchArcLines?: THREE.Line;
@@ -1249,6 +1273,25 @@ export class Orrery {
       this.netBeamLines.visible = false;
       this.netBeamLines.renderOrder = 14.5;
       this.scene.add(this.netBeamLines);
+      // SD-53 — CANDIDATE ARCS: dashed region→sat segments for the pipes that COULD carry the
+      // traced flow right now. Dashed is the non-colour channel (a candidate is a possibility, and
+      // it looks like one); the hue only reinforces it.
+      const geoC = new THREE.BufferGeometry();
+      geoC.setAttribute("position", new THREE.BufferAttribute(new Float32Array(2 * 3 * MAX_NET_CANDIDATES), 3));
+      const matC = new THREE.LineDashedMaterial({
+        color: 0x8e84ff,
+        transparent: true,
+        opacity: 0.65,
+        depthTest: false,
+        depthWrite: false,
+        dashSize: 0.05,
+        gapSize: 0.035,
+      });
+      this.netCandidateLines = new THREE.LineSegments(geoC, matC);
+      this.netCandidateLines.frustumCulled = false;
+      this.netCandidateLines.visible = false;
+      this.netCandidateLines.renderOrder = 14.4;
+      this.scene.add(this.netCandidateLines);
       const geoB = new THREE.BufferGeometry();
       geoB.setAttribute("position", new THREE.BufferAttribute(new Float32Array(2 * 3 * 24), 3));
       const matB = new THREE.LineBasicMaterial({ color: 0xe2604a, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false });
@@ -2306,6 +2349,10 @@ export class Orrery {
     const pointers = nsAll?.beamPointers ?? [];
     drawSegs(this.netBeamLines, pointers.filter((p) => !p.blind));
     drawSegs(this.netBlindBeamLines, pointers.filter((p) => p.blind));
+    // SD-53 — the candidate arcs. Dashed geometry needs its line distances recomputed whenever the
+    // vertices move, which is every frame here (the region and the sats are both in motion).
+    drawSegs(this.netCandidateLines, nsAll?.candidateArcs ?? []);
+    if (this.netCandidateLines?.visible === true) this.netCandidateLines.computeLineDistances();
     const arcs = nsAll?.launchArcs ?? [];
     // FL-14 — every concurrent launch gets its own pooled arc line (no more arcs[0]-only).
     for (let pi = 0; pi < this.netLaunchArcPool.length; pi++) {
@@ -2349,9 +2396,15 @@ export class Orrery {
       Orrery.utilColor(lk.util, this._netUtilCool, this._netUtilWarm, this._netUtilHot, this._netLinkScratch);
       const flash = lk.rerouteAge < 0 ? 0 : lk.rerouteAge > 1 ? 1 : lk.rerouteAge;
       if (flash > 0) this._netLinkScratch.lerp(this._netRerouteFlash, flash);
-      const cr = this._netLinkScratch.r;
-      const cg = this._netLinkScratch.g;
-      const cb = this._netLinkScratch.b;
+      // SD-53 — THE TRACE. With a flow selected in the routing table, its path holds full strength
+      // and every other path dims: "pick a flow and the orrery renders its actual current path"
+      // (GDD §5 #4). The utilisation ramp is SCALED, never replaced, so a congesting sibling still
+      // reads warm — quieter, not recoloured. With nothing selected the whole web reads normally.
+      const traced = ns?.tracedContractId ?? null;
+      const dim = traced !== null && lk.contractId !== traced ? NET_TRACE_DIM : 1;
+      const cr = this._netLinkScratch.r * dim;
+      const cg = this._netLinkScratch.g * dim;
+      const cb = this._netLinkScratch.b * dim;
       for (let i = 0; i + 1 < pts.length; i++) {
         if (seg >= segCap) break;
         const a = pts[i];

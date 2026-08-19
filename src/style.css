@@ -1390,3 +1390,6 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 .pipe-seg.hue-3, .pipe-seg.hue-4, .pipe-seg.hue-5 { background-color: var(--hue); }
 .pipe-rider.hue-0 .rider-label, .pipe-rider.hue-1 .rider-label, .pipe-rider.hue-2 .rider-label,
 .pipe-rider.hue-3 .rider-label, .pipe-rider.hue-4 .rider-label, .pipe-rider.hue-5 .rider-label { color: var(--hue); }
+/* SD-53 — the row's re-route marker: the path MOVED, and for a beat the row says where from.
+   Warm because it is an event, not a state. */
+.trace-cands.rerouted { color: var(--amber); }

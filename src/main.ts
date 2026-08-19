@@ -1506,6 +1506,34 @@ function netFocusBlobSlice(t: number, add: (rel: Vec3) => Vec3): { centerPosM: V
   };
 }
 
+/**
+ * SD-53 — THE CANDIDATE ARCS (docs/routing-screen.md §6.3). For the flow selected in the routing
+ * table, one dashed region→sat arc per OTHER satellite whose link to that region closes RIGHT NOW.
+ *
+ * This is the lawful substitute for the condemned pre-commit reroute preview. It does not say what
+ * the solver WOULD pick if you moved the bias — that would be a solved answer printed before you
+ * committed. It says which pipes can physically reach the region this instant, which is a fact the
+ * geometry already contains. And when the bias lever cannot move anything, the absence of a second
+ * arc IS the reason, made spatial instead of unexplained.
+ */
+function netCandidateArcsSlice(t: number, add: (rel: Vec3) => Vec3): { fromPosM: Vec3; toPosM: Vec3 }[] {
+  const id = traceSelectedFlowId;
+  if (id === null) return [];
+  const c = netSession.contractById(id);
+  if (c === null || c.state !== "active" || c.region.bodyId !== "earth") return [];
+  const servingSatId = netSession.lastSolveFor(c.id)?.path?.[1] ?? null;
+  const from = add(surfacePointRelative(c.region.latRad, c.region.lonRad, t));
+  const out: { fromPosM: Vec3; toPosM: Vec3 }[] = [];
+  for (const sat of netSession.sats) {
+    if (sat.id === servingSatId) continue; // the chosen path is drawn as the traced link, not a candidate.
+    if (!sat.loadout.some((a) => isServingType(a))) continue;
+    if (!netSees(t, sat, c.region.latRad, c.region.lonRad)) continue;
+    out.push({ fromPosM: from, toPosM: add(satPositionRelative(eph, sat, t)) });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 function netRenderState(): import("./orrery/orrery").NetRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
@@ -1533,6 +1561,10 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       // P1 — the live network: even with no current teaching contract, draw any OTHER active served
       // contract's path (e.g. an Act-3a corridor contract while the teaching cursor is elsewhere).
       servedLinks: netServedLinksSlice(t, add),
+      // SD-53 — the trace: which flow the routing table has selected, and which other pipes could
+      // carry it right now. Both render-only; neither touches the sim.
+      tracedContractId: traceSelectedFlowId,
+      candidateArcs: netCandidateArcsSlice(t, add),
       beamPointers: netBeamPointersSlice(t, add),
       launchArcs: netLaunchArcsSlice(t, add),
       sites: netSitesSlice(t, add),
@@ -1584,6 +1616,10 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     mars: netMarsSlice(t),
     draft,
     servedLink,
+    // SD-53 — the trace: the flow the routing table has selected renders at full strength while the
+    // rest of the web dims, and every other pipe that could reach its region draws a dashed arc.
+    tracedContractId: traceSelectedFlowId,
+    candidateArcs: netCandidateArcsSlice(t, add),
     servedLinks,
     beamPointers: netBeamPointersSlice(t, add),
     launchArcs: netLaunchArcsSlice(t, add),
@@ -2289,6 +2325,9 @@ function r1CycleBeam(satId: string, slot: number): void {
   const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
   const res = applyAndRecordNetAction(netAssignBeamAction(satId, slot, next, clock.tick));
   if (res && res.kind === "beam_assigned") {
+    // SD-53 — pointing an antenna is a commit with a real cost (it un-serves whoever it left), so
+    // it gets its own two-step cue: it left there, it is here now.
+    netAudio.play("beam_committed");
     log.append({
       tSim: clock.seconds,
       sev: "info",
@@ -2937,6 +2976,13 @@ const traceDarkSince = new Map<string, number>();
 const traceTightSince = new Map<string, number>();
 /** Last frame's display rank per contract — the anti-shuffle hysteresis + the ↑/↓ glyph. */
 const traceRank = new Map<string, number>();
+/** The pipe each flow was riding last frame, plus a decaying counter after it changed — the
+ * RE-ROUTE event. GDD §4.3 is explicit that a path moving is "core dashboard theatre … not a log
+ * line", so the row says WHERE IT CAME FROM for a beat while the orrery flashes the new path. */
+const traceLastPipe = new Map<string, string>();
+const traceReroute = new Map<string, { from: string; frames: number }>();
+/** Frames the `← old pipe` marker holds on the row (≈1.5 s at 60 fps). TUNABLE. */
+const TRACE_REROUTE_FRAMES = 90;
 /** The selected flow (cross-highlight + the expansion). Carries across a renewal by stem. */
 let traceSelectedFlowId: string | null = null;
 /** Whether the idle-pipe summary is expanded into rows. */
@@ -3194,6 +3240,13 @@ function traceState(): TraceState {
       pipeLoadText: pipe !== null ? `${unitsText(pipeLoad)}/${unitsText(pipeCap)} u${pipeUtil >= 1 ? " OVER" : ""}` : null,
       shareCount: pipe !== null ? ridersByPipe.get(pipe)?.length ?? 0 : 0,
       candidateCount,
+      rerouteFrom: (() => {
+        const r = traceReroute.get(c.id);
+        if (r === undefined) return null;
+        const parsed = parsePipeKey(r.from);
+        const fromSat = parsed !== null ? netSession.sats.find((x) => x.id === parsed.satId) ?? null : null;
+        return fromSat !== null && parsed !== null ? tracePipeDisplayId(fromSat, parsed.slotIdx) : r.from;
+      })(),
       preferShort: preferSliderPos(c.prefer) < 0.25,
       preferEnabled: !isMars,
       preferDisabledReason: isMars ? TRACE_MARS_NO_ALTERNATIVE : null,
@@ -3385,7 +3438,22 @@ function traceAccrueHistory(t: number): void {
       traceDarkSince.delete(c.id);
     }
     if (solve !== null) for (const l of solve.losses) pushLoss(traceLossRoll, l, TRACE_LOSS_MIN_SPACING_S);
+    // The RE-ROUTE edge: the flow's serving pipe changed since last frame (a sat set, a fault took
+    // one out, a re-bias moved it). Stamp where it came from so the row can say so for a beat.
+    const pipe = solve?.pipe ?? null;
+    if (pipe !== null) {
+      const prev = traceLastPipe.get(c.id);
+      if (prev !== undefined && prev !== pipe) traceReroute.set(c.id, { from: prev, frames: TRACE_REROUTE_FRAMES });
+      traceLastPipe.set(c.id, pipe);
+    } else {
+      traceLastPipe.delete(c.id);
+    }
   }
+  for (const [id, r] of traceReroute) {
+    if (r.frames <= 1) traceReroute.delete(id);
+    else r.frames--;
+  }
+  traceAudioEdges(t);
   // A selection that would dangle at a completed contract clears itself; a RENEWAL of the same
   // region keeps it, so the row the player was watching survives the generation boundary.
   if (traceSelectedFlowId !== null) {
@@ -3393,6 +3461,44 @@ function traceAccrueHistory(t: number): void {
     const alive = netSession.contracts.find((c) => c.state === "active" && contractStem(c.id) === stem);
     traceSelectedFlowId = alive?.id ?? null;
   }
+}
+
+
+/**
+ * SD-53 — the routing screen's AUDIO EDGES. GDD §5 makes audio a second information channel, not a
+ * notification system, so these fire on TRANSITIONS the player would otherwise have to be watching
+ * the right row to catch: a link dropping, a rider falling under its floor, a beam committing.
+ * Edge-triggered against last frame's state — never once per frame, never once per row.
+ */
+const traceHeardLoss = new Set<string>();
+const traceStarvedLast = new Set<string>();
+function traceAudioEdges(t: number): void {
+  void t;
+  // A LINK DROPPED. The roll de-dupes on (link, cause, spacing), so a persistently-down link is one
+  // event, not sixty per second — the same retention the roll itself uses.
+  for (const g of traceLossRoll.values()) {
+    const stamp = `${g.key}@${g.times[g.times.length - 1]}`;
+    if (traceHeardLoss.has(stamp)) continue;
+    traceHeardLoss.add(stamp);
+    if (traceHeardLoss.size > 64) traceHeardLoss.delete(traceHeardLoss.values().next().value as string);
+    netAudio.play("link_lost");
+  }
+  // A RIDER FELL UNDER ITS FLOOR. Only the crossing sounds; sitting starved does not keep beeping.
+  const memo = netFrameMemo(clock.seconds);
+  const starvedNow = new Set<string>();
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") continue;
+    if (!(c.activeAxes?.has("bandwidth") ?? false)) continue;
+    const floor = c.slaBandwidth ?? 0;
+    if (!(floor > 0)) continue;
+    const pipe = netSession.lastSolveFor(c.id)?.pipe;
+    if (pipe === null || pipe === undefined) continue;
+    const share = fairShare(c.offeredLoad, memo.loadByPipe.get(pipe) ?? 0, memo.capByPipe.get(pipe) ?? 0);
+    if (share < floor) starvedNow.add(c.id);
+  }
+  for (const id of starvedNow) if (!traceStarvedLast.has(id)) netAudio.play("rider_starved");
+  traceStarvedLast.clear();
+  for (const id of starvedNow) traceStarvedLast.add(id);
 }
 
 /** DARK rows order by which axis failed (the SLA ramp's own order), then longest-dark first. */
@@ -3704,6 +3810,12 @@ function ledgerFleetState(): LedgerFleetState {
     idle: st.idle,
     nodes: st.nodes.map((n) => ({ sat: n.satId, kind: n.kindWord })),
     hysteresis: TRACE_RANK_HYSTERESIS,
+    // The GLOBE COUPLING, machine-readable: which flow the orrery is tracing, and how many dashed
+    // candidate arcs it is drawing for it. §5 #4's claim is that the trace renders on the orrery —
+    // this is how a scene checks that it actually does.
+    traced: traceSelectedFlowId,
+    candidateArcs: netCandidateArcsSlice(clock.seconds, (r) => r).length,
+    reroutes: [...traceReroute.entries()].map(([id, r]) => ({ id, from: r.from })),
   };
 };
 /** Rebuilds-since-boot per panel — the churn gate (docs/routing-screen.md §9.5). A table that

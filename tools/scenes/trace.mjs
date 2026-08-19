@@ -384,6 +384,52 @@ export default {
       await ctx.eval(() => !/next loss|in \d+m\b.*(predict|forecast)/i.test(document.querySelector(".trace")?.textContent ?? "")),
     );
 
+    // ── 7b. THE GLOBE COUPLING — §5 #4's actual claim is that the trace renders on the ORRERY ──
+    {
+      const before = await ctx.eval(() => {
+        const p = window.__trace?.();
+        return { traced: p?.traced ?? null, arcs: p?.candidateArcs ?? -1 };
+      });
+      ctx.ok("nothing is traced until a flow is picked", before.traced === null && before.arcs === 0, JSON.stringify(before));
+
+      const picked = await ctx.eval(() => {
+        const row = document.querySelector("[data-net=trace-flow]");
+        row?.click();
+        return row?.getAttribute("data-contract") ?? null;
+      });
+      await ctx.settle(400);
+      const after = await ctx.eval(() => {
+        const p = window.__trace?.();
+        const row = document.querySelector("[data-net=trace-flow]");
+        return {
+          traced: p?.traced ?? null,
+          arcs: p?.candidateArcs ?? -1,
+          rowCandidates: p?.order?.[0]?.candidates ?? -1,
+          selected: row?.className.includes("sel") ?? false,
+          servedLinkVisible: window.__netDebug?.()?.servedLinkVisible,
+        };
+      });
+      ctx.ok("picking a flow traces it on the globe", after.traced === picked && picked !== null, `${picked} → ${after.traced}`);
+      ctx.ok("the row shows it is the selected one", after.selected, String(after.selected));
+      ctx.ok(
+        "the dashed candidate arcs match the count the row states (geometry, not a preview)",
+        after.arcs === after.rowCandidates,
+        `${after.arcs} arcs vs "${after.rowCandidates}" on the row`,
+      );
+
+      const cleared = await ctx.eval(() => {
+        document.querySelector("[data-net=trace-flow]")?.click(); // clicking again deselects
+        return true;
+      });
+      await ctx.settle(300);
+      const off = await ctx.eval(() => ({ traced: window.__trace?.().traced ?? null, arcs: window.__trace?.().candidateArcs ?? -1 }));
+      ctx.ok(
+        "picking it again releases the trace (the whole web reads normally again)",
+        cleared && off.traced === null && off.arcs === 0,
+        JSON.stringify(off),
+      );
+    }
+
     // ── 8. the lawfulness sweep over everything the panel actually rendered ──────
     const text = await ctx.eval(() => document.querySelector(".trace")?.textContent ?? "");
     ctx.ok("no pre-commit verdict anywhere on the board", !/WILL SERVE|NEED \d|HOLDS ✓|RECOMMENDED/i.test(text), text.slice(0, 100));

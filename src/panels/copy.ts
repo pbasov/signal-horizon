@@ -202,3 +202,7 @@ export const TRACE_TIP_LOSS =
   "Every link loss carries the geometry that caused it and the mission time it happened. Repeats on one link are listed with the spacing observed between them.";
 export const TRACE_TIP_BAND =
   "Ordered worst-first: unserved promises, then the ones closest to their limit. The order is the physics, not a setting.";
+
+/** SD-53 — a flow's path just MOVED. The row names where it came from for a beat while the globe
+ * flashes the new path: a re-route is an event you watch, not a line you find in a log later. */
+export const TRACE_REROUTED = (fromPipe: string): string => `re-routed from ${fromPipe}`;

@@ -749,3 +749,22 @@ at all (the existing one pins cache mode only), and it was missing `parse` — t
 mounts THE PARSE but it could not be summoned beside anything. And `src/sim/m2/events.test.ts` times
 out under full-suite CPU contention (passes alone in 33 s) — the same flake class already recorded
 for the golden replays, unrelated to this work.
+
+**SD-53 RT-07 (part) SHIPPED — the globe coupling (2026-08-19).** §5 view #4's actual claim is that
+the trace renders on the ORRERY, and the condemnation the whole surface answers was "a 30 px globe
+and no routes". So: selecting a flow in the routing table now traces it on the globe — its path
+holds full strength while every other served path dims to 0.3×, and one dashed violet arc appears
+per OTHER satellite whose link to that region closes right now. The dimming SCALES the utilisation
+ramp rather than replacing it, so a congesting sibling still reads warm (quieter, not recoloured)
+and `Orrery.utilColor`'s pinned test is untouched.
+
+The candidate arcs are the lawful substitute for the condemned pre-commit reroute preview: they do
+not say what the solver WOULD pick if you moved the bias — that is a solved answer printed before
+you committed — they say which pipes can physically reach the region this instant. And when the
+bias lever cannot move anything (most of Acts 1–2, one reachable pipe), the ABSENCE of a second arc
+is the reason, made spatial instead of unexplained. The scene asserts the arc count equals the count
+the row states.
+
+Also: the re-route edge (`re-routed from NET-SAT-2 · GATEWAY` for a beat after a path moves — GDD
+§4.3 says a re-route is theatre, not a log line) and three edge-triggered cues, `link_lost`,
+`rider_starved`, `beam_committed`, following the shipped rise-good/fall-bad grammar.

@@ -30,6 +30,12 @@ export type NetCueKind =
   | "mars_relay_launch" // the deep rising sweep — the frontier's overture
   | "mars_first_signal" // the distant answer, delayed echo
   | "cache_breadcrumb" // the cache placed near Mars (small bright tick)
+  // SD-53 — the routing screen's three edges. §5 is explicit that audio is a SECOND CHANNEL, not a
+  // notification system: these fire on transitions the player would otherwise have to be looking at
+  // the right row to notice.
+  | "link_lost" // a link dropped: the geometry took a path away (a short falling pip — bad news falls)
+  | "rider_starved" // a rider's fair share fell under its committed floor (a dull, choked thud)
+  | "beam_committed" // an antenna was re-pointed (a clean two-step: it left there, it is here now)
   | "vault_save" // checkpoint captured (short shutter-click)
   | "vault_load"; // checkpoint resumed (the reverse sweep)
 
@@ -85,6 +91,17 @@ export const NET_CUES: Record<NetCueKind, Recipe> = {
   ]),
   foul_brewing: R([{ f0: 110, f1: 110, type: "sawtooth", dur: 0.5, peak: 0.22 }]),
   prefer_reroute: R([{ f0: 660, f1: 990, type: "sine", dur: 0.08, peak: 0.2 }]),
+  // The cue grammar: RISING is good news, FALLING is bad. A lost link falls; a starved rider is a
+  // low choked thud (something is being squeezed); a committed beam is two clean steps (from → to).
+  link_lost: R([{ f0: 587, f1: 330, type: "sine", dur: 0.16, peak: 0.22 }]),
+  rider_starved: R([
+    { f0: 147, f1: 131, type: "sawtooth", dur: 0.26, peak: 0.26 },
+    { f0: 294, f1: 262, type: "sine", dur: 0.18, peak: 0.12 },
+  ]),
+  beam_committed: R([
+    { f0: 523, f1: 523, type: "triangle", dur: 0.05, peak: 0.2 },
+    { f0: 698, f1: 698, type: "triangle", dur: 0.07, peak: 0.22 },
+  ]),
   fault_amber: R([{ f0: 220, f1: 208, type: "sawtooth", dur: 0.3, peak: 0.3 }]),
   fault_telegraph: R([
     { f0: 880, f1: 880, type: "square", dur: 0.05, peak: 0.24 },

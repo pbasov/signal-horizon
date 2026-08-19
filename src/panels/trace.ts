@@ -43,6 +43,7 @@ import {
   TRACE_OVERFLOW,
   TRACE_OVERPROMISED,
   TRACE_PIPES_LEGEND,
+  TRACE_REROUTED,
   TRACE_RIDER_NUMS,
   TRACE_TIP_BAND,
   TRACE_TIP_ELEV,
@@ -164,6 +165,10 @@ export interface TraceFlow {
   /** How many OTHER pipes could reach this region right now — the honest answer to a lever that
    * cannot move anything. */
   candidateCount: number;
+  /** `"NET-SAT-2 · GATEWAY"` for a beat after this flow's path MOVED, or null. A re-route is an
+   * event, and GDD §4.3 says it gets real animation budget rather than a log line: the globe
+   * flashes the new path while the row says where it came from. */
+  rerouteFrom: string | null;
   preferShort: boolean;
   preferEnabled: boolean;
   /** Why the lever is inert, when it is. A disabled control always states its reason. */
@@ -564,7 +569,15 @@ export class Trace implements PanelHandle {
     setText(e.load, f.pipeLoadText ?? "");
     // The candidate READ: the only honest answer to a lever that frequently cannot move anything.
     // A count of pipes whose link to this region closes right now — geometry, not a solver preview.
-    setText(e.cands, f.preferEnabled ? TRACE_CANDIDATES(f.candidateCount) : "");
+    setText(
+      e.cands,
+      f.rerouteFrom !== null
+        ? TRACE_REROUTED(f.rerouteFrom)
+        : f.preferEnabled
+          ? TRACE_CANDIDATES(f.candidateCount)
+          : "",
+    );
+    e.cands.classList.toggle("rerouted", f.rerouteFrom !== null);
 
     // The active stop INVERTS (a fill change), never merely recolours — it must read with colour off.
     e.short.classList.toggle("active", f.preferShort);
