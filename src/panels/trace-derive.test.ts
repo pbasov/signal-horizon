@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  TRACE_RANK_BUCKET,
+  TRACE_RANK_HYSTERESIS,
   TRACE_ROLL_LINKS,
   TRACE_ROLL_STAMPS,
   axisHeadroom,
@@ -18,6 +18,7 @@ import {
   generationOf,
   hueIndexFor,
   intervalText,
+  loadBarText,
   longDelayText,
   lossKey,
   meanGapS,
@@ -181,46 +182,89 @@ describe("bands — the router's verdict outranks any derived number", () => {
 describe("rankFlows — a stable order the diurnal load curve cannot shuffle", () => {
   const R = (id: string, band: RankInput["band"], sortKey: number): RankInput => ({ id, band, sortKey });
 
-  it("bands first, worst-first", () => {
+  it("with no history, bands come first, worst-first", () => {
     const order = rankFlows([R("a", "clear", 0.9), R("b", "dark", 0.0), R("c", "tight", 0.1)], new Map());
     expect(order).toEqual(["b", "c", "a"]);
   });
 
-  it("inside a band, lower headroom sorts first", () => {
+  it("with no history, lower headroom sorts first inside a band", () => {
     const order = rankFlows([R("a", "clear", 0.9), R("b", "clear", 0.2), R("c", "clear", 0.5)], new Map());
     expect(order).toEqual(["b", "c", "a"]);
   });
 
-  it("a sub-bucket wobble does NOT reorder the list (the anti-shuffle guarantee)", () => {
-    const prev = new Map([
-      ["a", 0],
-      ["b", 1],
-    ]);
-    // b creeps below a by less than one bucket — it must NOT overtake.
-    const wobble = TRACE_RANK_BUCKET * 0.3;
+  it("a sub-band wobble does NOT reorder the list", () => {
+    const prev = new Map([["a", 0], ["b", 1]]);
+    const wobble = TRACE_RANK_HYSTERESIS * 0.3;
     expect(rankFlows([R("a", "clear", 0.5), R("b", "clear", 0.5 - wobble)], prev)).toEqual(["a", "b"]);
   });
 
-  it("a real move of more than one bucket DOES overtake", () => {
-    const prev = new Map([
-      ["a", 0],
-      ["b", 1],
-    ]);
-    expect(rankFlows([R("a", "clear", 0.5), R("b", "clear", 0.5 - TRACE_RANK_BUCKET * 2)], prev)).toEqual([
-      "b",
-      "a",
-    ]);
+  it("a wobble ACROSS what used to be a bucket boundary also holds — the bug the playtest caught", () => {
+    // 0.11 vs 0.09 quantise to different 0.05 buckets, so the old grid-and-tie-break flipped them
+    // on a 0.02 move. A pairwise margin has no boundary to straddle.
+    const prev = new Map([["a", 0], ["b", 1]]);
+    expect(rankFlows([R("a", "clear", 0.11), R("b", "clear", 0.09)], prev)).toEqual(["a", "b"]);
+    expect(rankFlows([R("a", "clear", 0.1251), R("b", "clear", 0.1249)], prev)).toEqual(["a", "b"]);
   });
 
-  it("is a total order — identical inputs give an id-stable result with no history", () => {
+  it("a real move of more than the band DOES overtake", () => {
+    const prev = new Map([["a", 0], ["b", 1]]);
+    expect(rankFlows([R("a", "clear", 0.5), R("b", "clear", 0.5 - TRACE_RANK_HYSTERESIS * 2)], prev)).toEqual(["b", "a"]);
+  });
+
+  it("a band change overtakes immediately, however small the key difference", () => {
+    const prev = new Map([["a", 0], ["b", 1]]);
+    expect(rankFlows([R("a", "clear", 0.5), R("b", "dark", 0.5)], prev)).toEqual(["b", "a"]);
+  });
+
+  it("survives a full oscillation without a single inversion (the playtest falsifier, headlessly)", () => {
+    // Two rows whose headrooms wobble against each other, with the gap staying INSIDE the band
+    // for the whole run (0.02 base ± 2×0.0125 peaks at 0.045 < 0.05) — so no overtake is earned.
+    let prev = new Map<string, number>();
+    let order = rankFlows([R("a", "clear", 0.30), R("b", "clear", 0.28)], prev);
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const wob = Math.sin(i / 7) * (TRACE_RANK_HYSTERESIS * 0.25);
+      prev = new Map(order.map((id, idx) => [id, idx]));
+      order = rankFlows([R("a", "clear", 0.30 + wob), R("b", "clear", 0.28 - wob)], prev);
+      seen.add(order.join(","));
+    }
+    expect([...seen]).toEqual(["a,b"]);
+  });
+
+  it("…but a gap that grows PAST the band is a real move, and the list follows it", () => {
+    let prev = new Map([["a", 0], ["b", 1]]);
+    // b sinks steadily until it is worse than a by more than the band; then, and only then, it rises.
+    let order = ["a", "b"];
+    const flips: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const kb = 0.28 - i * 0.005;
+      prev = new Map(order.map((id, idx) => [id, idx]));
+      const next = rankFlows([R("a", "clear", 0.30), R("b", "clear", kb)], prev);
+      if (next.join(",") !== order.join(",")) flips.push(i);
+      order = next;
+    }
+    expect(order).toEqual(["b", "a"]);
+    expect(flips).toHaveLength(1); // exactly one crossing, not a flutter
+  });
+
+  it("is deterministic and total for rows nobody has seen", () => {
     const items = [R("z", "clear", 0.5), R("a", "clear", 0.5), R("m", "clear", 0.5)];
     expect(rankFlows(items, new Map())).toEqual(["a", "m", "z"]);
     expect(rankFlows([...items].reverse(), new Map())).toEqual(["a", "m", "z"]);
   });
 
+  it("a new DARK row reaches the top of the board even though it has no history", () => {
+    const prev = new Map([["a", 0], ["b", 1], ["c", 2]]);
+    const order = rankFlows(
+      [R("a", "clear", 0.9), R("b", "clear", 0.8), R("c", "clear", 0.7), R("new", "dark", 0)],
+      prev,
+    );
+    expect(order[0]).toBe("new");
+  });
+
   it("rankDelta reports the direction of a move, and says nothing about a new row", () => {
     const prev = new Map([["a", 2]]);
-    expect(rankDelta("a", 0, prev)).toBe(-1); // moved up the board
+    expect(rankDelta("a", 0, prev)).toBe(-1);
     expect(rankDelta("a", 4, prev)).toBe(1);
     expect(rankDelta("a", 2, prev)).toBe(0);
     expect(rankDelta("new", 0, prev)).toBe(0);
@@ -349,5 +393,26 @@ describe("formats — the enum and the raw second never reach a player", () => {
     expect(axisTag("connectivity")).toBe("conn");
     expect(axisWord("lat")).toBe("LATENCY");
     expect(axisWord("bw")).toBe("BW");
+  });
+});
+
+describe("loadBarText — width, texture and numeral are three separate channels", () => {
+  it("an empty pipe is all empty cells", () => {
+    expect(loadBarText(0)).toBe("░░░░░░░░");
+  });
+
+  it("fills proportionally, and never shows a loaded pipe as empty", () => {
+    expect(loadBarText(0.5)).toBe("▓▓▓▓░░░░");
+    expect(loadBarText(0.75)).toBe("▓▓▓▓▓▓░░");
+    expect(loadBarText(0.01)).toBe("▓░░░░░░░"); // load exists ⇒ at least one cell
+  });
+
+  it("at or over capacity the whole bar changes MATERIAL — legible with colour off", () => {
+    expect(loadBarText(1.0)).toBe("▒▒▒▒▒▒▒▒");
+    expect(loadBarText(3.5)).toBe("▒▒▒▒▒▒▒▒");
+  });
+
+  it("keeps a fixed width however far past capacity it goes (the column stays aligned)", () => {
+    for (const u of [0, 0.3, 0.99, 1, 12]) expect(loadBarText(u)).toHaveLength(8);
   });
 });

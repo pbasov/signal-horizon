@@ -251,6 +251,12 @@ reads; the fix clause is the §7.4 kind-of-fix, rendered from `FIX_CLAUSE` (§8)
 `TraceShortfall.message` verbatim (§9.2 explains why, and P0 fixes the sim so the two can never drift
 again). Optimisation/resilience shortfalls use the same line with `?  IDLE ·` / `?  SINGLE PATH ·`.
 
+> **BUILD CORRECTION (2026-08-19).** `? SINGLE PATH` is **gated on faults being live**
+> (`session.faultsEnabled`, i.e. act 3b onward). Before a fault can happen, "one sat carries it — a
+> second bridge survives a fault" is a warning about nothing, and it fired on the Act-1 opener's
+> single satellite — noise in the deliberately gentle first ten minutes. Same principle as the SLA
+> axes: **absent until the mechanic exists, never greyed.**
+
 ### 4.5 `CARRIED / ASKED` — exact number formats per axis `▸ LOCKED`
 
 The measured value and the promised value, adjacent, in that axis's own units, with the ratio that
@@ -352,9 +358,15 @@ head:
    **(TUNABLE)**. Ordered by headroom ascending.
 3. **CLEAR** (`·`) — everything else. Ordered by headroom ascending.
 
-**Headroom is computed and never printed** (§4.10). Within TIGHT/CLEAR it is bucketed to 0.05 before
-comparing, **plus a rank hysteresis of 0.05**: a row only overtakes its neighbour when it is lower by
-more than the band. `offeredLoad` oscillates continuously on the diurnal curve
+**Headroom is computed and never printed** (§4.10). A row overtakes its neighbour **only by beating
+it by more than `TRACE_RANK_HYSTERESIS` (0.05)** — a margin between the PAIR, evaluated against the
+previous frame's order as the seed.
+
+> **BUILD CORRECTION (2026-08-19).** The first implementation instead quantised both keys onto a
+> 0.05 grid and tie-broke on the previous rank. That is not hysteresis: two rows straddling a
+> bucket boundary flip on an arbitrarily small move, and the playtest caught it within minutes
+> (`[REGION-2,BACKHAUL-3] → [BACKHAUL-3,REGION-2]` on a 0.02 wobble). A pairwise margin has no
+> boundary to straddle. The bucket survives only as the coarse seed for a row nobody has seen yet. `offeredLoad` oscillates continuously on the diurnal curve
 (`burstyOfferedLoad`, ±45 % of baseline), so without this the list shuffles every frame and becomes
 unclickable. **A row that does change rank flashes `↑`/`↓` for 400 ms** so the reorder is an event
 you *see*, not a jump you discover.

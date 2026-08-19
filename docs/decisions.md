@@ -702,3 +702,50 @@ hoisted into per-frame memos shared with `netServedLinksSlice` and `ledgerFleetS
 O(n²)); net-side rail/preset coverage assertions are added to `window-rail.test.ts`, which today pins
 cache mode only. Net panel count 6 → 7 hosts, two dead files deleted. **TRACE is the last net desktop
 before the M1 gate.**
+
+**SD-53 SHIPPED — P0 + the flow board + the contention ledger (2026-08-19).** The net golden is
+UNCHANGED (`npm test` 872 green incl. both replay suites); build, smoke and the full playtest are green.
+
+- **Sim truth (RT-01/02).** `TraceInput` gained `loadByPipe` / `capByPipe` / `redundantById`; the
+  bandwidth shortfall and the over-provision threshold now denominate against the PIPE's own
+  capacity, falling back to the uniform constant only when the caller cannot say. `FIX_CLAUSE` is
+  exported so a view composes its own live numbers with the canonical clause rather than reprinting
+  a message whose numbers came from an older solve. `set prefer-bw on X` is gone and
+  `src/sim/net/trace.ts` is under the copy-lint `SIM_FILES` so it cannot come back.
+- **The per-frame memo (RT-03).** `loadByPipe`, per-pipe DERATED capacity, and the sat→region
+  line-of-sight solve are hoisted once per frame and shared by `netServedLinksSlice`,
+  `ledgerFleetState` and the new projection. `loadOnPipe()` rebuilds the whole map on every call, so
+  the old per-row calls were an O(n²) already in the shipping build. Capacity is now derated by an
+  active degradation fault everywhere it is shown — `raw/(cap×factor)` is algebraically the ratio
+  the router actually routed against, so the fleet chip and the link arc stop contradicting the sim.
+- **`trace-derive.ts` (RT-04) + 48 unit tests.** The arithmetic lives outside the render method, which
+  is the whole reason the retired LinkLoad could ship two silent bugs.
+- **The panel (RT-05) + the ledger, loss roll and REPOINT (RT-06 in part).** Rail-summonable, no
+  preset, no key — DD-10's merge test answered by not taking a desktop. `status()`/`subtitle()`
+  implemented (the lamp MissionTop and LedgerFleet both leave grey). MISSION's shortfall line is now
+  the doorway: clicking it summons TRACE.
+
+**Three things the build changed about the design, each recorded in `docs/routing-screen.md`:**
+1. **The order hysteresis was wrong as specced.** Quantising both keys onto a 0.05 grid and
+   tie-breaking on the previous rank is not hysteresis — two rows straddling a bucket boundary flip
+   on an arbitrarily small move, and the playtest caught exactly that within minutes. Replaced with a
+   PAIRWISE overtake margin evaluated against the previous order as the seed: no boundary exists to
+   straddle. Pinned by a 200-iteration oscillation test.
+2. **`? SINGLE PATH` is gated on faults existing.** It fired on the Act-1 opener's single satellite,
+   warning about a fault that cannot happen for another thirty minutes. Same rule as the SLA axes:
+   absent until the mechanic exists, never greyed.
+3. **The scene's anti-shuffle falsifier was wrong too.** "The order never changes" is not the
+   invariant — a row whose headroom genuinely falls past the band has EARNED its move, and freezing
+   it would be the lie. The probe now exposes the internal ordering key (probe-only; §4.10 forbids
+   PRINTING it, not measuring it) and the scene asserts the real property: **no row passed another
+   inside the band.**
+4. **The shortfall drain into SYSTEM.LOG STAYS, against the design's own §11.** Removing it was
+   sound when TRACE was going to be a desktop; with TRACE rail-summonable, a player who never
+   summons it would lose the §7.4 diagnosis altogether — trading a §4.3 "not a log line" violation
+   for a §5 "critical state behind a dig" one, which is worse. Revisit if RT-08 promotes TRACE.
+
+**Two pre-existing defects the new tests found, both fixed here.** The net rail had no coverage test
+at all (the existing one pins cache mode only), and it was missing `parse` — the REVIEW desktop
+mounts THE PARSE but it could not be summoned beside anything. And `src/sim/m2/events.test.ts` times
+out under full-suite CPU contention (passes alone in 33 s) — the same flake class already recorded
+for the golden replays, unrelated to this work.

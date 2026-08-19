@@ -77,6 +77,12 @@ export interface MissionTopActions {
   onRoute(contractId: string, pos: number): void;
   /** Act 4 — commit the deep-space relay toward the Mars tender (one verb, one click). */
   onMarsRelay(): void;
+  /** SD-53 — THE PULL to the routing screen. The behavioural falsifier for TRACE is whether a
+   * tester opens it BEFORE a shortfall fires, and that cannot even be measured if there is no path
+   * to the screen. The shortfall line is the hand-off from "a red thing appeared" to "here is why":
+   * it summons TRACE into the focused tile. MISSION keeps the line either way — TRACE deepens the
+   * read, it never gates it (GDD §5: no critical state should require digging). */
+  onOpenTrace?(): void;
   onBus(bus: BusTier): void;
   /** FL-04 — write (or clear, cardId=null) ONE named slot of the bus silhouette. The
    * flat toggle set is gone: capacity design is slot assignment, visibly physical. */
@@ -211,6 +217,8 @@ export class MissionTop implements PanelHandle {
     // R3 — the SHORTFALL line: the stuck-assist (facts that name the shortfall, LAW 1/2),
     // right under the objective where a stuck player is already looking.
     this.vShortfall = el("div", "mission-shortfall", "");
+    this.vShortfall.setAttribute("data-net", "mission-shortfall");
+    this.vShortfall.addEventListener("click", () => this.actions.onOpenTrace?.());
     objGroup.appendChild(this.vShortfall);
     this.tendersHost = el("div", "group mission-tenders");
     this.bookFace.append(objGroup, this.tendersHost);

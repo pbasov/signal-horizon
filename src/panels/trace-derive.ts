@@ -22,7 +22,11 @@
 
 /** Headroom below which a SERVED flow enters the TIGHT band. TUNABLE. */
 export const TRACE_TIGHT_BAND = 0.15;
-/** Headroom quantisation applied before comparing two rows — the anti-shuffle band. TUNABLE. */
+/** How much LOWER a row's headroom must be than its neighbour's before it may overtake it — the
+ * anti-shuffle band, and the real hysteresis mechanism. TUNABLE. */
+export const TRACE_RANK_HYSTERESIS = 0.05;
+/** Headroom quantisation used only to seed the FIRST placement of a row nobody has seen yet, so
+ * two rows arriving in the same frame land in a coarse, reproducible order. TUNABLE. */
 export const TRACE_RANK_BUCKET = 0.05;
 /** Utilisation at which a pipe reads TIGHT. TUNABLE. */
 export const TRACE_PIPE_TIGHT_UTIL = 0.8;
@@ -195,33 +199,67 @@ export interface RankInput {
 }
 
 /**
- * THE ORDER — band first, then quantised sort key, then **the previous rank**, then id.
+ * THE ORDER — the previous order, corrected only where a row has genuinely earned a move.
  *
- * The previous-rank tie-break IS the hysteresis, and it is what makes the list clickable:
- * `offeredLoad` oscillates continuously on the diurnal curve, so a raw comparison reshuffles the
- * table every frame. Quantising to {@link TRACE_RANK_BUCKET} means a row must improve or worsen by
- * a whole band before it can overtake a neighbour; inside a bucket, whoever was higher stays
- * higher. Total, deterministic, and reproducible — no float ordering, no frame-to-frame churn.
+ * The previous order is the SEED, and a row may overtake its neighbour only by beating it by more
+ * than {@link TRACE_RANK_HYSTERESIS}. That is the difference between a list you can click and one
+ * you cannot: `offeredLoad` oscillates continuously on the diurnal curve (±45% of baseline), so a
+ * raw comparison reshuffles the table every frame.
+ *
+ * An earlier version quantised both keys onto a 0.05 grid and tie-broke on the previous rank. That
+ * is NOT hysteresis: two rows straddling a bucket boundary flip on an arbitrarily small move, and
+ * the playtest caught exactly that (`[REGION-2,BACKHAUL-3] → [BACKHAUL-3,REGION-2]` on a 0.02
+ * wobble). The margin below is a property of the PAIR, not of a global grid, so no boundary exists
+ * to straddle.
+ *
+ * Deterministic: the seed is total (previous rank, then band/bucket/id for rows never seen), the
+ * pass count is bounded by the row count, and the swap predicate is a pure function of the pair.
  *
  * Returns the ids in display order.
  */
 export function rankFlows(items: readonly RankInput[], prevRank: ReadonlyMap<string, number>): string[] {
   const bucket = (v: number): number =>
     Number.isFinite(v) ? Math.round(v / TRACE_RANK_BUCKET) : -1_000_000;
-  return [...items]
-    .sort((a, b) => {
-      const ba = bandOrdinal(a.band);
-      const bb = bandOrdinal(b.band);
-      if (ba !== bb) return ba - bb;
-      const qa = bucket(a.sortKey);
-      const qb = bucket(b.sortKey);
-      if (qa !== qb) return qa - qb;
-      const pa = prevRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-      const pb = prevRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-      if (pa !== pb) return pa - pb;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    })
-    .map((r) => r.id);
+  // Seed: everyone in their previous display position; rows never seen sort in behind them by
+  // (band, bucketed key, id) so a fresh arrival lands somewhere reproducible.
+  const seed = [...items].sort((a, b) => {
+    const pa = prevRank.get(a.id);
+    const pb = prevRank.get(b.id);
+    if (pa !== undefined && pb !== undefined) return pa - pb;
+    if (pa !== undefined) return -1;
+    if (pb !== undefined) return 1;
+    const ba = bandOrdinal(a.band);
+    const bb = bandOrdinal(b.band);
+    if (ba !== bb) return ba - bb;
+    const qa = bucket(a.sortKey);
+    const qb = bucket(b.sortKey);
+    if (qa !== qb) return qa - qb;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  /** May `b` overtake `a`? Only on a band change, or by beating it by more than the band. */
+  const overtakes = (a: RankInput, b: RankInput): boolean => {
+    const ba = bandOrdinal(a.band);
+    const bb = bandOrdinal(b.band);
+    if (ba !== bb) return bb < ba;
+    const ka = Number.isFinite(a.sortKey) ? a.sortKey : -1e9;
+    const kb = Number.isFinite(b.sortKey) ? b.sortKey : -1e9;
+    return kb < ka - TRACE_RANK_HYSTERESIS;
+  };
+
+  for (let pass = 0; pass < seed.length; pass++) {
+    let moved = false;
+    for (let i = 0; i + 1 < seed.length; i++) {
+      if (overtakes(seed[i], seed[i + 1])) {
+        const tmp = seed[i];
+        seed[i] = seed[i + 1];
+        seed[i + 1] = tmp;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return seed.map((r) => r.id);
 }
 
 /** −1 = the row moved UP the board, +1 = it moved DOWN, 0 = it held (or is new). Drives the
@@ -337,6 +375,22 @@ export function hueIndexFor(contractId: string, hues: number): number {
 }
 
 // ── formats (§4.5) ────────────────────────────────────────────────────────────────
+
+/**
+ * The load bar as TEXT — fixed width, monospace, and readable with colour off.
+ *
+ * Three redundant channels ride this one widget: the filled WIDTH, the fill TEXTURE (a pipe at or
+ * over capacity switches from `▓` to `▒` across its whole length, so over-capacity is a different
+ * material, not a different colour), and the numeral printed beside it. A fixed cell count keeps
+ * the column aligned no matter how far past capacity a pipe goes.
+ */
+export function loadBarText(util: number, cells = 8): string {
+  if (!Number.isFinite(util) || util <= 0) return "░".repeat(cells);
+  if (util >= TRACE_PIPE_OVER_UTIL) return "▒".repeat(cells);
+  const filled = Math.max(1, Math.min(cells, Math.round(util * cells)));
+  return "▓".repeat(filled) + "░".repeat(cells - filled);
+}
+
 
 /** `mm:ss` from sim seconds. Negative and non-finite clamp to `0:00`. */
 export function mmss(seconds: number): string {

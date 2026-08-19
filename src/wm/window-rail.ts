@@ -58,6 +58,13 @@ export const NET_RAIL_PANELS: RailPanel[] = [
   { host: "ledger-fleet", label: "LEDGER·FLEET" },
   { host: "finance", label: "FINANCE" },
   { host: "system-log", label: "WIRE" },
+  // SD-53 — THE ROUTING SCREEN. Summonable into any tile (its natural home is the LEDGER·FLEET
+  // zone on MISSION); it deliberately has no desktop of its own before the M1 gate.
+  { host: "trace", label: "TRACE" },
+  // SD-53 (found by the new net-side coverage test): the REVIEW desktop mounts THE PARSE, but the
+  // net rail never listed it — so the parse could only be reached by switching desktops, and could
+  // not be composed beside anything. The cache rail has always carried it; this closes the gap.
+  { host: "parse", label: "PARSE" },
   // R1 (SD-45): the SD-44 dashboard panels (net-launch/net-contracts/net-prefer/status-board/
   // coverage-roster/link-load/howto) are RETIRED from net mode — the loop lives on MISSION.
 ];

@@ -80,7 +80,7 @@ import {
   type LaunchDraft,
   type PreviewWorld,
 } from "./sim/net/world";
-import { surfacePointRelative, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-budget";
+import { surfacePointRelative, surfaceNormalRelative, evaluateLink, NET_LINK_CAPACITY_UNITS } from "./sim/net/link-budget";
 // §3 — the spin angle θ(t) so the operated-body graticule turns with the body (the SAME convention
 // the surface frame + the orrery render-axis swap use). Pure scalar; render-only consumer.
 import { earthThetaAt } from "./sim/net/frame";
@@ -89,19 +89,27 @@ import { windowAvailability } from "./sim/net/availability";
 import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
-import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS, offerNetContract } from "./sim/net/contract";
+import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS, offerNetContract, type Contract } from "./sim/net/contract";
 import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N, NET_ACT2_REGION } from "./sim/net/scenario";
-import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID } from "./sim/net/endpoint";
+import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
-import { renderFaultLine, renderLossStamp } from "./sim/net/trace";
+import { renderFaultLine, renderLossStamp, FIX_CLAUSE } from "./sim/net/trace";
 // net/ Act-3b P2 — the LIVE telegraphed countdown + the permanent-drop predicate (the §5 watch-and-
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
-import { telegraphedCountdownRemainingS, faultRemovesSatAt } from "./sim/net/fault-types";
+import { telegraphedCountdownRemainingS, faultRemovesSatAt, type ShortfallFixKind } from "./sim/net/fault-types";
 import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
 import { MissionTop, type MissionTopState, type PadDraftReadout } from "./panels/mission-top";
 import { LedgerFleet, type LedgerFleetState, type FleetChip } from "./panels/ledger-fleet";
+// SD-53 — THE ROUTING SCREEN (docs/routing-screen.md): the panel, and the pure arithmetic behind it.
+import { Trace, type TraceState, type TraceFlow, type TracePipe, type TraceRider, type TraceLossGroupView, type TraceNode, type AxisRead } from "./panels/trace";
+import {
+  TRACE_CLEAR_ROW_CEILING, TRACE_RANK_HYSTERESIS, axisHeadroom, axisTag, bandFor, causeText, contractStem, degText,
+  eurText, fairShare, generationOf, hueIndexFor, intervalText, loadBarText, longDelayText, meanGapS, mmss, msText,
+  pctText, pipeContended, pipeState, pushLoss, rankDelta, rankFlows, riderFlag, sumFloors, unitsText, utilisation,
+  type LossRollGroup as TraceLossGroup, type RankInput, type SlaAxisTag,
+} from "./panels/trace-derive";
 import {
   MISSION_WELCOME,
   WIRE_COUNTDOWN,
@@ -114,13 +122,17 @@ import {
   NET_ACT_BEAT,
   PAD_AVAIL_FACT,
   PAD_RISK_BAND,
+  // SD-53 — the ROUTING SCREEN's player strings (all under the copy lint in copy.ts).
+  TRACE_BLEEDS, TRACE_DARK_FOR, TRACE_DERATED, TRACE_FLOODLIGHT, TRACE_LAST_LOSS, TRACE_MARS_LIGHT,
+  TRACE_MARS_NO_ALTERNATIVE, TRACE_MARS_VIA, TRACE_NODE_CARRYING, TRACE_NODE_FAILS, TRACE_NODE_RECOVERS,
+  TRACE_NO_BRIDGE, TRACE_NO_SIGHT, TRACE_OVERFLOW, TRACE_OVERPROMISED, TRACE_TIGHT_FOR, TRACE_UNAIMED, TRACE_VIA,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
 import { launchStackCost, launchVehicleCost, footprintRadiusRad, timeToServiceS, A1_GEO_PERIOD_S } from "./sim/net/world";
-import { isPointable, pipeKey as beamPipeKey } from "./sim/net/beams";
+import { isPointable, isServingType, parsePipeKey, pipeKey as beamPipeKey } from "./sim/net/beams";
 import { LAUNCH_PRESETS } from "./sim/m2/launch";
 import { orbitPeriodSeconds, solveOrbit } from "./sim/m2/orbit";
 import { CANDIDATE_SITES } from "./sim/m2/sites";
@@ -197,6 +209,8 @@ app.append(topbar, wmCanvas, status.element);
 // offers (window resize, visualViewport resize/scale, DPR change), and run a 1 s
 // watchdog that also heals silent drift (then relayouts the WM off the fresh rect).
 let shellRef: Shell | null = null;
+/** Set once the rail is built — lets a panel summon a sibling (the MISSION → TRACE hand-off). */
+let windowRailRef: WindowRail | null = null;
 function syncViewport(): void {
   // Prefer visualViewport metrics — on buggy fractional-scaling stacks (Wayland/Chromium)
   // innerWidth can report a stale layout viewport while visualViewport tracks the truth.
@@ -2835,6 +2849,10 @@ const missionTopPanel = new MissionTop({
   },
   onRoute: (contractId, pos) => netSetPrefer(contractId, pos),
   onMarsRelay: () => netLaunchMarsRelay(),
+  // SD-53 — THE PULL (docs/routing-screen.md §3.3). The shortfall line on MISSION is the hand-off
+  // from "a red thing appeared" to "here is why": clicking it summons TRACE into the focused tile.
+  // Without a path to the screen the whole surface's behavioural falsifier is unmeasurable.
+  onOpenTrace: () => windowRailRef?.summon("trace"),
   onLaunch: () => {
     if (!r1Armed || validateLoadout(r1Bus, r1Cards) !== null) return;
     netLaunch();
@@ -2849,6 +2867,31 @@ const ledgerFleetPanel = new LedgerFleet({
   // A fleet chip click INSPECTS the sat — the orrery draws its blob without moving the camera.
   onSelectSat: (satId) => {
     orrery.selectedId = satId;
+  },
+});
+
+// SD-53 — THE ROUTING SCREEN. Every verb on it is one the game already has: the prefer bias is
+// MISSION's own two-state ROUTE toggle (one action, one representation, §2 of the design doc), and
+// re-pointing is the fleet strip's beam cycle. The panel never mutates the session; each callback
+// goes out through the recorded, replay-safe action path.
+const tracePanel = new Trace({
+  onSelectFlow: (contractId) => {
+    traceSelectedFlowId = traceSelectedFlowId === contractId ? null : contractId;
+    // Cross-highlight is structural: selecting a flow lights the sat carrying it on the globe.
+    // The camera NEVER moves on selection (the fleet-chip precedent) — only an explicit fly does.
+    const satId = netSession.lastSolveFor(contractId)?.path?.[1] ?? null;
+    if (satId !== null) orrery.selectedId = satId;
+  },
+  onSelectPipe: (pipe) => {
+    const parsed = parsePipeKey(pipe);
+    if (parsed !== null) orrery.selectedId = parsed.satId;
+  },
+  onRoute: (contractId, pos) => netSetPrefer(contractId, pos),
+  onRepoint: (satId, slotIdx) => r1CycleBeam(satId, slotIdx),
+  onHoverLoss: () => {},
+  onHoverPipe: () => {},
+  onToggleIdle: () => {
+    traceIdleExpanded = !traceIdleExpanded;
   },
 });
 
@@ -2872,6 +2915,540 @@ function r1TargetRegion(): { region: import("./sim/net/endpoint").Region; label:
     null;
   return c ? { region: c.region, label: c.label } : null;
 }
+
+// ══ SD-53 — THE ROUTING SCREEN (TRACE): the per-frame projection ═════════════════════════════
+//
+// docs/routing-screen.md §9. ONE pure function of the live NetSession. Zero new sim state: the
+// NetSnapshot is untouched and the replay golden does not move. Everything the sim computes and
+// discards (the fair share, the reverse pipe→riders index, the redundancy answer, the loss
+// history) is derived HERE, in the render layer, which is where it belongs.
+//
+// The render-only bookkeeping below is module scope, not folded, and not in the vault — the same
+// standing as netLinkLastSat/netLinkReroute above and the session's own documented "lastTrace is
+// NOT folded" note.
+
+/** Grouped loss history, keyed `aId|bId|cause`, KEEPING every `atS`. The WIRE de-dupes the time
+ * away so a persistently-down link logs once (right for a chronological log); this face needs the
+ * repeats, because the whole §7.5 seed is that the SPACING between them is visible. */
+const traceLossRoll = new Map<string, TraceLossGroup>();
+/** When each contract last went dark (sim-seconds) — the `dark m:ss` clock. */
+const traceDarkSince = new Map<string, number>();
+/** When each served contract last entered the TIGHT band — the `tight m:ss` clock. */
+const traceTightSince = new Map<string, number>();
+/** Last frame's display rank per contract — the anti-shuffle hysteresis + the ↑/↓ glyph. */
+const traceRank = new Map<string, number>();
+/** The selected flow (cross-highlight + the expansion). Carries across a renewal by stem. */
+let traceSelectedFlowId: string | null = null;
+/** Whether the idle-pipe summary is expanded into rows. */
+let traceIdleExpanded = false;
+/** Minimum sim-seconds between two stamps on one link before they count as separate outages. */
+const TRACE_LOSS_MIN_SPACING_S = 8;
+
+/** The mission-elapsed clock the whole net UI reads (the same t0 shift the parse and __netState
+ * use: the first tender's offer time). */
+function netMissionElapsedS(t: number): number {
+  let t0 = t;
+  for (const c of netSession.contracts) if (c.offeredAtS < t0) t0 = c.offeredAtS;
+  return Math.max(0, t - t0);
+}
+
+/** The antenna's display name on a sat — never `NET-SAT-2:1`, which reads as a port number to an
+ * engineer and as noise to everyone else. Two same-type serving antennas disambiguate with a
+ * letter; the raw pipe key lives in `data-pipe` for the playtest harness. */
+function tracePipeDisplayId(sat: NetSat, slotIdx: number): string {
+  const type = sat.loadout[slotIdx]?.type ?? "?";
+  const sameType: number[] = [];
+  for (let i = 0; i < sat.loadout.length; i++) if (sat.loadout[i].type === type) sameType.push(i);
+  const suffix = sameType.length > 1 ? ` ${String.fromCharCode(97 + sameType.indexOf(slotIdx))}` : "";
+  return `${sat.id} · ${type}${suffix}`;
+}
+
+const TRACE_TYPE_GLYPH: Record<string, string> = {
+  BROADCAST: "✳",
+  GATEWAY: "◆",
+  ACCESS: "●",
+  CROSSLINK: "◇",
+};
+
+const TRACE_FAULT_GLYPH: Record<string, string> = {
+  degradation: "~",
+  transient: "◌",
+  telegraphed: "⚠",
+  hard: "✕",
+};
+
+const TRACE_FAULT_WORD: Record<string, string> = {
+  degradation: "DEGRADED",
+  transient: "TRANSIENT OUTAGE",
+  telegraphed: "FAILURE WARNING",
+  hard: "HARD FAILURE",
+};
+
+/** The elevation (degrees) of the serving sat above the region's local horizon, and the gate it is
+ * measured against. Re-derived with ONE evaluateLink — computed only when connectivity is the
+ * binding axis (Act 1, where it is the only number on the screen that moves) or the row is open. */
+function traceElevationDeg(t: number, sat: NetSat, latRad: number, lonRad: number, slotIdx: number): number {
+  const from = surfacePointRelative(latRad, lonRad, t);
+  const normal = surfaceNormalRelative(latRad, lonRad, t);
+  const a = sat.loadout[slotIdx];
+  if (a === undefined) return NaN;
+  return evaluateLink(from, normal, satPositionRelative(eph, sat, t), a.eirp, a.rangeRefM).elevationRad * (180 / Math.PI);
+}
+
+/** THE PROJECTION. */
+function traceState(): TraceState {
+  const mounted = shellRef !== null && shellRef.visibleHosts().includes("trace");
+  const t = clock.seconds;
+  const elapsed = netMissionElapsedS(t);
+  if (!mounted) {
+    // The hidden-tile gate (§9.5). Panels render every frame whether the WM shows them or not;
+    // without this TRACE would be a permanent tax on the MISSION desktop. The loss roll still
+    // accrues below the gate — the record must not have holes just because nobody was looking.
+    traceAccrueHistory(t);
+    return { ...TRACE_EMPTY_STATE, mounted: false };
+  }
+  traceAccrueHistory(t);
+
+  const memo = netFrameMemo(t);
+  const grounds = [...netSession.grounds];
+  const actives = netSession.contracts.filter((c) => c.state === "active");
+
+  // Reverse index pipe → the contracts riding it (the sim keeps no such index).
+  const ridersByPipe = new Map<string, Contract[]>();
+  for (const c of actives) {
+    const pipe = netSession.lastSolveFor(c.id)?.pipe;
+    if (pipe === null || pipe === undefined) continue;
+    const list = ridersByPipe.get(pipe);
+    if (list === undefined) ridersByPipe.set(pipe, [c]);
+    else list.push(c);
+  }
+
+  // ── FLOW ROWS ───────────────────────────────────────────────────────────────────
+  const rows: TraceFlow[] = [];
+  const rankInputs: RankInput[] = [];
+  for (const c of actives) {
+    const solve = netSession.lastSolveFor(c.id);
+    const isMars = c.region.bodyId === "mars";
+    const pipe = solve?.pipe ?? null;
+    const satId = solve?.path?.[1] ?? null;
+    const sat = satId !== null ? netSession.sats.find((x) => x.id === satId) ?? null : null;
+    const slotIdx = pipe !== null ? parsePipeKey(pipe)?.slotIdx ?? null : null;
+    const served = solve?.served ?? false;
+
+    // The axis that decides this row: the router's own verdict when the solve failed, otherwise
+    // the ACTIVE axis with the least headroom. Inactive axes are absent, never greyed (M1 §4.4).
+    const activeAxes = [...(c.activeAxes ?? [])].map((a) => traceAxisTag(a));
+    const reads = new Map<SlaAxisTag, AxisRead>();
+    const headrooms = new Map<SlaAxisTag, number>();
+
+    const wantElev = !isMars && (activeAxes.length === 0 || activeAxes.includes("conn"));
+    if (wantElev) {
+      const elevDeg =
+        sat !== null && slotIdx !== null ? traceElevationDeg(t, sat, c.region.latRad, c.region.lonRad, slotIdx) : NaN;
+      const gateDeg = NET_MIN_ELEVATION_RAD * (180 / Math.PI);
+      reads.set("conn", {
+        axis: "conn",
+        carried: Number.isFinite(elevDeg) ? degText(elevDeg) : "no bridge",
+        asked: Number.isFinite(elevDeg) ? `${degText(gateDeg)} gate` : null,
+        ratio: null,
+      });
+      headrooms.set("conn", axisHeadroom("conn", { carried: elevDeg, asked: gateDeg }));
+    }
+    if (activeAxes.includes("avail")) {
+      reads.set("avail", {
+        axis: "avail",
+        carried: `${(c.lastAvailability * 100).toFixed(1)}% held`,
+        asked: `${(c.slaAvail * 100).toFixed(1)}% asked`,
+        ratio: null,
+      });
+      headrooms.set("avail", axisHeadroom("avail", { carried: c.lastAvailability, asked: c.slaAvail }));
+    }
+    if (activeAxes.includes("lat")) {
+      const lat = solve?.latencyS ?? Infinity;
+      reads.set("lat", {
+        axis: "lat",
+        carried: isMars ? longDelayText(lat) : msText(lat),
+        asked: isMars ? null : `${msText(c.slaLatencyS)} budget`,
+        ratio: !isMars && c.slaLatencyS > 0 && Number.isFinite(lat) ? pctText(lat / c.slaLatencyS) : null,
+      });
+      headrooms.set("lat", axisHeadroom("lat", { carried: lat, asked: isMars ? null : c.slaLatencyS }));
+    }
+    let share: number | null = null;
+    const floor = (c.slaBandwidth ?? 0) > 0 ? c.slaBandwidth : null;
+    if (pipe !== null) {
+      share = fairShare(c.offeredLoad, memo.loadByPipe.get(pipe) ?? 0, memo.capByPipe.get(pipe) ?? 0);
+    }
+    if (activeAxes.includes("bw")) {
+      reads.set("bw", {
+        axis: "bw",
+        carried: share !== null ? `${unitsText(share)} u` : "—",
+        asked: floor !== null ? `${unitsText(floor)} u` : null,
+        ratio: share !== null && floor !== null && floor > 0 ? `${pctText(share / floor)} of floor` : null,
+      });
+      headrooms.set("bw", axisHeadroom("bw", { carried: share ?? 0, asked: floor }));
+    }
+
+    const verdictAxis = solve !== null && !served ? traceAxisTag(solve.bindingConstraint ?? "connectivity") : null;
+    let bindsAxis: SlaAxisTag | null = verdictAxis;
+    if (bindsAxis === null) {
+      let worst = Infinity;
+      for (const [axis, h] of headrooms) {
+        if (h < worst) {
+          worst = h;
+          bindsAxis = axis;
+        }
+      }
+      if (headrooms.size <= 1 && served) bindsAxis = headrooms.size === 1 ? bindsAxis : null;
+    }
+    const read: AxisRead =
+      (bindsAxis !== null ? reads.get(bindsAxis) : undefined) ??
+      reads.values().next().value ?? { axis: "conn", carried: "—", asked: null, ratio: null };
+    const headroom = bindsAxis !== null ? headrooms.get(bindsAxis) ?? 1 : 1;
+    const band = bandFor(served, headroom);
+
+    // The path line, in path order.
+    const groundId = solve?.path?.[solve.path.length - 1] ?? null;
+    let pathText: string;
+    if (isMars) pathText = TRACE_MARS_VIA(satId ?? "—", groundId ?? "—");
+    else if (sat !== null && slotIdx !== null && groundId !== null)
+      pathText = TRACE_VIA(tracePipeDisplayId(sat, slotIdx), groundId);
+    else pathText = TRACE_NO_BRIDGE;
+
+    // THE CANDIDATE READ (§6.3) — how many OTHER serving pipes' links to this region close RIGHT
+    // NOW. This is the only honest answer to a bias lever that frequently cannot move anything:
+    // geometry recomputed this frame, not a preview of what the solver would pick.
+    let candidateCount = 0;
+    let redundant = false;
+    if (!isMars && grounds.length > 0) {
+      for (const other of netSession.sats) {
+        if (other.id === satId) continue;
+        if (!netSees(t, other, c.region.latRad, c.region.lonRad)) continue;
+        candidateCount++;
+        redundant = true;
+      }
+    }
+
+    const pipeLoad = pipe !== null ? memo.loadByPipe.get(pipe) ?? 0 : 0;
+    const pipeCap = pipe !== null ? memo.capByPipe.get(pipe) ?? 0 : 0;
+    const pipeUtil = utilisation(pipeLoad, pipeCap);
+
+    // The why-now line: how long, what caused it, when, how often, and what a dark hour costs.
+    const bits: string[] = [];
+    if (!served) {
+      const since = traceDarkSince.get(c.id);
+      if (since !== undefined) bits.push(TRACE_DARK_FOR(mmss(t - since)));
+    } else if (band === "tight") {
+      const since = traceTightSince.get(c.id);
+      if (since !== undefined) bits.push(TRACE_TIGHT_FOR(mmss(t - since)));
+    }
+    const lastLoss = traceNewestLossFor(c, satId);
+    if (lastLoss !== null) {
+      const gap = meanGapS(lastLoss.times);
+      bits.push(
+        TRACE_LAST_LOSS(
+          causeText(lastLoss.cause),
+          mmss(Math.max(0, lastLoss.times[lastLoss.times.length - 1] - (t - elapsed))),
+          lastLoss.times.length > 1 ? ` (×${lastLoss.times.length}` : "",
+          lastLoss.times.length > 1 ? (gap !== null ? `, ${intervalText(gap)} apart)` : ")") : "",
+        ),
+      );
+    }
+    if (!served && c.penaltyPerSecond > 0) bits.push(TRACE_BLEEDS(eurText(c.penaltyPerSecond * 3600)));
+    if (isMars) bits.push(TRACE_MARS_LIGHT(longDelayText(solve?.latencyS ?? NaN)));
+
+    // The binding line: the ONE post-hoc diagnosis LAW 1 allows, and only about a solve that
+    // already failed. Composed from the panel's own live numbers + the canonical FIX_CLAUSE, never
+    // from TraceShortfall.message (whose numbers are a snapshot of an older solve).
+    let bindingText: string | null = null;
+    let bindingMark: "!" | "?" = "!";
+    if (!served && bindsAxis !== null) {
+      const clause = FIX_CLAUSE[traceFixKind(bindsAxis)];
+      // With both operands, the sentence is "X carried against Y — <the kind of fix>". With no
+      // bridge at all there IS no second operand, and "carried against —" is noise pretending to
+      // be a measurement.
+      bindingText = read.asked !== null ? `${read.carried} carried against ${read.asked} — ${clause}` : clause;
+    } else if (served && !redundant && netSession.faultsEnabled && netSession.sats.length > 0 && !isMars) {
+      // The honest SPOF read (docs/routing-screen.md §9.3 S3): no OTHER sat's link to this region
+      // closes right now, so one fault drops it. Gated on faults being live — the coarse
+      // `sats.length <= 1` heuristic this replaces was silent on exactly this case.
+      bindingMark = "?";
+      bindingText = `SINGLE PATH · ${FIX_CLAUSE.addRedundantPath}`;
+    }
+
+    rows.push({
+      contractId: c.id,
+      label: c.label,
+      generation: generationOf(c.id),
+      hue: hueIndexFor(c.id, 6),
+      band,
+      sortKey: band === "dark" ? traceDarkSortKey(bindsAxis, t, c.id) : headroom,
+      rankDelta: 0,
+      bindsAxis,
+      bindsIsVerdict: verdictAxis !== null,
+      read,
+      staleSolve: false,
+      servedBySickSat: satId !== null && netSession.faults.some((f) => f.satId === satId),
+      pathText,
+      pipeKey: pipe,
+      pipeBarText: pipe !== null ? loadBarText(pipeUtil) : null,
+      pipeLoadText: pipe !== null ? `${unitsText(pipeLoad)}/${unitsText(pipeCap)} u${pipeUtil >= 1 ? " OVER" : ""}` : null,
+      shareCount: pipe !== null ? ridersByPipe.get(pipe)?.length ?? 0 : 0,
+      candidateCount,
+      preferShort: preferSliderPos(c.prefer) < 0.25,
+      preferEnabled: !isMars,
+      preferDisabledReason: isMars ? TRACE_MARS_NO_ALTERNATIVE : null,
+      whyNowText: bits.length > 0 ? bits.join(" · ") : null,
+      bindingText,
+      bindingMark,
+      expanded: traceSelectedFlowId === c.id,
+      detail: [],
+    });
+    rankInputs.push({ id: c.id, band, sortKey: band === "dark" ? traceDarkSortKey(bindsAxis, t, c.id) : headroom });
+  }
+
+  // Stable worst-first order with the anti-shuffle hysteresis, then the ↑/↓ move glyph.
+  const order = rankFlows(rankInputs, traceRank);
+  const byId = new Map(rows.map((r) => [r.contractId, r]));
+  const ordered: TraceFlow[] = [];
+  order.forEach((id, i) => {
+    const row = byId.get(id);
+    if (row === undefined) return;
+    row.rankDelta = rankDelta(id, i, traceRank);
+    ordered.push(row);
+  });
+  traceRank.clear();
+  ordered.forEach((r, i) => traceRank.set(r.contractId, i));
+
+  // Past the ceiling the CLEAR band collapses to a count — five rows is what a person reads.
+  let clearCollapsed = 0;
+  let shown = ordered;
+  if (ordered.length > TRACE_CLEAR_ROW_CEILING) {
+    const keep: TraceFlow[] = [];
+    for (const r of ordered) {
+      if (r.band !== "clear" || keep.length < TRACE_CLEAR_ROW_CEILING || r.contractId === traceSelectedFlowId) keep.push(r);
+      else clearCollapsed++;
+    }
+    shown = keep;
+  }
+
+  // ── PIPE ROWS ───────────────────────────────────────────────────────────────────
+  const pipes: TracePipe[] = [];
+  let idleCount = 0;
+  let idleUnits = 0;
+  for (const sat of netSession.sats) {
+    for (let slot = 0; slot < sat.loadout.length; slot++) {
+      const a = sat.loadout[slot];
+      // CROSSLINK is fittable but can never route (beams.ts) — a permanently inert row is a lie
+      // by implication, so it is excluded by construction rather than greyed.
+      if (!isServingType(a)) continue;
+      const key = beamPipeKey(sat.id, slot);
+      const load = memo.loadByPipe.get(key) ?? 0;
+      const effCap = memo.capByPipe.get(key) ?? 0;
+      const derated = effCap < a.capacityUnits - 1e-9;
+      const target = netSession.beams.get(key) ?? "";
+      const targetContract = target !== "" ? netSession.contracts.find((x) => x.region.id === target) ?? null : null;
+      const floodlight = a.type === "BROADCAST";
+      const blind =
+        !floodlight && targetContract !== null && !netSees(t, sat, targetContract.region.latRad, targetContract.region.lonRad);
+      if (load <= 0) {
+        idleCount++;
+        idleUnits += effCap;
+        if (!traceIdleExpanded) continue;
+      }
+      const riderContracts = ridersByPipe.get(key) ?? [];
+      const riders: TraceRider[] = riderContracts.map((rc) => {
+        const rShare = fairShare(rc.offeredLoad, load, effCap);
+        const rFloor = (rc.slaBandwidth ?? 0) > 0 && (rc.activeAxes?.has("bandwidth") ?? false) ? rc.slaBandwidth : null;
+        return {
+          contractId: rc.id,
+          label: rc.label,
+          hue: hueIndexFor(rc.id, 6),
+          classTag: traceAxisTag(rc.trafficClass),
+          offerText: unitsText(rc.offeredLoad),
+          shareText: unitsText(rShare),
+          floorText: rFloor !== null ? unitsText(rFloor) : "—",
+          flag: riderFlag(rShare, rFloor),
+          ofFloor: rFloor !== null && rFloor > 0 ? pctText(rShare / rFloor) : null,
+          frac: effCap > 0 ? Math.min(1, rShare / effCap) : 0,
+          tag: rc.label.slice(0, 3).toUpperCase(),
+          preferShort: preferSliderPos(rc.prefer) < 0.25,
+        };
+      });
+      const sumFloor = sumFloors(riders.map((r) => (r.floorText === "—" ? null : Number(r.floorText))));
+      const util = utilisation(load, effCap);
+      pipes.push({
+        pipe: key,
+        satId: sat.id,
+        slotIdx: slot,
+        displayId: tracePipeDisplayId(sat, slot),
+        typeGlyph: TRACE_TYPE_GLYPH[a.type] ?? "·",
+        targetText: floodlight
+          ? TRACE_FLOODLIGHT
+          : target === ""
+            ? TRACE_UNAIMED
+            : `→ ${targetContract?.label ?? target}${blind ? ` · ${TRACE_NO_SIGHT}` : ""}`,
+        blind,
+        loadText: unitsText(load),
+        capText: unitsText(effCap),
+        derateText: derated ? TRACE_DERATED(unitsText(a.capacityUnits), (effCap / a.capacityUnits).toFixed(2)) : null,
+        util,
+        pctText: pctText(util),
+        barText: loadBarText(util),
+        state: pipeState({ load, util, blind }),
+        floorNotchFrac: effCap > 0 ? Math.min(1, sumFloor / effCap) : 0,
+        overPromisedText: sumFloor > effCap ? TRACE_OVERPROMISED(unitsText(sumFloor), unitsText(effCap)) : null,
+        overflowText: load > effCap ? TRACE_OVERFLOW(unitsText(load - effCap)) : null,
+        riders,
+        anyStarved: riders.some((r) => r.flag === "starved"),
+        pointable: isPointable(a),
+      });
+    }
+  }
+  // CONTENDED first (any starved rider, or over capacity), then the rest — a bucket sort, so the
+  // ledger only reorders when a pipe actually tips over, and that jump is the event you want.
+  pipes.sort((x, y) => {
+    const cx = pipeContended(x.util, x.anyStarved, false) ? 0 : 1;
+    const cy = pipeContended(y.util, y.anyStarved, false) ? 0 : 1;
+    if (cx !== cy) return cx - cy;
+    if (x.satId !== y.satId) return x.satId < y.satId ? -1 : 1;
+    return x.slotIdx - y.slotIdx;
+  });
+
+  // ── THE LOSS ROLL + SICK NODES ──────────────────────────────────────────────────
+  const losses: TraceLossGroupView[] = [...traceLossRoll.values()]
+    .sort((x, y) => (y.times[y.times.length - 1] ?? 0) - (x.times[x.times.length - 1] ?? 0))
+    .map((g) => {
+      const gap = meanGapS(g.times);
+      return {
+        key: g.key,
+        linkText: `${g.aId} ↔ ${g.bId}`,
+        causeText: causeText(g.cause),
+        countText: `×${g.times.length}`,
+        timesText: g.times
+          .slice(-3)
+          .map((x) => mmss(Math.max(0, x - (t - elapsed))))
+          .join(" · "),
+        spacingText: gap !== null ? intervalText(gap) : null,
+      };
+    });
+
+  const nodes: TraceNode[] = netSession.faults.map((f) => {
+    const carrying = actives.filter((c) => netSession.lastSolveFor(c.id)?.path?.[1] === f.satId).length;
+    const detail =
+      f.kind === "telegraphed"
+        ? TRACE_NODE_FAILS(mmss(telegraphedCountdownRemainingS(f, t)))
+        : TRACE_NODE_RECOVERS(f.degradedCapacityFactor.toFixed(2), mmss(Math.max(0, f.recoversAtS - t)));
+    return {
+      satId: f.satId,
+      glyph: TRACE_FAULT_GLYPH[f.kind] ?? "~",
+      kindWord: TRACE_FAULT_WORD[f.kind] ?? "SICK",
+      cause: f.cause,
+      detailText: detail,
+      carryingText: TRACE_NODE_CARRYING(carrying === 1 ? "1 flow" : `${carrying} flows`),
+    };
+  });
+
+  return {
+    mounted: true,
+    paused: clock.paused,
+    asOfText: mmss(elapsed),
+    counts: {
+      dark: ordered.filter((r) => r.band === "dark").length,
+      tight: ordered.filter((r) => r.band === "tight").length,
+      clear: ordered.filter((r) => r.band === "clear").length,
+    },
+    flows: shown,
+    clearCollapsed,
+    pipes,
+    idle: { count: idleCount, parkedUnits: unitsText(idleUnits), expanded: traceIdleExpanded },
+    losses,
+    nodes,
+    selectedFlowId: traceSelectedFlowId,
+    handRouteNote: null,
+  };
+}
+
+/** Accrue the render-only history the table reads: the dark/tight clocks and the loss roll. Runs
+ * EVERY frame, mounted or not — a record with holes in it because nobody was looking is exactly
+ * the "record that lied" GDD §4.12 warns about. */
+function traceAccrueHistory(t: number): void {
+  for (const c of netSession.contracts) {
+    if (c.state !== "active") {
+      traceDarkSince.delete(c.id);
+      traceTightSince.delete(c.id);
+      continue;
+    }
+    const solve = netSession.lastSolveFor(c.id);
+    if (solve !== null && !solve.served) {
+      if (!traceDarkSince.has(c.id)) traceDarkSince.set(c.id, t);
+    } else {
+      traceDarkSince.delete(c.id);
+    }
+    if (solve !== null) for (const l of solve.losses) pushLoss(traceLossRoll, l, TRACE_LOSS_MIN_SPACING_S);
+  }
+  // A selection that would dangle at a completed contract clears itself; a RENEWAL of the same
+  // region keeps it, so the row the player was watching survives the generation boundary.
+  if (traceSelectedFlowId !== null) {
+    const stem = contractStem(traceSelectedFlowId);
+    const alive = netSession.contracts.find((c) => c.state === "active" && contractStem(c.id) === stem);
+    traceSelectedFlowId = alive?.id ?? null;
+  }
+}
+
+/** DARK rows order by which axis failed (the SLA ramp's own order), then longest-dark first. */
+function traceDarkSortKey(axis: SlaAxisTag | null, t: number, contractId: string): number {
+  const ordinal = axis === "conn" ? 0 : axis === "avail" ? 1 : axis === "lat" ? 2 : 3;
+  const since = traceDarkSince.get(contractId);
+  const darkFor = since !== undefined ? t - since : 0;
+  // Ordinal dominates; within an axis, longer-dark sorts first (hence the negative).
+  return ordinal - Math.min(0.9, darkFor / 600);
+}
+
+/** The newest loss group relevant to this flow (its region or its serving sat). */
+function traceNewestLossFor(c: Contract, satId: string | null): TraceLossGroup | null {
+  let best: TraceLossGroup | null = null;
+  for (const g of traceLossRoll.values()) {
+    const mine = g.aId === c.region.id || g.bId === c.region.id || (satId !== null && (g.aId === satId || g.bId === satId));
+    if (!mine) continue;
+    const newest = g.times[g.times.length - 1] ?? -Infinity;
+    if (best === null || newest > (best.times[best.times.length - 1] ?? -Infinity)) best = g;
+  }
+  return best;
+}
+
+/** The sim's axis vocabulary → the printed tag (`SlaAxis` and `RouterAxis` share their words). */
+function traceAxisTag(axis: string): SlaAxisTag {
+  return axisTag(axis);
+}
+
+/** The printed axis → the kind-of-fix whose canonical clause the binding line ends with. */
+function traceFixKind(axis: SlaAxisTag): ShortfallFixKind {
+  switch (axis) {
+    case "conn":
+      return "addCoveringSat";
+    case "avail":
+      return "addPhasedSat";
+    case "lat":
+      return "shorterRoute";
+    case "bw":
+      return "addParallelPath";
+  }
+}
+
+const TRACE_EMPTY_STATE: TraceState = {
+  mounted: false,
+  paused: false,
+  asOfText: "0:00",
+  counts: { dark: 0, tight: 0, clear: 0 },
+  flows: [],
+  clearCollapsed: 0,
+  pipes: [],
+  idle: { count: 0, parkedUnits: "0.00", expanded: false },
+  losses: [],
+  nodes: [],
+  selectedFlowId: null,
+  handRouteNote: null,
+};
 
 function missionTopState(): MissionTopState {
   const t = clock.seconds;
@@ -3084,6 +3661,54 @@ function ledgerFleetState(): LedgerFleetState {
           Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([netSession.snapshot().lastStepS])),
       }
     : null;
+// SD-53 — THE ROUTING SCREEN's probe. It exposes the ORDERING and the OBSERVED PERIODICITY
+// numbers, because those are exactly what the behavioural falsifier is about: could a tester have
+// named the rhythm of a link loss before any forecast exists? A probe that only returned counts
+// could not answer that.
+(window as unknown as Record<string, unknown>).__trace = () => {
+  if (!netMode) return null;
+  const st = traceState();
+  return {
+    mounted: st.mounted,
+    counts: st.counts,
+    order: st.flows.map((f) => ({
+      id: f.contractId,
+      band: f.band,
+      // The internal ordering key — probe-only (§4.10: it is never printed). A scene needs it to
+      // tell an EARNED overtake from a shuffle; without it the anti-shuffle falsifier is unfalsifiable.
+      key: Math.round(f.sortKey * 1e6) / 1e6,
+      binds: f.bindsAxis,
+      verdict: f.bindsIsVerdict,
+      carried: f.read.carried,
+      asked: f.read.asked,
+      ratio: f.read.ratio,
+      binding: f.bindingText,
+      candidates: f.candidateCount,
+      pipe: f.pipeKey,
+    })),
+    pipes: st.pipes.map((p) => ({
+      pipe: p.pipe,
+      load: Number(p.loadText),
+      cap: Number(p.capText),
+      util: Math.round(p.util * 1000) / 1000,
+      notch: Math.round(p.floorNotchFrac * 1000) / 1000,
+      overPromised: p.overPromisedText !== null,
+      riders: p.riders.map((r) => ({ id: r.contractId, offer: Number(r.offerText), share: Number(r.shareText), floor: r.floorText, flag: r.flag })),
+    })),
+    roll: [...traceLossRoll.values()].map((g) => ({
+      key: g.key,
+      count: g.times.length,
+      times: g.times,
+      meanGapS: meanGapS(g.times),
+    })),
+    idle: st.idle,
+    nodes: st.nodes.map((n) => ({ sat: n.satId, kind: n.kindWord })),
+    hysteresis: TRACE_RANK_HYSTERESIS,
+  };
+};
+/** Rebuilds-since-boot per panel — the churn gate (docs/routing-screen.md §9.5). A table that
+ * rebuilds its DOM on the diurnal load curve would fail the no-churn idiom silently. */
+(window as unknown as Record<string, unknown>).__panelChurn = () => ({ trace: tracePanel.churn() });
 (window as unknown as Record<string, unknown>).__launchTheatre = () => ({
   // pending events with arcs in flight (each should pool its own line now),
   events: netMode ? netSession.launchEvents.map((ev) => ({ id: ev.id, members: ev.members.map((m) => m.outcome) })) : [],
@@ -3155,6 +3780,10 @@ if (netMode) {
   // R1 (SD-45): the loop lives on MISSION — the SD-44 dashboards are retired from net mode.
   registry.set("mission-top", missionTopPanel);
   registry.set("ledger-fleet", ledgerFleetPanel);
+  // SD-53 — TRACE ships PANEL-FIRST: a rail-summonable host with no preset and no key of its own.
+  // That satisfies DD-10's own merge test without an argument and keeps m1-redesign §2.1's rule
+  // that no loop beat requires leaving MISSION. The TRACE desktop is a later, gated commit.
+  registry.set("trace", tracePanel);
 } else {
   registry.set("contracts", contractsPanel);
   registry.set("fleet", fleetPanel);
@@ -3174,6 +3803,7 @@ shellRef = shell; // viewport watchdog can now heal + relayout.
 const windowRail = new WindowRail(shell, netMode ? NET_RAIL_PANELS : RAIL_PANELS, (host, changed) => {
   if (host === "parse" && changed) refreshParse(true);
 });
+windowRailRef = windowRail;
 wmCanvas.appendChild(windowRail.element);
 // Reserve the collapsed rail's strip (34px, matches .window-rail width) so the tiles
 // never sit under it; the rail's hover-expand overlays transiently on top.
@@ -3774,6 +4404,7 @@ function frame(now: number): void {
     r1ApplyHeroFill();
     missionTopPanel.render(missionTopState());
     ledgerFleetPanel.render(ledgerFleetState());
+    tracePanel.render(traceState());
     drainMissionWire();
   } else {
     // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project

@@ -27,6 +27,8 @@ const FILES = [
   // SD-44 panels included (they still mount in ?mode=cache). Add new panels HERE.
   "copy.ts",
   "mission-top.ts",
+  "trace.ts",
+  "trace-derive.ts",
   "ledger-fleet.ts",
   "howto.ts",
   "onboarding.ts",

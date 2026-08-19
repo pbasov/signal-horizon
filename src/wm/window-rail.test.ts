@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { RAIL_PANELS } from "./window-rail";
-import { PRESET_SPECS, buildGrid } from "./presets";
+import { RAIL_PANELS, NET_RAIL_PANELS } from "./window-rail";
+import { PRESET_SPECS, NET_PRESET_SPECS, buildGrid } from "./presets";
 import { allHosts } from "./zonegrid";
 import { CAMERA_PRESETS } from "../orrery/orrery";
 
@@ -31,6 +31,44 @@ describe("window-summon rail — the panel list", () => {
   it("has no duplicate hosts (a panel is summoned, never duplicated)", () => {
     const hosts = RAIL_PANELS.map((p) => p.host);
     expect(new Set(hosts).size).toBe(hosts.length);
+  });
+});
+
+/**
+ * SD-53 — the NET-side rail/preset coverage, which did not exist. The block above pins CACHE mode
+ * only, so a net panel that a preset mounts with no rail button — or a rail host no registry entry
+ * answers — passed `npm test` silently. These are the assertions that make that impossible.
+ */
+describe("net-mode rail — every net preset host is reachable, and TRACE is on the rail", () => {
+  it("covers every host any NET preset can show", () => {
+    const railHosts = new Set(NET_RAIL_PANELS.map((p) => p.host));
+    for (const spec of NET_PRESET_SPECS) {
+      for (const host of allHosts(buildGrid(spec))) {
+        expect(railHosts.has(host), `${host} (in net preset ${spec.name}) must have a rail button`).toBe(true);
+      }
+    }
+  });
+
+  it("has no duplicate hosts", () => {
+    const hosts = NET_RAIL_PANELS.map((p) => p.host);
+    expect(new Set(hosts).size).toBe(hosts.length);
+  });
+
+  it("carries TRACE — the routing screen ships panel-first, so the rail IS its only mount point", () => {
+    expect(NET_RAIL_PANELS.map((p) => p.host)).toContain("trace");
+    expect(NET_RAIL_PANELS.find((p) => p.host === "trace")?.label).toBe("TRACE");
+  });
+
+  it("every NET preset validates against the DD-10 zone-grid ceiling", () => {
+    for (const spec of NET_PRESET_SPECS) {
+      expect(spec.columns.length, `${spec.name} columns`).toBeLessThanOrEqual(3);
+      for (const col of spec.columns) {
+        expect(col.rows.length, `${spec.name} rows`).toBeLessThanOrEqual(3);
+        for (const r of col.rows) expect(r.weight).toBeGreaterThan(0);
+      }
+      const hosts = allHosts(buildGrid(spec));
+      expect(new Set(hosts).size, `${spec.name} hosts are unique`).toBe(hosts.length);
+    }
   });
 });
 

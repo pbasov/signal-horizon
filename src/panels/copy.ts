@@ -98,3 +98,107 @@ export const NET_ACT_BEAT: readonly string[] = [
  * duty number in plain words. A fact, never a verdict. */
 export const PAD_AVAIL_FACT = (dutyPct: string, barPct: string): string =>
   `one bird lights it ${dutyPct}% of the time — the tender asks ${barPct}%`;
+
+// ── SD-53 — THE ROUTING SCREEN (TRACE). Every player string the routing table can render.
+// docs/routing-screen.md §8 holds the lawfulness argument row by row. The rule that governs all of
+// them: a MEASUREMENT states two raw numbers and their ratio; a POST-HOC DIAGNOSIS is lawful only
+// about a solve that already failed, and names a class of hardware or geometry — never a control,
+// never the answer. Functions take PRE-FORMATTED display strings; they never format numbers. ──
+
+/** The group legend that DEFINES THE UNIT. An undefined unit on the primary key of the primary
+ * table is the largest comprehension failure available here, so it is closed by definition. */
+export const TRACE_PIPES_LEGEND =
+  "capacity in units · one unit is roughly one region's baseline demand";
+
+/** The honest statement of the sim's own re-solve split: the SOLVER re-runs on a topology-change
+ * event, serve/breach is re-evaluated every tick. Unstated, a table that holds a path steady
+ * between events looks frozen and gets accused of lying. */
+export const TRACE_FRESHNESS_LEGEND = "paths hold until the geometry moves · load is now";
+
+/** The head census — how many promises, and how they stand. */
+export const TRACE_CENSUS = (flows: string): string => `WHAT BINDS · ${flows}`;
+export const TRACE_CENSUS_BANDS = (dark: string, tight: string, clear: string, asOf: string): string =>
+  `${dark} dark · ${tight} tight · ${clear} clear · as of ${asOf}`;
+/** Paused: the physics cells are frozen because the sim is, and the readout says so. */
+export const TRACE_CENSUS_PAUSED = (asOf: string): string => `held at ${asOf} · paused`;
+
+/** Nothing is carrying traffic yet (Act 1, before the first signature). Names a want, not a key. */
+export const TRACE_EMPTY =
+  "nothing is carrying traffic yet — a signed tender and a bird in view make the first row.";
+
+/** The path line: which antenna on which satellite lands this flow on which ground. */
+export const TRACE_VIA = (satAndAntenna: string, groundId: string): string =>
+  `via ${satAndAntenna} → ${groundId}`;
+/** The router found no bridge at all — the absence, stated as the measurement it is. */
+export const TRACE_NO_BRIDGE = "no bridge — nothing in view closes the link";
+/** A pipe that IS aimed at a region it cannot currently reach. Pointing does not bend physics. */
+export const TRACE_NO_SIGHT = "NO LINE OF SIGHT";
+/** A BROADCAST antenna has no aim to change — it floodlights whatever is under it. */
+export const TRACE_FLOODLIGHT = "· floodlight ·";
+/** A pointable antenna that is not pointed anywhere. */
+export const TRACE_UNAIMED = "· unaimed ·";
+
+/** How long this promise has been dark, and — separately — how long it has been near its edge. */
+export const TRACE_DARK_FOR = (mmss: string): string => `dark ${mmss}`;
+export const TRACE_TIGHT_FOR = (mmss: string): string => `tight ${mmss}`;
+/** A loss that happened: the geometric cause, the mission time, and — once there are enough of
+ * them to make a rhythm — how far apart they have been. An OBSERVED spacing, never a forecast. */
+export const TRACE_LAST_LOSS = (cause: string, atMmss: string, count: string, spacing: string): string =>
+  `${cause} at ${atMmss}${count}${spacing}`;
+/** The signed terms, restated: what a dark hour actually costs. */
+export const TRACE_BLEEDS = (perHour: string): string => `bleeds ${perHour}/hr while dark`;
+
+/** The Mars leg: one relay, presence-based, and minutes of light each way. */
+export const TRACE_MARS_VIA = (relayId: string, groundId: string): string =>
+  `via ${relayId} (presence) → ${groundId}`;
+export const TRACE_MARS_LIGHT = (delay: string): string =>
+  `one-way light ${delay} — the answer is already old when it lands.`;
+/** Why the route-bias control is inert on the Mars row — a disabled control always states why. */
+export const TRACE_MARS_NO_ALTERNATIVE = "one relay, no alternative";
+
+/** How many OTHER pipes could reach this region right now. The honest answer to "why did nothing
+ * move when I re-biased it" — geometry, counted. */
+export const TRACE_CANDIDATES = (n: number): string =>
+  n === 0 ? "one pipe reaches this region" : `${n + 1} pipes reach this region`;
+
+/** The idle summary — the only waste read M1 will actually have, because diagnose()'s
+ * over-provision face requires a concurrently unserved contract to fire at all. */
+export const TRACE_IDLE_SUMMARY = (count: string, units: string): string =>
+  `${count} idle · ${units} u parked`;
+
+/** A rider's allocation on a shared pipe: what it offered, what it is getting, what it promised. */
+export const TRACE_RIDER_NUMS = (offer: string, share: string, floor: string): string =>
+  `offer ${offer}  share ${share}  floor ${floor}`;
+
+/** The Σfloor over-promise, stated with both operands. Visible while everything is still green. */
+export const TRACE_OVERPROMISED = (sumFloor: string, cap: string): string =>
+  `Σfloor ${sumFloor} u > ${cap} u pipe`;
+/** A pipe carrying more than it can serve, stated as the overflow amount. */
+export const TRACE_OVERFLOW = (excess: string): string => `OVER +${excess} u`;
+/** A sat mid-degradation: its antennas are derated, and the number says by how much. */
+export const TRACE_DERATED = (nominal: string, factor: string): string => `(${nominal} ×${factor} SICK)`;
+
+/** A sick node and its blast radius. */
+export const TRACE_NODE_RECOVERS = (factor: string, mmss: string): string =>
+  `capacity ×${factor} · recovers in ${mmss}`;
+export const TRACE_NODE_FAILS = (mmss: string): string => `fails in ${mmss}`;
+export const TRACE_NODE_CARRYING = (n: string): string => `carrying ${n}`;
+
+/** The hand-route answer — what the game says when a player tries to drag a path. §4.3a's own
+ * words: the player shapes the graph and states the intent; the solver picks the path. */
+export const TRACE_HAND_ROUTE =
+  "the solver picks the path from what can close — you shape what it can pick from.";
+
+/** Tooltips. All fact-form; none names a control (the LEDGER·FLEET gerund pattern). */
+export const TRACE_TIP_ELEV =
+  "Elevation of the satellite above this endpoint's horizon. Below 5° the link does not close — no aiming changes that.";
+export const TRACE_TIP_PIPE =
+  "One antenna. Everything riding it shares its capacity in proportion to offered load, so a peak on one rider starves another.";
+export const TRACE_TIP_FLOOR =
+  "The bandwidth this contract committed to. The notch on the bar is the SUM of every floor promised against this antenna — past it, the promises exceed the hardware.";
+export const TRACE_TIP_PREFER =
+  "SHORT chases the lowest-latency pipe; SPREAD leaves a congested pipe for a parallel one. It can only move a flow to a pipe that already reaches the region.";
+export const TRACE_TIP_LOSS =
+  "Every link loss carries the geometry that caused it and the mission time it happened. Repeats on one link are listed with the spacing observed between them.";
+export const TRACE_TIP_BAND =
+  "Ordered worst-first: unserved promises, then the ones closest to their limit. The order is the physics, not a setting.";

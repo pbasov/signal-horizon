@@ -1230,3 +1230,163 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 .lf-chip-head { cursor: pointer; }
 .lf-chip-head:hover .lf-chip-id { color: var(--cyan); }
 .lf-chip-head.sel .lf-chip-id { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---- SD-53 — THE ROUTING SCREEN (TRACE) ----------------------------------------------------
+   docs/routing-screen.md §4. Two-level table: FLOWS over PIPES. 1-bit machine chrome — hard edges,
+   token colours only, dither for tone. Every colour distinction is doubled on a non-colour channel
+   in the DOM (glyph / word / bar width / bar texture / segment order), so the whole surface stays
+   readable under the monochrome-purist override at the bottom of this file. */
+
+.trace { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+
+/* The census: the across-the-room read, mirrored into the titlebar subtitle. */
+.trace-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-size: var(--ts-ui); letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--line-dim); padding-bottom: 3px;
+}
+.trace-head-l { color: var(--fg); font-weight: 700; }
+.trace-head-r { color: var(--fg-dim); }
+.trace-head-r.paused { color: var(--amber); }
+
+.trace-sublegend { font-size: var(--ts-cap); color: var(--grey); letter-spacing: 0.04em; margin-bottom: 3px; }
+
+/* ---- the FLOW row: four lines, the binding sentence on the COLLAPSED row ---- */
+.trace-rows { display: flex; flex-direction: column; }
+.trace-flow {
+  position: relative; padding: 4px 0 4px 7px;
+  border-top: 1px dashed var(--line-dim); cursor: pointer;
+}
+.trace-flow:first-child { border-top: none; }
+.trace-flow.sel { background-color: var(--bg-2); background-image: var(--dither-sparse); }
+/* The identity hue rides a 3px LEFT RULE — a position channel, so it survives colour-off. */
+.trace-rule { position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px; background: var(--line-dim); }
+
+.trace-line1 { display: flex; align-items: baseline; gap: 6px; font-size: var(--ts-body); }
+.trace-glyph { min-width: 26px; color: var(--fg); letter-spacing: 0.04em; }
+.trace-flow.band-dark .trace-glyph { color: var(--red); }
+.trace-flow.band-tight .trace-glyph { color: var(--amber); }
+.trace-flow.band-clear .trace-glyph { color: var(--grey); }
+.trace-label { flex: 1 1 auto; font-weight: 700; color: var(--fg); }
+/* CAPS + ✕ = the router's own verdict on a failed solve; dim lowercase = merely the nearest axis. */
+.trace-binds { min-width: 74px; letter-spacing: 0.06em; }
+.trace-binds.verdict { color: var(--red); font-weight: 700; }
+.trace-binds.near { color: var(--fg-dim); }
+.trace-binds.none { color: var(--grey); }
+.trace-read { color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.trace-trend { min-width: 10px; color: var(--fg-dim); }
+
+.trace-path { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--ts-ui); color: var(--fg-dim); flex-wrap: wrap; }
+.trace-path-text { color: var(--fg-dim); }
+.trace-path-text.jump { cursor: pointer; border-bottom: 1px dotted var(--line-dim); }
+.trace-path-text.jump:hover { color: var(--fg); border-bottom-color: var(--line); }
+.trace-share { color: var(--violet); letter-spacing: 0.04em; }
+.trace-minibar { letter-spacing: -0.05em; color: var(--cyan); }
+.trace-miniload { font-variant-numeric: tabular-nums; }
+.trace-cands { color: var(--grey); font-size: var(--ts-cap); }
+.trace-prefer-pair { display: inline-flex; gap: 2px; margin-left: auto; }
+.trace-prefer { flex: 0 0 auto; font-size: var(--ts-cap); padding: 1px 6px; }
+
+.trace-whynow { font-size: var(--ts-cap); color: var(--fg-dim); margin-top: 2px; line-height: 1.35; }
+/* The one post-hoc diagnosis LAW 1 allows: a solve that already failed, and the KIND of fix. */
+.trace-binding {
+  font-size: var(--ts-cap); color: var(--amber); margin-top: 2px; line-height: 1.35;
+  border-left: 2px solid var(--line-dim); padding-left: 5px;
+}
+.trace-detail { font-size: var(--ts-cap); color: var(--fg-dim); margin-top: 3px; white-space: pre-line; line-height: 1.4; }
+.trace-collapsed { font-size: var(--ts-cap); color: var(--grey); padding: 3px 0 0 7px; }
+.trace-handroute { font-size: var(--ts-cap); color: var(--cyan-dim); margin-top: 4px; border-left: 2px solid var(--line-dim); padding-left: 5px; }
+
+/* ---- the PIPE row: head, the bar with its Σfloor notch, then the rider ledger ---- */
+.trace-pipe-rows { display: flex; flex-direction: column; }
+.trace-pipe { padding: 4px 0; border-top: 1px dashed var(--line-dim); cursor: pointer; }
+.trace-pipe:first-child { border-top: none; }
+.pipe-head { display: flex; align-items: baseline; gap: 6px; font-size: var(--ts-ui); }
+.pipe-id { font-weight: 700; color: var(--fg); }
+.pipe-target { flex: 1 1 auto; color: var(--fg-dim); }
+.pipe-target.blind { color: var(--orange-red); }
+.pipe-load, .pipe-pct { font-variant-numeric: tabular-nums; color: var(--fg); }
+.pipe-derate { color: var(--orange); font-size: var(--ts-cap); }
+.pipe-state { letter-spacing: 0.06em; font-size: var(--ts-cap); color: var(--grey); }
+.pipe-state.tight { color: var(--amber); }
+.pipe-state.over, .pipe-state.starving { color: var(--red); }
+.pipe-state.blind { color: var(--orange-red); }
+.pipe-repoint { flex: 0 0 auto; font-size: var(--ts-cap); padding: 1px 6px; }
+
+.pipe-bar-line { display: flex; align-items: center; gap: 6px; margin: 3px 0 2px; }
+.pipe-bar {
+  position: relative; flex: 1 1 auto; height: 9px;
+  background: var(--bg-2); background-image: var(--dither-sparse);
+  border: 1px solid var(--line-dim);
+}
+.pipe-segs { display: flex; height: 100%; }
+/* One segment per rider, IN RIDER-LINE ORDER. Three attribution channels: the order, the dither
+   texture, and the inline 3-char tag on any segment wide enough to carry one. */
+.pipe-seg {
+  height: 100%; overflow: hidden;
+  font-size: 6px; line-height: 9px; text-align: center; color: var(--bg);
+  background-repeat: repeat;
+}
+.pipe-seg.tex-0 { background-image: none; }
+.pipe-seg.tex-1 { background-image: var(--dither-dense); }
+.pipe-seg.tex-2 { background-image: var(--dither-mid); }
+.pipe-seg.starved { outline: 1px solid var(--red); outline-offset: -1px; }
+/* THE PROMISE LINE: Σ of the committed floors riding this antenna. It shows the oversubscription
+   BET before the peak bites — which is the mandate M1 §4.3 gives this surface verbatim. */
+.pipe-floor-notch { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--line); }
+.pipe-floor-notch.pinned { width: 2px; background: var(--red); }
+.pipe-overflow { font-size: var(--ts-cap); color: var(--grey); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pipe-overflow.over { color: var(--red); }
+
+.pipe-riders { display: flex; flex-direction: column; }
+.pipe-rider { display: flex; align-items: baseline; gap: 6px; font-size: var(--ts-cap); padding: 1px 0 1px 6px; cursor: pointer; }
+.rider-label { min-width: 120px; color: var(--fg); }
+.rider-nums { flex: 1 1 auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.rider-flag { letter-spacing: 0.04em; color: var(--grey); white-space: nowrap; }
+.rider-flag.ok { color: var(--green); }
+.rider-flag.tight { color: var(--amber); }
+.rider-flag.starved { color: var(--red); font-weight: 700; }
+
+/* The idle summary is a SENTENCE that happens to be clickable, not a control label — the
+   .net-btn uppercase would shout "8 PIPES IDLE · 11.40 U PARKED" at the player. */
+.trace-idle {
+  width: 100%; text-align: left; font-size: var(--ts-cap); margin-top: 4px;
+  text-transform: none; letter-spacing: 0.02em; color: var(--grey); border-style: dashed;
+}
+.trace-idle:hover { color: var(--fg-dim); }
+
+/* ---- the LOSS ROLL: grouped by link, so the RHYTHM is what you see ---- */
+.trace-loss-rows { display: flex; flex-direction: column; }
+.roll-row { display: flex; gap: 8px; font-size: var(--ts-cap); padding: 1.5px 0; cursor: default; }
+.roll-row:hover { background-color: var(--bg-2); }
+.roll-link { min-width: 150px; color: var(--fg); }
+.roll-cause { min-width: 130px; color: var(--fg-dim); }
+.roll-count { min-width: 26px; color: var(--amber); font-variant-numeric: tabular-nums; }
+.roll-times { flex: 1 1 auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.roll-gap { color: var(--cyan-dim); font-variant-numeric: tabular-nums; }
+
+/* ---- SICK NODES: faults ride this view; there is no separate fault panel (M1 §5.3) ---- */
+.trace-node-rows { display: flex; flex-direction: column; }
+.trace-node { display: flex; gap: 6px; font-size: var(--ts-cap); padding: 1.5px 0; }
+.node-glyph { min-width: 12px; color: var(--amber); }
+.node-id { min-width: 82px; color: var(--fg); font-weight: 700; }
+.node-kind { min-width: 170px; color: var(--orange); letter-spacing: 0.04em; }
+.node-detail { flex: 1 1 auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.node-carrying { color: var(--fg-dim); }
+
+/* ---- CONTRACT IDENTITY HUES ----------------------------------------------------------------
+   One hue per contract, shared by its flow-row rule, its pipe-bar segment and (via the render
+   slice) its region fill. Six is the whole set; they all flatten together under purist mode, which
+   is exactly why every use of them is doubled by order, texture, a tag, or a word. */
+.hue-0 { --hue: var(--cyan); }
+.hue-1 { --hue: var(--amber); }
+.hue-2 { --hue: var(--green); }
+.hue-3 { --hue: var(--violet); }
+.hue-4 { --hue: var(--faction-blue); }
+.hue-5 { --hue: var(--orange); }
+.trace-rule.hue-0, .trace-rule.hue-1, .trace-rule.hue-2,
+.trace-rule.hue-3, .trace-rule.hue-4, .trace-rule.hue-5 { background: var(--hue); }
+.pipe-seg.hue-0, .pipe-seg.hue-1, .pipe-seg.hue-2,
+.pipe-seg.hue-3, .pipe-seg.hue-4, .pipe-seg.hue-5 { background-color: var(--hue); }
+.pipe-rider.hue-0 .rider-label, .pipe-rider.hue-1 .rider-label, .pipe-rider.hue-2 .rider-label,
+.pipe-rider.hue-3 .rider-label, .pipe-rider.hue-4 .rider-label, .pipe-rider.hue-5 .rider-label { color: var(--hue); }
