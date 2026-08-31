@@ -1,8 +1,8 @@
 import { it } from "vitest";
-import { loadEphemeris } from "/home/basov/Games/signal-horizon/src/sim/system-data";
-import { NetSession } from "/home/basov/Games/signal-horizon/src/sim/net/session";
-import { act4Log, GOLDEN_DT } from "/home/basov/Games/signal-horizon/src/sim/net/canon";
-import { applyNetAction } from "/home/basov/Games/signal-horizon/src/sim/net/apply-action";
+import { loadEphemeris } from "../system-data";
+import { NetSession } from "./session";
+import { act4Log, GOLDEN_DT } from "./canon";
+import { applyNetAction } from "./apply-action";
 
 it("DIFF", () => {
   const eph = loadEphemeris();
