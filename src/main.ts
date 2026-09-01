@@ -132,6 +132,7 @@ import {
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
 import type { CompareRow } from "./panels/pad-instruments";
+import { ringState } from "./panels/pad-ring";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
@@ -3656,45 +3657,16 @@ function padInstrumentState(
   const band = { minKm: 10, maxKm: parkKm, parkKm };
 
   // ── THE RING: who is already on this orbit, and where the hole is ────────────────
-  // "Same ring" = same orbital plane and altitude, within a tolerance wide enough to survive
-  // an underburn that has been circularised back but narrow enough not to sweep in a GEO.
-  const planeMatches = (o: { aM: number; incRad: number }): boolean =>
-    Math.abs(o.aM - netDraft.semiMajorM) / Math.max(1, netDraft.semiMajorM) < 0.08 &&
-    Math.abs(o.incRad - netDraft.incRad) < 8 / DEG;
-  const phaseOf = (o: { aM: number; m0Rad: number; epochS: number }): number => {
-    const per = orbitPeriodSeconds(o as never);
-    const n = per > 0 ? (2 * Math.PI) / per : 0;
-    const m = o.m0Rad + n * (t - o.epochS);
-    return (((m * DEG) % 360) + 360) % 360;
-  };
-  const members: { id: string; phaseDeg: number; draft: boolean }[] = [];
-  for (const sat of netSession.sats) {
-    if (planeMatches(sat.orbit)) members.push({ id: sat.id, phaseDeg: phaseOf(sat.orbit), draft: false });
-  }
-  const fleetOnRing = members.length;
-  for (const m of draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0)) {
-    members.push({ id: m.id, phaseDeg: phaseOf(m.orbit), draft: true });
-  }
-  // The widest gap on the ring — the hole a replacement wants. Measured over the FLEET only:
-  // it is the hole you are aiming into, not the hole after you have aimed.
-  let gapDeg = 360;
-  let gapCentreDeg = 0;
-  const flying = members.filter((m) => !m.draft).map((m) => m.phaseDeg).sort((a, b) => a - b);
-  if (flying.length === 1) {
-    gapDeg = 360;
-    gapCentreDeg = (flying[0] + 180) % 360;
-  } else if (flying.length > 1) {
-    gapDeg = 0;
-    for (let i = 0; i < flying.length; i++) {
-      const a = flying[i];
-      const b = i === flying.length - 1 ? flying[0] + 360 : flying[i + 1];
-      if (b - a > gapDeg) {
-        gapDeg = b - a;
-        gapCentreDeg = ((a + (b - a) / 2) % 360 + 360) % 360;
-      }
-    }
-  }
-  const ring = { members, gapDeg, gapCentreDeg, count: netDraft.count, empty: fleetOnRing === 0 };
+  // The model (which fleet satellites share this exact plane, where they sit right now, and
+  // what hole the draft would leave) is pure and unit-tested in pad-ring.ts. It is a claim
+  // about live state, so it is checkable rather than eyeballed.
+  const ring = ringState(
+    netDraft,
+    netSession.sats,
+    draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0),
+    t,
+    netDraft.count,
+  );
 
   // ── THE TARGET + THE COMPARISON ──────────────────────────────────────────────────
   const c =
