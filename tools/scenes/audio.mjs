@@ -30,12 +30,12 @@ export default {
     // The launch pipeline: commit → liftoff → deploy_pop (the "money + first signal" ears).
     await ctx.setParam("subLonDeg", 0);
     await ctx.settle(120);
-    // SD-64 — THE COMMIT CONTROLS MUST BE REACHABLE BY A HAND, not just by DOM `.click()`. At
-    // 1920×1080 the MISSION panel's scroll viewport is 562 px against 1043 px of pad content, so ARM
-    // and LAUNCH sit BELOW THE PANEL FOLD and a real click only lands after scrolling (which
-    // `ctx.realClick` now does, as a hand would). Every other scene drives the pad with DOM clicks,
-    // which ignore layout entirely — so nothing in the harness could tell you the commit row had
-    // gone under the fold. These assertions are the standing witness.
+    // SD-64/SD-68 — THE COMMIT CONTROLS MUST BE REACHABLE BY A HAND, not just by DOM `.click()`.
+    // These assertions caught the pad's commit row sitting BELOW THE PANEL FOLD at 1920×1080 (562 px
+    // of scroll viewport against 1043 px of instruments), which put the game's first verb off-screen.
+    // SD-68 made the row a non-scrolling footer of the pad, so it is now on screen at every scroll
+    // position — and these stay as the standing witness, because every OTHER scene drives the pad
+    // with DOM clicks that ignore layout entirely and could never tell you if it regressed.
     const armHit = await ctx.realClick("[data-net=arm]");
     ctx.ok("a HAND can reach ARM", armHit.ok, armHit.reason);
     await ctx.settle(150);

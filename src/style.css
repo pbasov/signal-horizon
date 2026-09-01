@@ -1096,6 +1096,24 @@ body {
 .mission-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mission-mode { min-width: 110px; }
 .mission-row { display: flex; gap: 6px; flex-wrap: wrap; }
+/* SD-68 — THE COMMIT ROW STAYS REACHABLE. The pad is taller than its panel's scroll viewport at
+   1920×1080, which put ARM/LAUNCH below the fold for the game's FIRST action. Pinning the row to the
+   bottom of the scroller keeps both controls under the hand at every scroll position; the readouts
+   above pass underneath it. Opaque background so nothing shows through (DD-1: chrome is 1-bit, and a
+   translucent overlay over live numbers reads as a rendering fault, not a layer). */
+.mission-pad { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; gap: 6px; }
+/* `min-height: 0` is load-bearing: without it a flex child refuses to shrink below its content and
+   the inner scroller never engages — the pad just grows and pushes the footer off-screen again. */
+.pad-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+/* The commit group is the pad's FOOTER: it never scrolls, so ARM/LAUNCH are always under the hand. */
+.mission-pad > .group:last-child { flex: 0 0 auto; }
+.pad-commit-row {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
+}
+.pad-commit-row > .net-btn { flex: 1 1 0; }
+
 .mission-bus, .mission-card { display: block; width: 100%; text-align: left; margin: 1px 0; opacity: 0.75; padding: 2px 5px; }
 .mission-bus.active, .mission-card.active { opacity: 1; outline: 1px solid var(--cyan); color: var(--cyan); background: var(--bg) !important; }
 /* FL-04 — the bus SILHOUETTE: named slots (G1/G2/S1/S2) as fitted/empty boxes. Shape

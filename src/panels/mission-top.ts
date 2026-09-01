@@ -281,6 +281,13 @@ export class MissionTop implements PanelHandle {
 
     // --- PAD face ---
     this.padFace = el("div", "mission-pad");
+    // THE INSTRUMENTS SCROLL; THE COMMIT ROW DOES NOT (SD-68). Everything above goes in here, and the
+    // ARM/LAUNCH row is appended to the pad itself as a footer, so the two controls are on screen at
+    // every scroll position. Before this the pad was ~1,043 px of instruments inside a 562 px scroll
+    // viewport at 1920×1080, which put the game's FIRST verb below the fold with nothing saying to
+    // scroll. A sticky child does not solve it — sticky positions within its own group, and by then
+    // the whole group is out of view — so the row has to leave the scroller entirely.
+    const padScroll = el("div", "pad-scroll");
 
     // WHO THIS IS FOR — pinned at the top of the pad for the whole aim. The pad used to
     // swap the tender board away, hiding the requirement while you designed against it.
@@ -290,7 +297,7 @@ export class MissionTop implements PanelHandle {
     this.vTargetBet = el("div", "pad-target-bet", "");
     targetGroup.append(this.vTargetHead, this.vTargetTerms, this.vTargetBet);
     targetGroup.appendChild(this.compare.root);
-    this.padFace.appendChild(targetGroup);
+    padScroll.appendChild(targetGroup);
 
     const busGroup = el("div", "group");
     busGroup.appendChild(el("div", "legend", "BUS"));
@@ -332,7 +339,7 @@ export class MissionTop implements PanelHandle {
     busGroup.appendChild(fitBtn);
     this.slotChooser = el("div", "mission-slotchooser");
     busGroup.appendChild(this.slotChooser);
-    this.padFace.appendChild(busGroup);
+    padScroll.appendChild(busGroup);
 
     // ── HOW HIGH — the altitude profile: a side-on cut with the beam drawn onto the
     // surface, so the footprint visibly opens out as the orbit climbs.
@@ -353,7 +360,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("altKm", altScrub);
     altGroup.appendChild(altScrub.root);
-    this.padFace.appendChild(altGroup);
+    padScroll.appendChild(altGroup);
 
     // ── HOW FAR NORTH — the inclination dial, marked with the customer's latitude.
     const incGroup = el("div", "group pad-instrument");
@@ -373,7 +380,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("incDeg", incScrub);
     incGroup.appendChild(incScrub.root);
-    this.padFace.appendChild(incGroup);
+    padScroll.appendChild(incGroup);
 
     // ── WHERE — the aim. The globe is the primary control (click a place); the number is
     // the exact readout you can also scrub.
@@ -407,7 +414,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("raanDeg", raanScrub);
     whereGroup.appendChild(raanScrub.root);
-    this.padFace.appendChild(whereGroup);
+    padScroll.appendChild(whereGroup);
 
     // ── THE RING — what you already fly on this orbit, what this launch adds, and the hole
     // between them. This is the answer to "one of my three died, where does the new one go".
@@ -437,7 +444,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("phaseSpreadDeg", spreadScrub);
     ringGroup.appendChild(spreadScrub.root);
-    this.padFace.appendChild(ringGroup);
+    padScroll.appendChild(ringGroup);
 
     const combGroup = el("div", "group");
     this.vCombLabel = el("div", "legend", "COVERAGE COMB");
@@ -452,7 +459,7 @@ export class MissionTop implements PanelHandle {
     this.vFacts = el("div", "mission-hint", "");
     this.vFacts.title = "Physics of the draft: how much of one orbit the target sees it, the orbital period, whether it PARKS (period == day), and the one-way light time to the target.";
     combGroup.appendChild(this.vFacts);
-    this.padFace.appendChild(combGroup);
+    padScroll.appendChild(combGroup);
 
     const commitGroup = el("div", "group");
     this.vStack = el("div", "mission-stack", "");
@@ -464,8 +471,22 @@ export class MissionTop implements PanelHandle {
     this.armBtn.title = "Two-step commit: ARM, then LAUNCH. The stack price is charged win or lose.";
     this.launchBtn = btn("LAUNCH", "net-btn mission-launch", () => this.actions.onLaunch());
     this.launchBtn.setAttribute("data-net", "launch");
-    commitGroup.append(this.vStack, this.vRisk, this.vPadFact, this.vProblem, this.armBtn, this.launchBtn);
-    this.padFace.appendChild(commitGroup);
+    // THE COMMIT ROW IS PINNED TO THE BOTTOM OF THE PAD (SD-68).
+    //
+    // The pad is ~1,043 px of instruments inside a panel whose scroll viewport is 562 px at
+    // 1920×1080, so ARM and LAUNCH sat at y≈1,118 in a 1,080-tall window: BELOW THE FOLD, on the
+    // commonest desktop height, for THE FIRST ACTION THE GAME ASKS OF YOU. Played cold, the opener
+    // reads "OPEN PAD" → aim → …and the button you need is off-screen with nothing saying to scroll.
+    // The panel does scroll, so this was never a hard block — but a verb you have to go looking for
+    // is not a verb the game has taught, and this is the launch verb the whole of §3 is about.
+    //
+    // Sticky, not shrunk: every instrument keeps its size and place, the readouts scroll UNDER the
+    // row, and the two controls are simply always where your hand already is. That is a layout fix,
+    // not a redesign — no instrument was cut to make room, which is the call that belongs to the user.
+    const commitRow = el("div", "pad-commit-row");
+    commitRow.append(this.armBtn, this.launchBtn);
+    commitGroup.append(this.vStack, this.vRisk, this.vPadFact, this.vProblem, commitRow);
+    this.padFace.append(padScroll, commitGroup);
 
     this.content.appendChild(this.padFace);
   }

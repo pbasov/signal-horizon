@@ -2246,3 +2246,40 @@ evidence); pointing the beams with the clock held (no measurable effect); and th
 above (actively harmful). The scene's act-3 setup still wants a real pass that holds the clock across
 the whole sequence and steps it deliberately, rather than interleaving wall-paced UI work with a world
 running at 1000×.
+
+---
+
+### SD-68 — THE PAD'S COMMIT ROW STOPS HIDING BELOW THE FOLD (2026-09-02)
+
+**Status:** ACCEPTED.
+
+**Context.** SD-64 measured that `.mission-pad` is ~1,043 px of instruments inside a 562 px scroll
+viewport at 1920×1080, putting ARM and LAUNCH at y≈1,118 in a 1,080-tall window. It was filed P2 —
+"friction, not a block" — because the panel does scroll. Playing the opener COLD, from a fresh
+campaign, is what showed that reading to be too generous: the objective says OPEN PAD, you aim the
+draft, and **the button that commits the game's first verb is off-screen, with nothing saying to
+scroll**. A verb you have to go looking for is not a verb the game has taught, and §3 is entirely
+about this one.
+
+That it survived so long is the interesting part: every playtest scene but `audio` drives the pad with
+DOM `.click()`, which ignores layout completely. The harness could not see it. The `audio` scene's
+hand-reachability assertions (added in SD-64 for exactly this reason) are what stand watch now.
+
+**The fix is structural, and deliberately takes nothing away.** The instruments moved into an inner
+`.pad-scroll`, and the commit group became the pad's non-scrolling FOOTER. Every instrument keeps its
+size and place, the tender stays pinned at the top of the pad (SD-56's own fix), and the readouts
+scroll underneath. **Which instrument to shrink is a design call and this does not make it.**
+
+A sticky child was tried first and does not work: `position: sticky` positions an element within its
+own parent's box, and by the time you can see the problem the whole commit GROUP is out of view, so
+there is nothing to stick inside. The row has to leave the scroller entirely. `min-height: 0` on the
+flex children is load-bearing for the same family of reason — without it a flex child refuses to
+shrink below its content, the inner scroller never engages, and the footer is pushed off-screen again.
+
+**Consequences.** ARM/LAUNCH sit at y≈577, `clickable: true`, with a 447 px scroller over 1,017 px of
+content. Panels 142/142, act1 20/0, hour 15/0, and 13 of 14 playtest scenes green (trace carries its
+own open flake, SD-67). No sim code touched; no golden moves.
+
+**What playing cold is for.** This was already in the backlog, with the right measurements, filed at
+the wrong severity — and no amount of re-reading the entry would have corrected it. Booting the game
+and reaching for the first button did.

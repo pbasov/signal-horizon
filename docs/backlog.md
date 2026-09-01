@@ -300,9 +300,11 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 > Spec §9 Act 4 (~50–60 min). The session CULMINATES reaching toward Mars; the Earth playbook BREAKS (first across-tier invalidation). The player places the first object near Mars, sends the first signal, and watches it crawl (round-trip now MINUTES) — light-delay taught by sight. The freshness CONCEPT (not the economy) appears: Mars data arrives old ("as of 8m ago"); one demand cares about freshness; the player gets ONE cache to place and feels "putting data closer helps" (the breadcrumb). Stops on purpose on a "to be continued." Teaches the campaign hook: light is slow, distance changes everything, caching is the answer, freshness is the new currency-to-be.
 > **▸ This is the strongest reuse in the whole spec: the existing M1 cache/freshness/light-delay/Mars-blackout system IS the Act 4 teaser content.** The net-new work is FENCING/scoping ONLY — present it as a teaser (one cache, "as of 8m ago", a single freshness-caring demand, stop on "to be continued"), NOT the full caching/prefetch/coherence economy that's already coded. The risk is over-exposing it.
 
-- [ ] **M1-A4-1** Reach Mars + light-delay by sight — *S* · place the first object near Mars; the packet crawls at honest light-speed (round-trip now minutes); the player feels the helplessness of not being able to real-time-tune an 8+ min command-delay topology. · Dep: Act 3 (the playbook to break). · Reuse: **full** — the existing Earth↔Mars packet crawl + light-delay readout (`M0-10/11`).
-- [ ] **M1-A4-2** Freshness CONCEPT (not economy) + the one cache breadcrumb — *S* · Mars data arrives old ("as of 8m ago"); ONE demand cares about freshness (pays less for stale); the player places ONE cache and feels "data closer helps." · Dep: M1-A4-1. · Reuse: **full** — the existing cache + freshness-as-saturation + Mars-blackout (`src/sim/m1/*`), FENCED down to a single cache + a single freshness demand. **Do NOT expose the full prefetch/coherence/policy/parse toolkit** (it stays post-gate per §8).
-- [ ] **M1-A4-3** "To be continued" stop — *S* · the teaser ends on purpose; the player should finish WANTING to see where it goes. · Dep: M1-A4-2. · Reuse: the SYSTEM.LOG + readout for the closing beat.
+- [x] **M1-A4-1** Reach Mars + light-delay by sight — **ALREADY BUILT; verified and ticked SD-66 (2026-09-02)** — *S* · the player launches the MARS RELAY with the same `net_launch` verb and a preset, the Earth↔Mars line goes live with the relay, and the signal crawls it at the REAL ephemeris light delay (`netMarsCrawler`, keyed on sim-time / oneWayS). The readout box states it in words: `LIGHT DELAY 21m32s one-way`, and the body bar badges MARS with the same number. Round-trip is ~43 min at the geometry sampled, which is the honest value at that point in the synodic cycle, not the spec's illustrative "8 min". · Verify: `docs/screenshots/act4-frontier.png`; the `frontier` scene's 8 assertions.
+- [~] **M1-A4-2** Freshness CONCEPT (not economy) + the one cache breadcrumb — **CONCEPT HALF BUILT; the "pays less for stale" clause is an OPEN QUESTION** — *S* · Mars data arrives old ("as of 8m ago"); ONE demand cares about freshness (pays less for stale); the player places ONE cache and feels "data closer helps." · Dep: M1-A4-1. · Reuse: **full** — the existing cache + freshness-as-saturation + Mars-blackout (`src/sim/m1/*`), FENCED down to a single cache + a single freshness demand. **Do NOT expose the full prefetch/coherence/policy/parse toolkit** (it stays post-gate per §8).
+      · **BUILT (verified SD-66, 2026-09-02):** the sample arrives one light-delay stale by construction, the readout desaturates it by sight (`FRESHNESS 50%`, `as of 21m32s ago`), the WIRE says it in the world's voice (*"Mars data arrived — and it is already OLD (one light-delay stale on arrival)"*), and the ONE cache breadcrumb is placed with `P`, after which freshness visibly jumps back. That is the CONCEPT, which is what this item's own title asks for.
+      · **NOT BUILT, AND DELIBERATELY NOT INVENTED:** "pays less for stale". `netRevenueRatePerSecond` is `payPerSecond × servedFraction` with no freshness term, and `session.ts` states the fence explicitly — *"NO freshness economy (§8 fenced)"*. So the item's TITLE ("not economy") and its BODY ("pays less for stale") disagree, and the body would mean coupling freshness into the pay path — a sim change that moves the replay goldens and is exactly the "risk is over-exposing it" this epic warns about. **A question for the user, not a call for an agent to make** (AGENTS §1). Ticking this needs that answer, not more code.
+- [x] **M1-A4-3** "To be continued" stop — **ALREADY BUILT; verified and ticked SD-66 (2026-09-02)** — *S* · the arc ends on the SYSTEM.LOG line *"SIGNAL HORIZON — TO BE CONTINUED — you have reached the signal horizon. The frontier opens here."*, and the cursor STOPS on act4 by construction (its gate is false forever — a read, not a gate; pinned by `net-replay.test.ts`). · Verify: `docs/screenshots/act4-frontier.png`.
 
 ---
 
@@ -752,9 +754,17 @@ All 7 findings fixed:
       number, and the rounded one they can read is a different orbit (0.203°/orbit drift at act-2
       scale). The harness reads it from `__netState().altKm`; a player cannot. A "match the selected
       ring" affordance on the pad is the obvious answer, which makes it a design call. Found by SD-65.
-- [ ] **RC-11** *(P2)* `.mission-pad` is 1043 px of content in a 562 px panel viewport at
-      1920×1080 — *S* · so the launch commit row reads below the fold on the commonest desktop
-      height. The panel DOES scroll (`.telem.mission-top` is `overflow-y: auto`), so this is friction
-      rather than a block, and it is a layout/design judgement (which instrument shrinks), not a
-      mechanical fix — hence P2 and unbuilt. Recorded because every scene but `audio` drives the pad
-      with DOM clicks that ignore layout, so nothing in the harness could have told you.
+- [x] **RC-11** The pad's commit row is always reachable — **DONE (SD-68, 2026-09-02)** — *S* ·
+      `.mission-pad` is ~1043 px of instruments inside a 562 px scroll viewport at 1920×1080, which put
+      ARM and LAUNCH at y≈1118 in a 1080-tall window: below the fold, on the commonest desktop height,
+      for **the first action the game asks of you**. Filed P2 as "friction, not a block" — then played
+      cold, which is the only way to see what it actually is: the opener reads OPEN PAD → aim → and the
+      button you need is off-screen with nothing saying to scroll. A verb you have to go looking for is
+      not a verb the game has taught.
+      · **Fixed by structure, not by shrinking anything:** the instruments moved into an inner
+      `.pad-scroll`, and the commit group became the pad's non-scrolling FOOTER. A sticky child does
+      NOT work here — `position: sticky` positions within its own group, and by then the whole group is
+      out of view (tried, measured, discarded). Every instrument keeps its size and place and the
+      tender stays pinned at the top; which instrument to shrink remains the user's call, and this fix
+      does not make it. · Verify: ARM/LAUNCH at y≈577, `clickable: true`, inner scroller 447/1017 px;
+      `docs/screenshots/pad-commit-row.png`; act1 20/0, hour 15/0, panels 142/142.
