@@ -347,7 +347,9 @@ All 7 findings fixed:
 
 ## Follow-ups
 
-- ⬜ Hide far/parent orbit rings in near-field presets (ORBITS shows stray distant dashes)
+- ✅ Hide far/parent orbit rings in near-field presets (ORBITS shows stray distant dashes) — the
+  hide shipped earlier; SD-63 fixed its other half (nothing ever set a ring visible again, so a
+  ring hidden once stayed hidden for the rest of the session)
 - ⬜ Wire Tab/Split/Close gestures in the WM
 - ⬜ Port the WmModel unit tests to Vitest
 - ⬜ Pool the ephemeris `Vec3` array returns (truth-layer still allocates small arrays)
@@ -453,3 +455,43 @@ All 7 findings fixed:
       frame and over Brettel/Viénot CVD-simulated variants; a *failure* to read a critical cue is a
       lead, a *pass* proves nothing. The machine layer of the X-03 colour-off exit check, not a
       replacement for it.
+
+---
+
+### EPIC — SD-63 · CELESTIAL BODY NAVIGATION (the body bar · the solar-system view · a click that holds)
+
+> Decision: `docs/decisions.md` SD-63. User-directed: clicking the Moon or Mars did nothing, there was
+> no solar-system view, and no control switched the camera's SUBJECT. Entirely a VIEW/camera change —
+> no `src/sim/` edit, no action, no golden touched.
+
+- [x] **BN-01** `orrery/body-nav.ts`, the pure nav model — *S* · per-body tier + glyph (CVD-safe),
+      the one-way light delay from home as the badge, the hover detail, and the framing a jump uses
+      derived from the body GRAPH (`framingForBody`), plus a repaint signature so the bar never
+      rebuilds DOM per frame. · Verify: 28 tests, incl. 1 AU ⇒ `8m19s` and a sub-badge distance
+      wobble producing an identical signature.
+- [x] **BN-02** THE BODY BAR — *S* · one on-canvas button per body above the camera bar; click =
+      focus + the framing that body reads in; the active row is the camera's live subject.
+      · Verify: played — EARTH·MOON·SUN·MARS with live delays; the row flips to the red ▲ alarm tier
+      the moment a signed region goes dark.
+- [x] **BN-03** SYSTEM is the SOLAR-SYSTEM VIEW in both modes — *M* · `CameraPreset.netScope:
+      "system"` draws the star + planets + heliocentric rings and refuses the mission camera pin;
+      the net cislunar override is withdrawn (CISLUNAR already was that view). · Verify: played, S
+      renders Sun + Earth + Mars + both orbit rings in the net game.
+- [x] **BN-04** A CLICK THAT HOLDS — *S* · an explicit pick outranks the hero/planner framing
+      (`Orrery.heroOwnsCamera`), only bodies actually DRAWN are pickable, and the focus body is
+      always drawn (`Orrery.netBodyDrawn`). · Verify: 11 orrery tests pin both verdicts; played —
+      a canvas click on Mars re-centres and stays.
+- [x] **BN-05** "AWAY FROM HOME" as a render mode — *S* · off the operated body the toy 300-km
+      layer (globe sphere, surface discs, ground markers, link web) is dropped for plain celestial
+      bodies + the focus body's own orbit. · Verify: played — the Moon jump used to be an empty pane
+      with two orphaned ground markers; it now reads Earth + the Moon on its orbit.
+- [x] **BN-06** Navigation keys + legend — *S* · `B`/`Shift-B` step the bar, `S` the solar-system
+      view, `E` home; the net status legend names them. · Verify: played, all three.
+
+- [ ] **BN-07** *(P2)* Body-scoped panels — the FLEET / LEDGER tiles still read the operated body
+      only; once a second body carries assets they should follow the bar's subject.
+- [ ] **BN-08** *(P2)* A label de-collider — at some framings two body labels still overlap
+      (the system view sidesteps it by dropping unfocused moons, which is a scope rule, not a fix).
+- [ ] **BN-09** *(P2)* The orrery's bottom-LEFT hint line runs underneath the centred camera bar
+      and is clipped mid-word ("click a body/asset to fo…"). Pre-existing; found while adding the
+      body bar above the camera bar, and deliberately not papered over by shortening the sentence.

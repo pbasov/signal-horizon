@@ -123,7 +123,16 @@ export class StatusStrip {
       appendKeys(keys, "[", "]");
       keys.append(" phase ");
       appendKeys(keys, "R");
-      keys.append(" cam");
+      keys.append(" cam ");
+      // SD-63 — celestial navigation: B steps the body bar, S is the solar-system view, E comes
+      // home. The camera keys were cut in net mode because "the desktop sets the camera"; these
+      // three are not camera framings but NAVIGATION (which body am I looking at?).
+      appendKeys(keys, "B");
+      keys.append(" body ");
+      appendKeys(keys, "S");
+      keys.append(" system ");
+      appendKeys(keys, "E");
+      keys.append(" home");
       // X-04 — the vault keys.
       appendKeys(keys, "V");
       keys.append(" vault ");

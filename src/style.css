@@ -350,6 +350,61 @@ body {
   font-weight: 700;
 }
 
+/* ---- SD-63 — THE BODY BAR: celestial-body navigation, docked above the camera bar -------
+   The camera bar answers "how am I looking?"; this answers "at WHAT?". One button per body:
+   a tier GLYPH (the state, colour-off), the NAME, and the one-way signal delay — so the
+   navigation control also carries the constraint that decides what a mission there can be.
+   Tones are the signal palette (they rebind to machine-white in html.cvd-mono), and every
+   tone is redundant with the glyph the pure body-nav model supplies. */
+.orrery-overlay .body-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 32px; /* clear the camera bar (bottom: 6px + its own height) */
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  pointer-events: auto;
+  border: 1px solid var(--line-dim);
+  background: rgba(11, 11, 18, 0.7);
+  background-image: var(--dither-sparse);
+  background-repeat: repeat;
+}
+.orrery-overlay .body-btn {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--line-dim);
+  padding: 3px 7px;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.orrery-overlay .body-btn:hover { color: var(--fg); border-color: var(--line); }
+.orrery-overlay .body-btn .bb-glyph { font-size: 9px; }
+/* The signal delay rides quieter than the name — glanceable, never shouting. */
+.orrery-overlay .body-btn .bb-badge { color: var(--grey); letter-spacing: 0.04em; }
+.orrery-overlay .body-btn:hover .bb-badge { color: var(--fg-dim); }
+/* Tier tones (redundant with the glyph): a DARK body is the alarm and outranks everything. */
+.orrery-overlay .body-btn.tier-dark { color: var(--red); border-color: var(--red); }
+.orrery-overlay .body-btn.tier-served { color: var(--green); }
+.orrery-overlay .body-btn.tier-present { color: var(--fg); }
+.orrery-overlay .body-btn.tier-star { color: var(--amber); }
+/* ACTIVE body: the camera's current subject, inverted like the active camera preset so it
+   reads as "you are here" with or without colour. */
+.orrery-overlay .body-btn.active {
+  color: var(--bg);
+  background: var(--cyan);
+  border-color: var(--cyan);
+  font-weight: 700;
+}
+.orrery-overlay .body-btn.active .bb-badge { color: var(--bg); opacity: 0.72; }
+.orrery-overlay .body-btn.active.tier-dark { background: var(--red); border-color: var(--red); }
+
 /* ---- glanceable readout (M1-10): the network's health at a glance --------- */
 .orrery-readout {
   position: absolute;

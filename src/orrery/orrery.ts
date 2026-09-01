@@ -28,6 +28,12 @@ import { aimAnglesForRelDir, unwrapAz } from "./aim";
 import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
 import { orbitRenderRadius, type OrbitRenderScale } from "./orbit-render-scale";
 import { pickNearest, type PickCandidate } from "./pick";
+import {
+  type BodyNavEntry,
+  bodyNavSignature,
+  cycleBodyNav,
+  framingForBody,
+} from "./body-nav";
 import { solveOrbit, orbitPeriodSeconds } from "../sim/m2/orbit";
 import type { SatOrbit } from "../sim/m2/roster";
 import { A1_BODY_RADIUS_M, A1_RENDER_BAND_M } from "../sim/net/world";
@@ -80,6 +86,15 @@ export interface CameraPreset {
    * falls back to the cache value when absent. Cache mode ignores this entirely (byte-identical).
    */
   net?: Partial<Pick<CameraPreset, "az" | "el" | "dist" | "fov" | "logK" | "logScale" | "orbitBandM">>;
+  /**
+   * SD-63 — THE NET-MODE SCOPE of this framing. `"system"` marks a HELIOCENTRIC framing: in net
+   * render mode the orrery then draws the WHOLE system (Sun · Earth · Moon · Mars + the
+   * heliocentric orbit rings) and stops forcing the camera onto the operated body, so the preset
+   * is a real solar-system view you can navigate between bodies in — instead of the near-body
+   * globe every other framing shows. Absent (the default) = a BODY framing: the near-body
+   * Earth-orbit world, unchanged. Cache mode ignores this (it always drew every body).
+   */
+  netScope?: "system";
 }
 
 export const CAMERA_PRESETS: CameraPreset[] = [
@@ -91,16 +106,16 @@ export const CAMERA_PRESETS: CameraPreset[] = [
   { name: "EARTH", focus: "earth", az: 20 * DEG, el: 24 * DEG, dist: 3.0, fov: 48, logK: 6.0e7, logScale: 1.25, orbitBandM: 2.0e8 },
   { name: "CISLUNAR", focus: "earth", az: 0 * DEG, el: 22 * DEG, dist: 3.2, fov: 50, logK: 2.0e8, logScale: 1.4, orbitBandM: 1.2e8 },
   { name: "ORBITS", focus: "earth", az: 35 * DEG, el: 30 * DEG, dist: 5.0, fov: 46, logK: 9.0e6, logScale: 1.15, orbitBandM: 8.0e7 },
-  // SYSTEM — cache mode: the heliocentric Earth→Mars money shot. NET mode: a pulled-back CISLUNAR
-  // overview (the `net` override re-frames it Earth-centric at a cislunar fold so Earth + the Moon
-  // + the constellation all read, instead of a black sun-focused void).
+  // SYSTEM — THE SOLAR SYSTEM VIEW, in both modes: the heliocentric Sun · Earth · Moon · Mars
+  // shot with the honest system-scale log-fold, and the map you navigate BETWEEN bodies on (click
+  // a body to re-centre; the body bar jumps to one). It used to substitute an Earth-centric
+  // cislunar overview in net mode, because net mode blanked every body but Earth and the Moon and
+  // pinned the camera to the operated body — so the honest framing rendered a black void. That
+  // blanking is now scoped to the BODY framings (netScope below), so the preset means what its
+  // name says and CISLUNAR keeps the Earth+Moon overview it was always for.
   {
     name: "SYSTEM", focus: "sun", az: 0 * DEG, el: 24 * DEG, dist: 11, fov: 50, logK: 9.0e10, logScale: 3.6,
-    // NET cislunar overview: the SAME readable Earth fold as the EARTH preset (logK 6e7 keeps the
-    // toy globe a clear disc — the cislunar fold logK 2e8 collapsed it to sub-pixel), pulled back
-    // far enough that the real-distance Moon (on the honest log-fold past the 2e8 de-squash band)
-    // lands in frame. Earth ~110px + Moon to one side = the Earth+Moon "system" shot.
-    net: { az: 28 * DEG, el: 26 * DEG, dist: 6.6, fov: 50, logK: 6.0e7, logScale: 1.25, orbitBandM: 2.0e8 },
+    netScope: "system",
   },
   // TOP-DOWN — cache mode: looking down the ecliptic. NET mode: a north-pole-down view of the
   // operated Earth so the orbital PLANES of the launched constellation read from above.
@@ -780,6 +795,22 @@ export class Orrery {
   /** The CLICK-/F-selected asset id (a body, a placed asset, or a DC), or null. Drives
    * the selection ring + is the click-to-focus target. Set on click/F, not per frame. */
   selectedId: string | null = null;
+  /**
+   * SD-63 — THE BODY THE PLAYER DELIBERATELY CHOSE (a canvas click on a body glyph, a BODY-BAR
+   * button, or the B / F cycle), or null while the camera just follows the mission.
+   *
+   * This is the fix for "why can't I click on the Moon or Mars to focus on them?": net mode
+   * re-pinned {@link Orrery.focusId} to the operated body EVERY FRAME (the hero/planner framing),
+   * so a click on another body was overwritten before the next paint and the camera never moved.
+   * An explicit pick now OUTRANKS the hero framing until the player comes home (or opens the pad,
+   * which is a near-body verb and legitimately takes the camera back). Render-only.
+   */
+  private userFocusId: string | null = null;
+  /** SD-63 — the painted BODY BAR rows (pushed from main.ts each tick; see setBodyNav). */
+  private bodyNav: BodyNavEntry[] = [];
+  /** The signature of the currently PAINTED bar — DOM is rebuilt only when this changes (X-02). */
+  private bodyNavSig = "";
+  private bodyBar: HTMLElement | null = null;
   private activePreset = 0; // EARTH — the near-body framing where sats visibly orbit (the default)
   /**
    * NET RENDER MODE (design §6 / Decision-G): when true, the near-body de-squash is driven
@@ -1092,6 +1123,7 @@ export class Orrery {
     this.host.appendChild(this.labelLayer);
     this.buildOverlayCorners();
     this.buildCameraButtons(); // on-canvas clickable camera-preset buttons (§8 1-bit chrome)
+    this.buildBodyBar(); // SD-63 — the celestial BODY bar (one click per body we serve)
     this.buildReadout(); // builds the block + caches its sub-nodes (no field needed)
     // FL-14 (SD-49) — the ring-pinned DRAFT READOUT chip: cost · period · time-to-service,
     // pinned bottom-right of the pad's consequence view (facts only, fed per frame by main).
@@ -1807,7 +1839,7 @@ export class Orrery {
   private updateNetOverlay(focusAbs: Vec3, worldPerPx: number): void {
     const region = this.netRegionMesh;
     if (!region) return;
-    const ns = this.netState;
+    const ns = this.netOverlay;
     if (ns === null) {
       region.visible = false;
       this.labelFor("region:primary").style.display = "none";
@@ -1820,6 +1852,11 @@ export class Orrery {
         this.netSiteMarkers[i].visible = false;
         this.labelFor(`site:${i}`).style.display = "none";
       }
+      // SD-63 — these two were only ever hidden on a branch INSIDE the live path, so on the way
+      // out (net mode off, or the camera navigating away from the operated body) they kept their
+      // last frame's state: a pulsing queue ring and a sat blob stranded at a stale position.
+      if (this.netQueueRing) this.netQueueRing.visible = false;
+      if (this.netFocusBlob) this.netFocusBlob.visible = false;
       this.paintNetAvailability(null);
       return;
     }
@@ -2325,7 +2362,7 @@ export class Orrery {
     const track = this.netGroundTrack;
     const beam = this.netServedLink;
     if (!fp || !dark || !cov || !track || !beam) return;
-    const ns = this.netRenderMode ? this.netState : null;
+    const ns = this.netRenderMode ? this.netOverlay : null;
     const draft = ns?.draft ?? null;
     // The OPERATED BODY context the surface discs orient against (body-agnostic; null ⇒ hide discs).
     const body = ns?.body ?? null;
@@ -2414,7 +2451,7 @@ export class Orrery {
     const members = draft?.memberPosM ?? [];
     {
       const blobs = draft?.memberBlobs ?? [];
-      const body = this.netState?.body ?? null;
+      const body = this.netOverlay?.body ?? null;
       if (body && draft) {
         const bodySceneR = this.netBodySceneRadius(body, focusAbs);
         for (let i = 0; i < this.netMemberBlobs.length; i++) {
@@ -2480,7 +2517,7 @@ export class Orrery {
    */
   private updateNetLinks(focusAbs: Vec3): void {
     // SD-45 — beam pointers + launch arcs (drawn whether or not anything serves).
-    const nsAll = this.netRenderMode ? this.netState : null;
+    const nsAll = this.netRenderMode ? this.netOverlay : null;
     const drawSegs = (obj: THREE.LineSegments | undefined, segs: { fromPosM: Vec3; toPosM: Vec3 }[]) => {
       if (!obj) return;
       if (segs.length === 0) {
@@ -2529,7 +2566,7 @@ export class Orrery {
     }
     const line = this.netServedLinks;
     if (!line) return;
-    const ns = this.netRenderMode ? this.netState : null;
+    const ns = this.netRenderMode ? this.netOverlay : null;
     const links = ns?.servedLinks ?? [];
     if (links.length === 0) {
       line.visible = false;
@@ -2634,6 +2671,70 @@ export class Orrery {
    * Called once at build + on every {@link setPreset} — event-driven, never per-frame. */
   private paintCameraButtons(): void {
     this.cameraButtons.forEach((btn, i) => btn.classList.toggle("active", i === this.activePreset));
+  }
+
+  /**
+   * SD-63 — THE BODY BAR: one on-canvas button per celestial body, docked above the camera-preset
+   * bar. The camera bar answers "how am I looking?"; this answers "at WHAT?" — the two questions
+   * the orrery could not previously separate. Each button carries a tier glyph (§8: the state is
+   * never colour alone), the body's name, and the one-way SIGNAL DELAY to it — the number that
+   * decides what a mission there can even be, so the navigation itself teaches the constraint.
+   *
+   * A click jumps: focus the body AND switch to the framing it is legible in (see
+   * {@link Orrery.focusBody}). The container is built ONCE; {@link Orrery.paintBodyBar} rebuilds
+   * the rows only when the pure {@link bodyNavSignature} changes (X-02 — never per frame).
+   */
+  private buildBodyBar(): void {
+    const bar = document.createElement("div");
+    bar.className = "body-bar";
+    // Hit-test the bar FIRST: a press here must never start a camera-orbit drag or a canvas pick.
+    for (const ev of ["pointerdown", "pointerup", "wheel"] as const) {
+      bar.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    this.bodyBar = bar;
+    this.labelLayer.appendChild(bar);
+    this.paintBodyBar();
+  }
+
+  /**
+   * Paint the body bar from {@link Orrery.bodyNav}. Hidden while there is nothing to navigate
+   * (before main.ts pushes the first roster). Rebuilds only on a real change of content.
+   */
+  private paintBodyBar(): void {
+    const bar = this.bodyBar;
+    if (!bar) return;
+    const entries = this.bodyNav;
+    if (entries.length === 0) {
+      bar.style.display = "none";
+      this.bodyNavSig = "";
+      return;
+    }
+    bar.style.display = "flex";
+    // The pushed rows carry their own `active` flag, but the camera can move between pushes
+    // (a click, a preset, the F cycle), so the LIVE focus decides the highlight.
+    const sig = `${bodyNavSignature(entries)}#${this.focusId}`;
+    if (sig === this.bodyNavSig) return;
+    this.bodyNavSig = sig;
+    bar.textContent = "";
+    for (const e of entries) {
+      const btn = document.createElement("button");
+      btn.className = `body-btn tier-${e.tier}`;
+      btn.type = "button";
+      if (e.id === this.focusId) btn.classList.add("active");
+      btn.title = e.title;
+      const glyph = document.createElement("span");
+      glyph.className = "bb-glyph";
+      glyph.textContent = e.glyph;
+      const name = document.createElement("span");
+      name.className = "bb-name";
+      name.textContent = e.label.toUpperCase();
+      const badge = document.createElement("span");
+      badge.className = "bb-badge";
+      badge.textContent = e.badge;
+      btn.append(glyph, name, badge);
+      btn.addEventListener("click", () => this.focusBody(e.id, true));
+      bar.appendChild(btn);
+    }
   }
 
   /**
@@ -2789,14 +2890,193 @@ export class Orrery {
     if (i < 0 || i >= CAMERA_PRESETS.length) return;
     this.activePreset = i;
     const p = CAMERA_PRESETS[i];
-    // net/ Act-1 — the connectivity game is an EARTH-ORBIT puzzle: the camera must NEVER focus a
-    // body net mode hides. The SYSTEM/TOP-DOWN presets focus the Sun (blanked in net mode) → a
-    // black frame. Override focus to the OPERATED body so every preset frames Earth + its
-    // constellation; the preset's `net` override (applied in netFrame) supplies the Earth-orbit
-    // fold + distance. Cache mode keeps the preset's own focus (byte-identical).
-    this.focusId = this._netRenderMode ? (this.netState?.body?.id ?? "earth") : p.focus;
+    this.focusId = this.resolveFocus(p);
     this.tgt = this.netFrame(p);
     this.paintCameraButtons(); // keep the on-canvas active highlight in sync (click + hotkey).
+    this.paintBodyBar(); // the framing can change which body is focused → keep the bar honest.
+  }
+
+  /**
+   * WHICH BODY a framing looks at. The preset chooses the FRAMING; the player chooses the
+   * SUBJECT — so an explicit pick ({@link Orrery.userFocusId}: a canvas click, a body-bar button,
+   * the B/F cycle) wins over the preset's own focus, and switching framing keeps you on the body
+   * you navigated to instead of yanking you home.
+   *
+   * With no explicit pick: cache mode keeps the preset's focus (byte-identical to before). Net
+   * mode is the EARTH-ORBIT world for every BODY framing — the camera must never focus a body
+   * that framing hides — so it focuses the OPERATED body; a `netScope: "system"` framing draws
+   * the whole system, so it anchors on the star exactly as cache mode does.
+   */
+  private resolveFocus(p: CameraPreset): string {
+    const pick = this.userFocusId;
+    if (pick !== null && this.ctx.eph.hasBody(pick)) return pick;
+    if (!this._netRenderMode) return p.focus;
+    if (p.netScope === "system") return p.focus;
+    return this.netState?.body?.id ?? "earth";
+  }
+
+  /**
+   * SD-63 — FOCUS A CELESTIAL BODY (the body bar, the B cycle, a canvas click). Records the pick
+   * so the per-frame hero/planner framing can no longer stomp it, drops the selection reticle on
+   * it, and — when `frame` is set (a bar button / key, i.e. a deliberate JUMP rather than a click
+   * on something already on screen) — switches to the camera framing that body is legible in
+   * ({@link framingForBody}: near-body at home, cislunar for home's moon, heliocentric for
+   * another planet, so a jump can never land in an empty frame).
+   *
+   * Focusing the HOME body clears the pick, which hands the camera back to the mission framing
+   * (the hero globe / the pad close-up) — "go home" is one click, and nothing stays overridden.
+   */
+  focusBody(id: string, frame = false): void {
+    if (!this.ctx.eph.hasBody(id)) return;
+    const home = this.homeBodyId();
+    this.userFocusId = id === home ? null : id;
+    this.focusId = id;
+    this.selectedId = id;
+    if (frame) {
+      const want = framingForBody(id, this.ctx.eph.parentOf(id), home);
+      const i = CAMERA_PRESETS.findIndex((p) => p.name === want);
+      if (i >= 0) {
+        this.activePreset = i;
+        this.tgt = this.netFrame(CAMERA_PRESETS[i]);
+        this.netZoomMul = 1; // a deliberate jump starts from the framing's own distance.
+        this.paintCameraButtons();
+      }
+    }
+    this.paintBodyBar();
+  }
+
+  /** Set the framing by NAME (the keyboard's path to a named preset; unknown names no-op). */
+  setPresetByName(name: string): void {
+    const i = CAMERA_PRESETS.findIndex((p) => p.name === name);
+    if (i >= 0) this.setPreset(i);
+  }
+
+  /** SD-63 — come HOME: focus the operated body in its near-body framing (the E key). */
+  focusHome(): void {
+    this.focusBody(this.homeBodyId(), true);
+  }
+
+  /** SD-63 — step the BODY BAR by `dir` (+1 outward, −1 inward) and jump to that body. */
+  cycleBody(dir: number): void {
+    if (this.bodyNav.length === 0) return;
+    this.focusBody(cycleBodyNav(this.bodyNav, this.focusId, dir), true);
+  }
+
+  /**
+   * SD-63 — hand the orrery the BODY BAR rows (built by the pure {@link buildBodyNav} from the
+   * live session in main.ts: which bodies carry demand, what you hold there, how far the signal
+   * has to crawl). Called on a tick, not per frame; the DOM is rebuilt only when the painted
+   * signature actually changes (X-02).
+   */
+  setBodyNav(entries: BodyNavEntry[]): void {
+    this.bodyNav = entries;
+    this.paintBodyBar();
+  }
+
+  /** The body whose surface the business runs from — the operated body, or Earth before a slice. */
+  private homeBodyId(): string {
+    return this.netState?.body?.id ?? "earth";
+  }
+
+  /** True while the active framing is the net-mode SOLAR-SYSTEM view (see CameraPreset.netScope). */
+  private get systemScope(): boolean {
+    return this._netRenderMode && CAMERA_PRESETS[this.activePreset].netScope === "system";
+  }
+
+  /**
+   * SD-63 — LOOKING AWAY FROM HOME: net mode is on and the camera's subject is NOT the body we
+   * operate (the solar-system view, or a jump to the Moon / another planet).
+   *
+   * This matters because the connectivity game's globe is a TOY: a 300-km body whose surface
+   * overlays are only in scale when the camera is right on top of it. Seen from the Moon it is
+   * sub-pixel, so "focus the Moon" used to render an empty pane with two orphaned ground-station
+   * markers floating in it. Away from home the orrery therefore drops the toy layer entirely and
+   * renders plain celestial bodies — honest billboards, honest orbits — which is exactly what a
+   * navigation view should be.
+   */
+  private get awayScope(): boolean {
+    return this._netRenderMode && (this.systemScope || this.focusId !== this.homeBodyId());
+  }
+
+  /**
+   * The net slice the NEAR-BODY overlays read (region disc, footprints, ground sites, the planner
+   * draft, the live link web): null in the solar-system framing, where the toy 300-km globe those
+   * overlays paint on is far under a pixel and their discs would be stray dots at Earth. The
+   * interplanetary layers (the Mars data node, the Earth↔Mars crawler) deliberately keep reading
+   * {@link Orrery.netState} — the system view is exactly where you watch a signal crawl to Mars.
+   */
+  private get netOverlay(): NetRenderState | null {
+    return this.awayScope ? null : this.netState;
+  }
+
+  /**
+   * Which bodies net render mode draws. The BODY framings are the Earth-orbit world: the operated
+   * globe + the Moon (a cislunar scale reference), plus whatever body the player has NAVIGATED to
+   * — without that last clause, focusing Mars centred the camera on an invisible body and the pane
+   * went black, which is half of why clicking a body felt broken. The SOLAR-SYSTEM framing draws
+   * the whole system. The cache-era dataset sat glyphs never return, and Mars yields to the Act-4
+   * data node (a richer, freshness-desaturating glyph at the same place) whenever that is live.
+   */
+  private netBodyVisible(id: string): boolean {
+    const parentId = this.ctx.eph.parentOf(id);
+    return Orrery.netBodyDrawn({
+      id,
+      parentId,
+      grandparentId: this.ctx.eph.parentOf(parentId),
+      focusId: this.focusId,
+      homeId: this.homeBodyId(),
+      systemScope: this.systemScope,
+      marsNodeLive: (this.netState?.mars ?? null) !== null,
+    });
+  }
+
+  /**
+   * SD-63 — WHICH BODIES NET MODE DRAWS, as a pure `this`-free verdict (pinned by
+   * orrery-net-mode.test.ts; the instance wrapper above just reads the live frame):
+   *
+   *   - the cache-era dataset sat glyphs (`sat_*`) never draw in net mode;
+   *   - MARS yields to the Act-4 data node whenever that is live (one glyph per place, and the
+   *     node is the richer one — it desaturates as the cached copy ages);
+   *   - the SOLAR-SYSTEM framing draws the star and its planets (derived from the body graph, so
+   *     a future outer planet needs no code) plus the focus body — a MOON is excluded unless
+   *     focused, because at 1 AU it lands inside its planet's own disc and its label collides;
+   *   - a BODY framing draws the Earth-orbit world: the home globe, the Moon as a cislunar scale
+   *     reference, and THE FOCUS BODY. That last clause is the fix for half of "why can't I click
+   *     on the Moon or Mars to focus on them?" — focusing a body net mode did not draw pointed the
+   *     camera at an invisible object and the pane went black.
+   */
+  static netBodyDrawn(o: {
+    id: string;
+    parentId: string;
+    grandparentId: string;
+    focusId: string;
+    homeId: string;
+    systemScope: boolean;
+    marsNodeLive: boolean;
+  }): boolean {
+    if (o.id.startsWith("sat_")) return false;
+    if (o.id === "mars" && o.marsNodeLive) return false;
+    if (o.systemScope) {
+      return o.id === o.focusId || o.parentId === "" || o.grandparentId === "";
+    }
+    return o.id === o.homeId || o.id === "moon" || o.id === o.focusId;
+  }
+
+  /**
+   * SD-63 — DOES THE MISSION FRAMING OWN THE CAMERA? Pure `this`-free verdict behind
+   * {@link Orrery.applyPlannerFocus}: the hero/planner close-up re-pins the camera onto the
+   * operated body EVERY FRAME, which is what silently undid a click on another body. It may only
+   * do that when the player has not navigated away — or when the pad is open, which is a near-body
+   * verb that legitimately brings the camera home.
+   */
+  static heroOwnsCamera(o: {
+    plannerActive: boolean;
+    heroFill: number;
+    userPick: string | null;
+    systemScope: boolean;
+  }): boolean {
+    if (o.systemScope) return false;
+    return o.plannerActive || (o.heroFill > 0 && o.userPick === null);
   }
 
   /**
@@ -2807,8 +3087,12 @@ export class Orrery {
    * preset's own dist/fov) — every cache framing is byte-identical. Pure projection (no `this`
    * mutation); the caller assigns the result. */
   private netFrame(p: CameraPreset): typeof this.tgt {
-    const distScale = this._netRenderMode ? NET_CAMERA_DIST_SCALE : 1;
-    const fovScale = this._netRenderMode ? NET_CAMERA_FOV_SCALE : 1;
+    // The dolly-in / lens squeeze exists to make the TOY GLOBE fill the frame; at heliocentric
+    // scale there is no toy globe to fill it with, so a `netScope: "system"` framing takes the
+    // preset's own distance + lens (the same shot cache mode has always drawn).
+    const netBody = this._netRenderMode && p.netScope !== "system";
+    const distScale = netBody ? NET_CAMERA_DIST_SCALE : 1;
+    const fovScale = netBody ? NET_CAMERA_FOV_SCALE : 1;
     // net/ Act-1 — apply the preset's NET override (Earth-orbit framing for the otherwise
     // heliocentric SYSTEM/TOP-DOWN presets) only while net render mode is on. Empty in cache mode.
     const o = this._netRenderMode ? (p.net ?? {}) : {};
@@ -2824,14 +3108,16 @@ export class Orrery {
   }
 
   resetCamera(): void {
+    // R is "put the camera back": drop any navigated-to body so the mission framing returns.
+    this.userFocusId = null;
     this.setPreset(this.activePreset);
   }
 
   cycleFocus(dir: number): void {
     const i = FOCUS_ORDER.indexOf(this.focusId);
-    this.focusId = FOCUS_ORDER[(i + dir + FOCUS_ORDER.length) % FOCUS_ORDER.length];
-    // F-cycle is the secondary select path (fix #4): keep the reticle on the focus body.
-    this.selectedId = this.focusId;
+    // F-cycle is the secondary select path (fix #4): keep the reticle on the focus body, and
+    // record it as an explicit pick (SD-63) so the per-frame hero framing cannot stomp it back.
+    this.focusBody(FOCUS_ORDER[(i + dir + FOCUS_ORDER.length) % FOCUS_ORDER.length]);
   }
 
   presetName(): string {
@@ -2912,19 +3198,21 @@ export class Orrery {
     // flat billboard is hidden to avoid double-drawing the globe (body-agnostic — the id comes from
     // the live body slice, defaulting to the focus body / "earth" toy frame when none is live yet).
     const operatedBodyId = this.netState?.body?.id ?? (this._netRenderMode ? "earth" : null);
+    const systemScope = this.systemScope;
+    const awayScope = this.awayScope;
     for (const spec of BODIES) {
       const mesh = this.bodyMeshes.get(spec.id)!;
-      // net/ Act-1 — net mode is the EARTH-ORBIT world: the operated Earth is the hero, and we now
-      // also draw the MOON (a cislunar scale reference + "life"; it has no glow halo, so it is safe)
-      // and keep the real Sun DIRECTION driving Earth's terminator (the day/night line answers
-      // "where's the Sun" without a 1-AU-away disc washing the pane). We still hide Mars + the
-      // dataset sat glyphs + the Sun's giant additive halo. Cache mode draws all.
-      // CRITICAL: a glow body (the Sun) owns a SEPARATE additive halo mesh — hide it here too, or
-      // the SUN'S HALO keeps its last cache-mode position/size and additive-blends a giant radial
-      // disc over the whole pane (the "glow that looked like the globe"). The early continue below
-      // for the operated body already hides its halo; this branch covers every OTHER glow body.
-      const netVisibleBody = spec.id === "earth" || spec.id === "moon";
-      if (this._netRenderMode && !netVisibleBody) {
+      // net/ Act-1 (+ SD-63) — which bodies net mode draws is {@link Orrery.netBodyVisible}: the
+      // BODY framings are the Earth-orbit world (the operated globe, the Moon as a cislunar scale
+      // reference, and any body the player has navigated to), while the SOLAR-SYSTEM framing draws
+      // the whole system. The real Sun DIRECTION always drives Earth's terminator (the day/night
+      // line answers "where's the Sun") whether or not the Sun's own disc is on screen.
+      // CRITICAL: a glow body (the Sun) owns a SEPARATE additive halo mesh, and net mode NEVER
+      // shows it — left visible it keeps its last cache-mode position/size and additive-blends a
+      // giant radial disc over the whole pane (the "glow that looked like the globe"). So the halo
+      // is hidden for every net-mode body, drawn disc or not.
+      if (this._netRenderMode && spec.glow && this.haloMesh) this.haloMesh.visible = false;
+      if (this._netRenderMode && !this.netBodyVisible(spec.id)) {
         mesh.visible = false;
         if (spec.glow && this.haloMesh) this.haloMesh.visible = false;
         // The Mars freshness corona (this.marsHalo) is a SEPARATE additive mesh whose
@@ -2934,8 +3222,9 @@ export class Orrery {
         this.marsHalo.visible = false;
         continue;
       }
-      // The operated body's sphere replaces its billboard in net mode.
-      if (this._netRenderMode && spec.id === operatedBodyId) {
+      // The operated body's sphere replaces its billboard in net mode — except while looking
+      // AWAY from home, where the toy sphere is sub-pixel and the billboard IS the body.
+      if (this._netRenderMode && !awayScope && spec.id === operatedBodyId) {
         mesh.visible = false;
         if (spec.glow && this.haloMesh) this.haloMesh.visible = false;
         continue;
@@ -2955,14 +3244,29 @@ export class Orrery {
       // net/ Act-1 — also enlarge the Moon in net mode so the cislunar scale reference actually
       // READS (its raw 16px disc is sub-pixel at the toy fold). Render-only + scoped to net mode;
       // cache-mode sizing is unchanged.
+      // (The net-mode magnifications are for the TOY near-body frame; the solar-system framing
+      // draws every body at its honest billboard size, like cache mode.)
       const px =
-        this._netRenderMode && spec.id === "earth"
+        this._netRenderMode && !awayScope && spec.id === "earth"
           ? spec.px * NET_GLOBE_PX_SCALE
-          : this._netRenderMode && spec.id === "moon"
+          : this._netRenderMode && !awayScope && spec.id === "moon"
             ? spec.px * NET_MOON_PX_SCALE
             : spec.px;
       this.sizeBillboard(mesh, px, worldPerPx);
-      if (spec.id === "mars") this.applyMarsFreshness(mesh, worldPerPx);
+      if (spec.id === "mars") {
+        // The freshness tint is the CACHE game's readout (Mars greys as its cached copy ages).
+        // SD-63 — net mode can now draw Mars (you navigated to it, or the solar-system view is
+        // up), and there it must read as a PLANET, not as a stale cache: the net game's Mars
+        // freshness lives on its own Act-4 data node. So restore the body's own colour instead.
+        if (this._netRenderMode) {
+          const mat = mesh.material as THREE.ShaderMaterial;
+          mat.uniforms.uColor.value.setRGB(spec.color[0], spec.color[1], spec.color[2]);
+          mat.uniforms.uCell.value = 2.0;
+          this.marsHalo.visible = false;
+        } else {
+          this.applyMarsFreshness(mesh, worldPerPx);
+        }
+      }
       if (spec.terminator) {
         // Sun direction from UNCOMPRESSED physical positions — the log-fold is a
         // per-point radial scale and would skew the terminator for off-focus bodies.
@@ -2984,9 +3288,19 @@ export class Orrery {
       // the cache dataset sat_leo/sat_geo rings are clutter, and the Moon now rides a STYLIZED
       // offset (so its real-distance orbit ring would no longer pass through it). The player's own
       // launched constellation draws its own rings via updateSatRings. Cache mode draws all.
+      // SD-63 — the SOLAR-SYSTEM framing keeps the HELIOCENTRIC rings (Earth's + Mars's orbits are
+      // the map you navigate on; without them the planets are two dots in a void). The Moon's ring
+      // and the cache-era dataset sat rings stay off: sub-pixel around Earth at this fold.
       if (this._netRenderMode) {
-        ring.line.visible = false;
-        continue;
+        const parentId = this.ctx.eph.parentOf(id);
+        const planetary = systemScope && this.ctx.eph.parentOf(parentId) === "";
+        // Away from home, the FOCUS body's own orbit is the context that says where it is going
+        // (the Moon's path around Earth as you watch it from lunar distance).
+        const focusOrbit = awayScope && id === this.focusId;
+        if (id.startsWith("sat_") || !(planetary || focusOrbit)) {
+          ring.line.visible = false;
+          continue;
+        }
       }
       // UX sweep (backlog follow-up): in a NEAR-FIELD preset, heliocentric rings of OTHER
       // bodies are stray distant dashes (they're rendered around the rebase origin, miles
@@ -2997,6 +3311,11 @@ export class Orrery {
         ring.line.visible = false;
         continue;
       }
+      // A ring that reaches the draw path is SHOWN. Every branch above only ever hid one, so a
+      // ring hidden once (net mode, or a near-field pull-in) stayed hidden for the rest of the
+      // session even after the framing that hid it was left — the heliocentric orbits never came
+      // back on a pull-back. Visibility is now a function of THIS frame's framing, not of history.
+      ring.line.visible = true;
       const parentAbs = this.ctx.eph.position(parent, t);
       const pos = ring.line.geometry.getAttribute("position") as THREE.BufferAttribute;
       const arr = pos.array as Float32Array;
@@ -3069,11 +3388,27 @@ export class Orrery {
    */
   private applyPlannerFocus(k: number): void {
     const body = this.netState?.body ?? null;
+    // SD-63 — the PAD is a near-body verb (you are aiming at a surface): opening it from the
+    // solar-system view flies the camera home to the operated globe first, so the draft overlay
+    // it exists to show is actually on screen.
+    if ((body?.plannerActive ?? false) && this.systemScope && body !== null) {
+      this.focusBody(body.id, true);
+    }
     // The close-up engages when the LAUNCH planner is OPEN *or* the active desktop requests a HERO
     // globe (#14, netHeroFill > 0). Either way FOCUS the operated body so it is centred + the camera
     // frames it. Only force focus then, so a click-to-focus / preset still controls the camera on a
     // desktop with no hero framing + no planner. Body-agnostic.
-    const wantClose = (body?.plannerActive ?? false) || this.netHeroFill > 0;
+    // SD-63 — THE PAD comes home: it is a near-body verb (you are aiming at THIS globe), so
+    // opening it clears any navigated-to body. Otherwise an explicit pick outranks the hero
+    // framing, so a click / body-bar jump to the Moon or Mars actually holds instead of being
+    // re-pinned to the operated body on the very next frame.
+    if (body?.plannerActive ?? false) this.userFocusId = null;
+    const wantClose = Orrery.heroOwnsCamera({
+      plannerActive: body?.plannerActive ?? false,
+      heroFill: this.netHeroFill,
+      userPick: this.userFocusId,
+      systemScope: this.systemScope,
+    });
     if (body !== null && wantClose && this.ctx.eph.hasBody(body.id)) {
       this.focusId = body.id;
     }
@@ -3095,7 +3430,9 @@ export class Orrery {
     const sphere = this.netBodySphere;
     const grat = this.netBodyGraticule;
     if (!sphere || !grat) return;
-    const body = this.netRenderMode ? this.netState?.body ?? null : null;
+    // netOverlay (not netState): the solar-system framing draws Earth as a BILLBOARD like every
+    // other body — the toy 300-km sphere is sub-pixel at 1 AU and its graticule reads as noise.
+    const body = this.netRenderMode ? this.netOverlay?.body ?? null : null;
     if (body === null) {
       sphere.visible = false;
       return;
@@ -3559,7 +3896,10 @@ export class Orrery {
     // back to the old fixed dolly when no body slice / focus is available (no scene radius to read).
     const fovDist = this.cur.dist * (1 - f * (1 - NET_PLANNER_DIST_SCALE));
     let dist = fovDist;
-    const body = this._netRenderMode ? this.netState?.body ?? null : null;
+    // netOverlay (not netState): in the solar-system framing there is no globe to fill the pane
+    // with or to pull the near plane up to, so the camera keeps the preset's own honest distance
+    // and the wide default near/far — exactly the shot cache mode draws.
+    const body = this._netRenderMode ? this.netOverlay?.body ?? null : null;
     // The focus body's scene radius (cheap, no alloc) — drives both the close-up dolly AND the
     // near-plane tightening below. Computed once for the whole net frame.
     const sceneR = body !== null && focusAbs ? this.netBodySceneRadius(body, focusAbs) : 0;
@@ -3660,6 +4000,11 @@ export class Orrery {
    */
   followRegion(id: string | null): void {
     this.netFollowRegionId = id;
+    // SD-63 — a region is a place on the OPERATED globe, so asking to follow one is asking to be
+    // home: drop any body the player had navigated to. Without this, clicking a tender from the
+    // solar-system view (or from the Moon) armed a follow that the away-from-home overlay path
+    // never runs, and the click would have looked like it did nothing.
+    if (id !== null) this.focusHome();
   }
 
   private labelFor(id: string): HTMLElement {
@@ -3688,10 +4033,10 @@ export class Orrery {
         el.style.display = "none";
         continue;
       }
-      // net/ Act-1 — net mode is the EARTH-ORBIT world: label only the operated Earth + the Moon
-      // (their glyphs are the only bodies drawn); hide the Sun / Mars / dataset-sat labels. Cache
-      // mode labels all.
-      if (this._netRenderMode && !(spec.id === "earth" || spec.id === "moon")) {
+      // net/ Act-1 (+ SD-63) — a body is labelled iff net mode DRAWS it (the same single rule),
+      // so the solar-system framing names Sun · Earth · Moon · Mars and a body framing names only
+      // the bodies actually on screen. Cache mode labels all.
+      if (this._netRenderMode && !this.netBodyVisible(spec.id)) {
         el.style.display = "none";
         continue;
       }
@@ -3774,8 +4119,10 @@ export class Orrery {
     // showing "B deploy · M datacenter" in net mode is the clutter fix #2 calls out.
     if (this.netRenderMode) {
       // SD-44 — the CLEAN net keymap (matches the status strip + the main.ts handler): the desktop
-      // (keys 1-5) sets the camera, so no E/C/O/S/T here; accept/constellation/prefer are panel
-      // buttons; the only on-globe verbs are the planner drag + L launch + R reset-cam. DESKTOP-AWARE:
+      // (keys 1-5) sets the FRAMING, so no C/O/T here; accept/constellation/prefer are panel
+      // buttons; the on-globe verbs are the planner drag + L launch + R reset-cam, plus SD-63's
+      // three NAVIGATION keys (B body · S system · E home — the desktop never set the SUBJECT).
+      // DESKTOP-AWARE:
       // the orbit-tuning keys only do something while the LAUNCH planner is on screen (CONNECTIVITY),
       // so only show them there — elsewhere (OVERVIEW triage / ROUTING) point the player to the launch
       // desktop instead of advertising keys that look inert.
@@ -3786,7 +4133,9 @@ export class Orrery {
         : `<span class="k">drag</span>/<span class="k">wheel</span> to look · <span class="k">L</span> pad`;
       set(
         "br",
-        `<span class="k">1 2</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` + line2,
+        `<span class="k">1 2</span> desktops · <span class="k">R</span> reset cam · <span class="k">click</span> select\n` +
+          `<span class="k">B</span> body · <span class="k">S</span> system · <span class="k">E</span> home\n` +
+          line2,
       );
     } else {
       set(
@@ -4102,8 +4451,13 @@ export class Orrery {
         onScreen,
       });
     };
-    // Bodies (the F-cycle focusables + the dataset sats).
-    for (const spec of BODIES) project(spec.id, this.ctx.eph.position(spec.id, t));
+    // Bodies (the F-cycle focusables + the dataset sats). SD-63 — only bodies net mode actually
+    // DRAWS are pickable: an invisible Mars used to sit in the candidate list and swallow clicks on
+    // empty sky, selecting a body the player could not see.
+    for (const spec of BODIES) {
+      if (this._netRenderMode && !this.netBodyVisible(spec.id)) continue;
+      project(spec.id, this.ctx.eph.position(spec.id, t));
+    }
     // The player's deployed assets + DCs (the monument) — selectable but not camera-focusable.
     const bs = this.buildState;
     if (bs) {
@@ -4116,7 +4470,13 @@ export class Orrery {
     this.selectedId = hit;
     // Focus the camera only on a focusable BODY; assets/DCs select-only (keep the parent
     // framed so the orbit + the rest of the constellation stay on screen).
-    if (FOCUS_ORDER.includes(hit)) this.focusId = hit;
+    //
+    // SD-63 — a body click goes through {@link Orrery.focusBody}, which RECORDS the pick so the
+    // net-mode hero framing cannot re-pin the camera to the operated body on the next frame (the
+    // bug behind "why can't I click on the Moon or Mars to focus on them?"). `frame: false` — a
+    // click on something already on screen re-centres it in the CURRENT framing (the orrery pans,
+    // it does not teleport); the body bar is the deliberate jump that also re-frames.
+    if (this.ctx.eph.hasBody(hit) && !hit.startsWith("sat_")) this.focusBody(hit);
   }
 
   /** Debug: all pickable candidates + their screen positions (what a click at X,Y would hit). */

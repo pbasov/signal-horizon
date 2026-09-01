@@ -37,6 +37,7 @@ import { fmtDuration, fmtEuro } from "./format";
 import { parseRun, type RunContext } from "./sim/m1/parse";
 import { OPENING_BALANCE } from "./sim/m1/economy";
 import { conjunctionApproach } from "./orrery/readout";
+import { buildBodyNav, type BodyPresence } from "./orrery/body-nav";
 import { saveGame, addAction } from "./sim/save";
 import {
   setTimeScale,
@@ -1637,6 +1638,92 @@ function netOtherRegionsSlice(
     });
   }
   return out;
+}
+
+/**
+ * SD-63 — THE BODY BAR's PRESENCE FACTS: for every navigable celestial body, what the player
+ * holds there and how far it is from the body they operate from. The pure {@link buildBodyNav}
+ * turns these into the on-canvas rows (tier glyph · name · one-way signal delay); the orrery only
+ * paints them. Read-only over the live session + the ephemeris — no sim mutation, nothing in the
+ * fold/hash.
+ *
+ * Row ORDER is fixed by ROLE, not by live distance: home, then home's moons, then the star, then
+ * the other planets by semi-major axis. Distance-ordering would re-shuffle the buttons as the
+ * planets swing (Mars is nearer than the Sun at opposition), and a navigation bar whose buttons
+ * move is a bar you cannot learn.
+ */
+function bodyNavPresence(t: number): BodyPresence[] {
+  const home = bodyNavHomeId();
+  const homePos = eph.position(home, t);
+  const out: { p: BodyPresence; rank: number; a: number }[] = [];
+  for (const id of eph.bodyIds()) {
+    if (id.startsWith("sat_")) continue; // the cache-era dataset glyphs are not places.
+    const parentId = eph.parentOf(id);
+    const pos = eph.position(id, t);
+    let contracts = 0;
+    let assets = 0;
+    let served = false;
+    let dark = false;
+    if (netMode) {
+      for (const c of netSession.contracts) {
+        if (c.region.bodyId !== id) continue;
+        if (c.state !== "active" && c.state !== "offered") continue;
+        contracts++;
+        if (c.state !== "active") continue;
+        if (netSession.lastSolveFor(c.id)?.served ?? false) served = true;
+        else dark = true; // signed and unserved: this body is BLEEDING (the bar's alarm tier).
+      }
+      // The connectivity game's roster all rides the operated body; the Act-4 Mars CACHE is the
+      // one asset that lives at another body (the whole point of placing it there).
+      if (id === home) assets = netSession.sats.length + netSession.grounds.length;
+      else if (id === "mars" && netSession.mars !== null) assets = 1;
+    } else {
+      // Cache mode (?mode=cache): the M2/M3 monument — sats by orbit parent, ground stations and
+      // datacenters by the body they sit on.
+      for (const a of build.roster.list()) {
+        if (a.kind === "sat" ? a.orbit.parentId === id : a.bodyId === id) assets++;
+      }
+      for (const d of build.dcRoster.list()) if (d.bodyId === id) assets++;
+    }
+    out.push({
+      p: {
+        id,
+        label: id,
+        parentId,
+        distanceFromHomeM: Math.hypot(pos[0] - homePos[0], pos[1] - homePos[1], pos[2] - homePos[2]),
+        contracts,
+        assets,
+        served,
+        dark,
+      },
+      rank: id === home ? 0 : parentId === home ? 1 : parentId === "" ? 2 : 3,
+      a: eph.bodies.get(id)?.a ?? 0,
+    });
+  }
+  out.sort((x, y) => (x.rank !== y.rank ? x.rank - y.rank : x.a - y.a));
+  return out.map((x) => x.p);
+}
+
+/**
+ * The body bar's HOME body — the one the business operates from (SD-63). Read from the ACT-1
+ * contract's region, not from whichever contract the teaching cursor is on: home is where the
+ * launch site and the whole roster are, and it must not slide to Mars when the Act-4 teaser
+ * region becomes the current beat.
+ */
+function bodyNavHomeId(): string {
+  return netMode ? netSession.contractById(ACT1_CONTRACT_ID)?.region.bodyId ?? "earth" : "earth";
+}
+
+/**
+ * Push the body bar to the orrery. Throttled: the rows only READ different when a badge (the
+ * one-way delay, rounded to the second) or a tier flips, so rebuilding the facts every frame
+ * would burn Kepler solves for an identical bar. The ACTIVE highlight is not throttled — the
+ * orrery repaints that from its own live focus the moment a click lands.
+ */
+let bodyNavTickCount = 0;
+function pushBodyNav(t: number): void {
+  if (bodyNavTickCount++ % 12 !== 0) return;
+  orrery.setBodyNav(buildBodyNav(bodyNavPresence(t), bodyNavHomeId(), orrery.focusId));
 }
 
 function netRenderState(): import("./orrery/orrery").NetRenderState {
@@ -4599,8 +4686,10 @@ window.addEventListener("keydown", (e) => {
   //   1–5 switch desktop · 0 reset layout · Space pause · ,/. speed · ↑↓ alt · ←→ inc · [ ] phase
   //   (handled above by netDraftNudgeKey) · L launch · R reset camera.
   // ACCEPT, CONSTELLATION (PLACE SET), and the PREFER tune are PANEL BUTTONS now (on BUSINESS /
-  // CONNECTIVITY / ROUTING), never global keys. The desktop sets the camera, so E/C/O/S/T are gone;
-  // and F/P/H/D/B/M/'/N/J/A/; (all cache-mode verbs) never fire in net mode.
+  // CONNECTIVITY / ROUTING), never global keys; F/P/H/D/M/'/N/J/A/; (cache-mode verbs) never fire.
+  // SD-63 — the desktop sets the FRAMING, but nothing set the SUBJECT, so celestial NAVIGATION has
+  // three keys of its own: B steps the body bar · S the solar-system view · E home. (C/O/T, which
+  // are pure framings the desktop already picks, stay cut.)
   if (netMode) {
     if (k === "1" || k === "2") setWmPreset(Number(k) - 1);
     else if (k === "0") shell.reset();
@@ -4621,6 +4710,18 @@ window.addEventListener("keydown", (e) => {
       r1Armed = false;
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
+    } else if (k === "s" || k === "S") {
+      // SD-63 — THE SOLAR SYSTEM VIEW: the heliocentric map (Sun · Earth · Moon · Mars + the
+      // orbit rings) you navigate between bodies on. Net mode used to cut every camera key
+      // because "the desktop sets the camera" — but there is no desktop that shows another
+      // BODY, so navigation needs its own keys (and the on-canvas bars for the mouse).
+      orrery.setPresetByName("SYSTEM");
+    } else if (k === "e" || k === "E") {
+      // E — COME HOME: the operated globe in its near-body framing (undo any body jump).
+      orrery.focusHome();
+    } else if (k === "b" || k === "B") {
+      // B — step the BODY BAR outward (shift: inward) and jump to that body.
+      orrery.cycleBody(k === "b" ? 1 : -1);
     } else if (k === "m" || k === "M") {
       // X-03 — the 1-bit purist monochrome toggle (colour-off fully playable, the exit check).
       const el = document.documentElement;
@@ -5028,6 +5129,8 @@ function frame(now: number): void {
     }
   }
   orrery.setReadout(deriveReadout(fs));
+  // SD-63 — the celestial BODY BAR (which bodies we serve, and the signal delay to each).
+  pushBodyNav(t);
   orrery.update(wallDt);
   m = perfMark("orrery", m);
   shell.tickChrome();

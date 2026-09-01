@@ -1704,3 +1704,81 @@ deferred — the act's one decision is where the relay goes, and making the grou
 placement puzzle would teach the same lesson twice. Render work (a farside marker, the gateway
 node, the cislunar camera framing) is not in this increment; the Moon itself already renders at its
 honest distance.
+---
+
+### SD-63 — CELESTIAL BODY NAVIGATION: the body bar, a real solar-system view, and a click that holds (2026-09-01)
+
+**Status: ACCEPTED (built; new pure module `orrery/body-nav.ts` with 28 tests + 11 new orrery
+verdict tests; no `src/sim/` change, no action, no golden touched — this is entirely a VIEW/camera
+change).** User-directed: *"why can't i click on the moon or mars to focus on them? we need good
+celestial body navigation for future missions, not even click (although that too), but the solar
+system view and buttons to switch between the bodies we serve"*.
+
+**Why clicking a body did nothing.** Three separate causes stacked, and each alone was enough:
+
+1. **The camera was re-pinned every frame.** `applyPlannerFocus` set `focusId` to the operated body
+   on any frame with `netHeroFill > 0` — which is every frame of the MISSION desktop. A click set
+   `focusId = "mars"`; the next frame overwrote it before anything painted. The camera never moved,
+   so the click read as "not implemented".
+2. **The body was not drawn.** Net mode drew Earth and the Moon only. Focusing Mars therefore
+   centred the camera on an invisible object — a black pane — and an invisible Mars *stayed in the
+   pick list*, so clicks on empty sky silently selected a body the player could not see.
+3. **There was no view to navigate in.** The SYSTEM preset (`focus: "sun"`, the heliocentric fold)
+   was overridden in net mode into a second cislunar overview, precisely because cause 2 would have
+   rendered the honest framing as a void. The game shipped with no solar-system view at all, and
+   net mode had cut the E/C/O/S/T camera keys on the grounds that "the desktop sets the camera" —
+   true for FRAMING, but no desktop ever changed the SUBJECT.
+
+**What was built.**
+
+- **`orrery/body-nav.ts` (pure, tested).** The view model behind the bar: per-body tier
+  (`dark` ▲ / `served` ● / `present` ◍ / `home` ◉ / `star` ✳ / `reachable` ·), the one-way light
+  delay from the home body (the honest `d / c`, badged `1.3s` / `8m19s`), the hover detail, and the
+  camera framing a jump to that body should use. `framingForBody` derives that from the body GRAPH
+  — home → near-body, a moon of home → cislunar, anything else → heliocentric — so a future mission
+  to another planet's moon needs no new case. A repaint SIGNATURE keeps the DOM off the frame path
+  (X-02): a sub-badge distance wobble does not rebuild the bar.
+- **THE BODY BAR** — one on-canvas button per body, docked above the camera bar. The camera bar
+  answers "how am I looking?"; this answers "at WHAT?". Clicking jumps (focus + the framing that
+  body is legible in). The delay badge is deliberate: navigation is where the constraint that
+  decides what a mission there can even be should be sitting.
+- **SYSTEM IS THE SOLAR SYSTEM VIEW, in both modes.** The net override is gone, replaced by
+  `CameraPreset.netScope: "system"` — a framing that draws the star, its planets, and the
+  heliocentric orbit rings, and does not let the mission framing pin the camera. CISLUNAR keeps the
+  Earth+Moon overview it was always for, and the preset now means what its name says.
+- **"AWAY FROM HOME" IS A RENDER MODE.** Whenever the camera's subject is not the operated body,
+  the toy layer is dropped: the 300-km globe, its surface region/footprint discs, the ground-site
+  markers and the link web are all in scale only from close up, and from lunar distance they were
+  an empty pane with two orphaned markers floating in it. Away, the orrery renders plain celestial
+  bodies — honest billboards, honest orbits, plus the focus body's own orbit as context.
+- **An explicit pick outranks the mission framing** (`Orrery.heroOwnsCamera`), until you come home
+  (the EARTH row, `E`, or `R`) or open the PAD — a near-body verb that legitimately flies the
+  camera back to the globe it aims at.
+- **Keys:** `B` / `Shift-B` step the bar, `S` the solar-system view, `E` home. Three navigation
+  keys, not the old camera set: C/O/T remain cut because those are framings a desktop already picks.
+
+**Two pre-existing defects fixed in passing, both found by playing it.**
+
+1. **An orbit ring hidden once stayed hidden forever.** Every branch in the ring loop only ever set
+   `visible = false`; nothing set it true. So the heliocentric rings never came back after a
+   near-field pull-in (cache mode) or after net mode ever ran. Ring visibility is now a function of
+   this frame's framing, not of history.
+2. **The Sun's additive halo was only hidden on the branch that skipped the Sun.** Making the Sun
+   drawable in net mode would have re-exposed the old "giant glow that looked like the globe" bug;
+   the halo is now hidden for every net-mode body, drawn disc or not.
+
+**Consequences.** `FOCUS_ORDER` (the cache-mode `F` cycle) is unchanged but now routes through
+`focusBody`, so an F-cycle also holds. The Act-4 layers deliberately keep reading the live net slice
+in the system view — watching a signal crawl Earth→Mars at 1 AU is the one thing that framing is
+*for* (GDD §5: "Watch a ping crawl to Mars"). Nothing in `src/sim/` moved; both replay goldens are
+untouched by construction.
+
+**Not built (and deliberately not invented — AGENTS §1).** No mission/transfer planning to another
+body, no per-body economy, no Moon or Mars regions beyond the existing Act-4 teaser. This is
+navigation: the surface a future multi-body milestone needs, and nothing past it.
+
+**Numbered SD-63:** SD-58 through SD-62 all landed upstream while this was in flight (the tender
+board as a map, per-checkout dev ports, the skippable intro, the save/resume ladder, the Act-3c
+cislunar on-ramp). Rebased onto that train, and it lands on the same side of two of them: SD-58 made
+every tender a place you can LOOK at on one globe, this makes every BODY a place you can look at;
+SD-62 deferred "the cislunar camera framing" out of its increment, and the CISLUNAR jump here is it.

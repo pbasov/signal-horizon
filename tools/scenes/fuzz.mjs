@@ -28,7 +28,9 @@ export default {
     await ctx.eval(() => { const b = [...document.querySelectorAll("[data-net=accept]")].find((x) => x.getAttribute("data-contract") === "REGION-0"); b?.click(); });
     await ctx.settle(500);
 
-    const KEYS = [",", ".", " ", "l", "1", "2", "0", "m", "u", "v", "V", "c", "p", "r", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "[", "]"];
+    // SD-63 — the navigation keys (b/B body · s system · e home) are LIVE keys, so the spray
+    // covers them: a camera that can now focus another body must survive being flailed at.
+    const KEYS = [",", ".", " ", "l", "1", "2", "0", "m", "u", "v", "V", "c", "p", "r", "b", "B", "s", "e", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "[", "]"];
     const CLICKABLE = ["[data-net=pad-toggle]", "[data-net=fit]", "[data-net=arm]", "[data-net=launch]", "[data-net=count-plus]", "[data-net=count-minus]", "[data-net=slot-0]", "[data-net=slot-1]", "[data-net=fit]"];
 
     const errors = [];

@@ -192,3 +192,109 @@ describe("orrery P1: the live-network link utilisation → colour ramp (congesti
     expect(c.r).toBeLessThan(warm.r);
   });
 });
+
+/**
+ * orrery SD-63 — CELESTIAL BODY NAVIGATION. Two render verdicts made pure so the fix for "why
+ * can't I click on the Moon or Mars to focus on them?" is pinned without a WebGL render:
+ *
+ *   - {@link Orrery.netBodyDrawn} — net mode drew ONLY Earth + the Moon, so focusing Mars aimed
+ *     the camera at an invisible body (a black pane), and an invisible Mars still sat in the pick
+ *     list swallowing clicks on empty sky. The focus body is now always drawn.
+ *   - {@link Orrery.heroOwnsCamera} — the mission hero framing re-pinned focus to the operated
+ *     body EVERY FRAME, so a click on another body was overwritten before the next paint. An
+ *     explicit pick now outranks it.
+ */
+describe("orrery SD-63: which bodies net mode draws (the focus body is never invisible)", () => {
+  const at = (over: Partial<Parameters<typeof Orrery.netBodyDrawn>[0]>) =>
+    Orrery.netBodyDrawn({
+      id: "earth",
+      parentId: "sun",
+      grandparentId: "",
+      focusId: "earth",
+      homeId: "earth",
+      systemScope: false,
+      marsNodeLive: false,
+      ...over,
+    });
+
+  it("THE BUG: in a body framing, the FOCUSED body draws even when net mode would otherwise hide it", () => {
+    // Pre-fix this was false for mars → the camera centred on nothing and the pane went black.
+    expect(at({ id: "mars", focusId: "mars" })).toBe(true);
+    // Unfocused, Mars still stays out of the Earth-orbit frame (the Act-1 world is not cluttered).
+    expect(at({ id: "mars", focusId: "earth" })).toBe(false);
+  });
+
+  it("a body framing keeps the home globe + the Moon (the cislunar scale reference)", () => {
+    expect(at({ id: "earth" })).toBe(true);
+    expect(at({ id: "moon", parentId: "earth", grandparentId: "sun", focusId: "earth" })).toBe(true);
+    expect(at({ id: "sun", parentId: "", grandparentId: "", focusId: "earth" })).toBe(false);
+  });
+
+  it("the SOLAR-SYSTEM framing draws the star + its planets (derived from the body graph)", () => {
+    expect(at({ id: "sun", parentId: "", grandparentId: "", systemScope: true })).toBe(true);
+    expect(at({ id: "earth", systemScope: true })).toBe(true);
+    expect(at({ id: "mars", systemScope: true, focusId: "sun" })).toBe(true);
+    // A future outer planet needs no new case — it is a child of the root, so it draws.
+    expect(at({ id: "jupiter", systemScope: true, focusId: "sun" })).toBe(true);
+  });
+
+  it("the SOLAR-SYSTEM framing drops a MOON unless focused (its label collided with its planet's)", () => {
+    const moon = { id: "moon", parentId: "earth", grandparentId: "sun", systemScope: true };
+    expect(at({ ...moon, focusId: "sun" })).toBe(false);
+    expect(at({ ...moon, focusId: "moon" })).toBe(true); // navigate to it and it is drawn.
+  });
+
+  it("the cache-era dataset sat glyphs never draw in net mode, in any framing", () => {
+    for (const systemScope of [false, true]) {
+      expect(at({ id: "sat_leo", parentId: "earth", grandparentId: "sun", systemScope })).toBe(false);
+      expect(
+        at({ id: "sat_geo", parentId: "earth", grandparentId: "sun", focusId: "sat_geo", systemScope }),
+      ).toBe(false);
+    }
+  });
+
+  it("MARS yields its billboard to the Act-4 data node while that is live (one glyph per place)", () => {
+    expect(at({ id: "mars", focusId: "mars", marsNodeLive: true })).toBe(false);
+    expect(at({ id: "mars", systemScope: true, marsNodeLive: true })).toBe(false);
+    // Every other body is unaffected by the Mars node.
+    expect(at({ id: "earth", marsNodeLive: true })).toBe(true);
+  });
+
+  it("the home body is whatever the frame says (never hardcoded 'earth')", () => {
+    // A later milestone operating from Mars: Mars is the drawn home, Earth needs the focus.
+    expect(at({ id: "mars", homeId: "mars", focusId: "mars" })).toBe(true);
+    expect(at({ id: "earth", homeId: "mars", focusId: "mars" })).toBe(false);
+  });
+});
+
+describe("orrery SD-63: the mission hero framing may not stomp a deliberate body pick", () => {
+  const owns = (over: Partial<Parameters<typeof Orrery.heroOwnsCamera>[0]>) =>
+    Orrery.heroOwnsCamera({
+      plannerActive: false,
+      heroFill: 0.24,
+      userPick: null,
+      systemScope: false,
+      ...over,
+    });
+
+  it("with NO pick, the hero framing owns the camera (the mission globe stays centred)", () => {
+    expect(owns({})).toBe(true);
+    expect(owns({ heroFill: 0 })).toBe(false); // no hero framing requested ⇒ nothing to pin.
+  });
+
+  it("THE BUG: an explicit body pick outranks the hero framing (the click now holds)", () => {
+    // Pre-fix this was true regardless of the pick, so focusId was re-pinned to the operated
+    // body on the very next frame and the camera never moved to the Moon / Mars.
+    expect(owns({ userPick: "moon" })).toBe(false);
+    expect(owns({ userPick: "mars" })).toBe(false);
+  });
+
+  it("the PAD wins over a pick — it is a near-body verb, so it brings the camera home", () => {
+    expect(owns({ plannerActive: true, userPick: "mars" })).toBe(true);
+  });
+
+  it("the SOLAR-SYSTEM framing is never owned by the hero globe (there is no globe to fill)", () => {
+    expect(owns({ systemScope: true })).toBe(false);
+    expect(owns({ systemScope: true, plannerActive: true })).toBe(false);
+  });
+});
