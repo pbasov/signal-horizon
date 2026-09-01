@@ -304,7 +304,19 @@ body {
 .orrery-overlay .corner { position: absolute; padding: 4px 6px; white-space: pre; }
 .orrery-overlay .tl { top: 0; left: 0; }
 .orrery-overlay .tr { top: 0; right: 0; text-align: right; }
-.orrery-overlay .bl { bottom: 0; left: 0; }
+/* SD-69 (BN-09) — THE HINT LINE KEEPS CLEAR OF THE CENTRED CAMERA BAR.
+   `.bl` is `white-space: pre`, so it never wrapped: it simply ran on under the bottom-centre camera
+   bar and was clipped mid-word ("click a body/asset to fo…"). It is width-dependent, which is why it
+   was easy to miss — the hint is 358 px and the bar is 319 px centred, so they collide once the pane
+   is narrower than ~1035 px, and a wide pane looks perfectly fine. `pre-line` keeps the explicit
+   newlines the cache-mode readout uses while allowing the line to WRAP, and the max-width stops it
+   half the bar's width short of centre so it can never reach the bar at any pane size. */
+.orrery-overlay .bl {
+  bottom: 0;
+  left: 0;
+  max-width: calc(50% - 170px);
+  white-space: pre-line;
+}
 .orrery-overlay .br { bottom: 0; right: 0; text-align: right; }
 .orrery-overlay b { color: var(--fg); font-weight: 700; }
 .orrery-overlay .k { color: var(--cyan); }

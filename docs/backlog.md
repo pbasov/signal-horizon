@@ -545,9 +545,16 @@ All 7 findings fixed:
       only; once a second body carries assets they should follow the bar's subject.
 - [ ] **BN-08** *(P2)* A label de-collider — at some framings two body labels still overlap
       (the system view sidesteps it by dropping unfocused moons, which is a scope rule, not a fix).
-- [ ] **BN-09** *(P2)* The orrery's bottom-LEFT hint line runs underneath the centred camera bar
-      and is clipped mid-word ("click a body/asset to fo…"). Pre-existing; found while adding the
-      body bar above the camera bar, and deliberately not papered over by shortening the sentence.
+- [x] **BN-09** The orrery's hint line keeps clear of the centred camera bar — **DONE (SD-69,
+      2026-09-02)** — *S* · `.bl` was `white-space: pre`, so it never wrapped: it ran on underneath the
+      bottom-centre camera bar and clipped mid-word ("click a body/asset to fo…"). It is
+      WIDTH-DEPENDENT, which is why it was easy to miss — the hint is 358 px against a 319 px centred
+      bar, so they only collide once the orrery pane is narrower than ~1035 px and a wide pane looks
+      perfectly fine. `pre-line` keeps the newlines the cache-mode readout needs while letting the line
+      WRAP, and a `calc(50% - 170px)` max-width stops it half the bar's width short of centre so it
+      cannot reach the bar at any size. Not papered over by shortening the sentence, as the entry
+      asked. · Verify: measured no collision at panes 1127 / 875 / 743 px;
+      `docs/screenshots/orrery-hint-clear.png`; panels+orrery 251/251, playtest 180/0.
 
 ---
 
