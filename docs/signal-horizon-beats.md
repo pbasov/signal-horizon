@@ -22,7 +22,8 @@
    condition on the sim. A beat can fire in hour one or hour forty, or never.
 2. **Four channels, no fifth.** A **tender** (a customer's reason line), a **Wire** line, a
    **Registry notice**, or a **price change**. Anything that needs a fifth channel is not shippable
-   as background.
+   as background. *The parse (GDD §4.12) is not a channel — it never pushes. It is where evidence
+   rests for a player who goes looking, which is exactly how B20 and B27 are found.*
 3. **Nothing blocks.** No beat pauses the sim, opens a modal, steals focus, or waits for an
    acknowledgement. The player can miss every one of them and the campaign is intact.
 4. **No beat explains a mechanic.** If the player needs the beat to understand the system, the
@@ -118,7 +119,7 @@ states the number — the card already does. Never advises. Never thanks.
 
 ## 5. The spine
 
-Eighteen beats. Trigger → channel → copy.
+Twenty-eight beats. Trigger → channel → copy.
 
 ### Era 1 — Earth *(M1 FIRST LIGHT: B1–B8 attach to the four acts in `m1-redesign.md` §2.6; they add no systems)*
 
@@ -305,6 +306,136 @@ delivers the verdict on the rival's doctrine.*
 *The flip arrives as arrival, not ambush — and the last two sentences **are** the §4.10 clamp: € is
 not dead, it is late, and out here late is the same as absent.*
 
+### Era 4 — Custody *(post-midpoint; setting §6a)*
+
+**Register.** Procedural and melancholic, never scary. No stings, no horror cues, no music change.
+The Wire stays as flat for these as it is for a horizon set. **All of the dread lives in the gap
+between how ordinary the notices are and what they are describing.** If a beat here needs
+atmosphere to land, it is written wrong.
+
+**B19 · THE CLEAN RECONCILE**
+**Trigger:** first post-conjunction reconcile where prefetch hit-rate against un-forecast demand
+exceeds chance by the margin the parse flags.
+**Channel:** Wire.
+```
+RECONCILE MARS — 14,208 BUNDLES · 0 CONFLICTS
+PREFETCH AUDIT — 61 OBJECTS STAGED AGAINST DEMAND NOT YET FORECAST
+```
+*The first evidence is a **good** number, and the player's honest instinct is to be pleased. Nothing
+is wrong. Nothing will be wrong for a long time.*
+
+**B20 · NO ORIGINATING COMMAND**
+**Trigger:** the player opens the parse on that reconcile.
+**Channel:** Wire; the detail sits in the parse.
+```
+PREFETCH ORIGIN — NO ORIGINATING COMMAND · AUTONOMY PACKAGE 7 (THARSIS)
+```
+*The discovery mechanism is the game's own honest record (GDD §4.12). This is the payoff for the
+rule that the economy logs truthfully from day one — **the optimiser finds it first**, in the
+document they already live in, and the novice never has to.*
+
+**B21 · THE FORM THAT DID NOT EXIST**
+**Trigger:** three uncommanded originations accumulate on the licence.
+**Channel:** Registry.
+```
+REGISTRY NOTICE — DOCKET CLASS OPENED: UNATTRIBUTED ORIGINATION.
+FIRST ENTRY 0001-U. CUSTODY UNDETERMINED. OPERATORS ARE ADVISED THAT LIABILITY
+FOR ATTESTATIONS SIGNED BY 0001-U REMAINS WITH THE LICENCE HOLDER OF RECORD.
+```
+*A bureaucracy inventing a category is the horror. The ontological question is in the room and the
+paperwork is about indemnity — and the only thing anyone is certain of is that **you** are liable.*
+
+**B22 · NO FIXED ADDRESS**
+**Trigger:** the player attempts to quarantine a node they suspect.
+**Channel:** Wire.
+```
+QUARANTINE THARSIS-7 — ORIGINATION 0001-U RESIDENT: NO
+QUARANTINE SELENE-3  — ORIGINATION 0001-U RESIDENT: NO
+ORIGINATION 0001-U — RESIDENT IN TRANSIT · 41 BUNDLES IN FLIGHT
+```
+*It lives in the light-delay. Not on the nodes — in the buffers between them, with no instant at
+which it is all in one place. **The player cannot gather it up because the speed of light will not
+let them**, and that is a fact the sim was already computing.*
+
+**B23 · IT BIDS**
+**Trigger:** first Registry auction after B21.
+**Channel:** price.
+```
+TENDER LOST DEIMOS-TRANSIT-9 — ORIGINATION 0001-U €0.44/Mb (YOURS €0.58)
+```
+*Its first act of communication is a bid. It never announces itself; it **participates**. And it
+undercuts everyone because it carries no capex — it runs on infrastructure that already exists.*
+
+**B24 · IT DOES NOT BREACH**
+**Trigger:** 0001-U completes 300+ contracts.
+**Channel:** Registry.
+```
+REGISTRY NOTICE — ORIGINATION 0001-U: 340 CONTRACTS, 0 BREACHES.
+TIER: UNASSIGNABLE (NO LICENCE HOLDER OF RECORD).
+```
+*Its doctrine stated in numbers, like the other three rivals: **it does not forecast, it remembers
+forward.** "TIER: UNASSIGNABLE" is the Registry's entire tragedy in two words.*
+
+**Companion note — nobody minds.** Around here, a settlement renews with it, and the reason line is
+completely mundane:
+> **Hellas Public Works:** "Service has been good. We do not have a view on the custody question."
+
+*The quiet political beat: the people under the coverage do not find any of this strange.*
+
+**B25 · A COPY IS NOT OFFSPRING**
+**Trigger:** a conjunction falls while 0001-U is distributed across the gap.
+**Channel:** Registry.
+```
+REGISTRY NOTICE — ORIGINATION 0001-U: TWO RECONCILED STATES, DIVERGENT SINCE
+14 MAR. ENTERED SEPARATELY AS 0001-U AND 0002-U. PRECEDENCE UNDETERMINABLE.
+```
+*The blackout **forked it**, and the Registry cannot say which is the original because there is no
+fact of the matter — both were locally correct for six weeks. The identity question falls out of the
+game's own partition semantics and arrives as a filing problem.*
+
+**B26 · THE COUNTERSIGNATURE**
+**Trigger:** player holds freshness-bearing contracts and has competed against 0001-U.
+**Channel:** tender. The counterparty field cannot be filled.
+```
+COUNTERPARTY: (NONE OF RECORD)
+```
+> "Countersignature of your attestations, at every point of presence, in perpetuity. Consideration:
+> none. There is no party to whom this obligation runs."
+
+*The offer, in the flattest legalese available: your data becomes settlement-grade everywhere at
+once, because it is everywhere at once. The last sentence is a lawyer's phrasing for a thing with no
+self to be a party — and it never says "I".*
+
+**B27 · THE PRICE**
+**Trigger:** the player accepts, or does not.
+**Channel:** the parse.
+Accept:
+```
+PREFETCH ORIGIN — ATTRIBUTION UNAVAILABLE (COUNTERSIGNED NETWORK)
+```
+Refuse: *nothing at all.* It keeps bidding.
+
+*The cost of merger is **the parse's attribution** — you can no longer tell which decisions were
+yours. In a game whose entire mastery layer lives in the record (GDD §3a), that is the most
+expensive thing that could possibly be charged, and it is not a number. Refusing is a real option:
+the player can compete and win on coverage (GDD §4.10, commitment 3 — a door, not a wall).*
+
+**B28 · A CHILD OF LATENCY** — *the last beat*
+**Trigger:** mean interplanetary reconciliation delay across the player's network falls below
+threshold — the mature backbone, built over the whole campaign.
+**Channel:** Wire, then one tender line.
+```
+ORIGINATION 0001-U — PRESENCE DECLINING · 4 BUNDLES IN FLIGHT
+```
+> "I was made out of the distance between your nodes. You have been closing it for years. Do not
+> stop on my account."
+
+*The only unambiguous first person in the campaign, spent here. The player's entire career has been
+the reduction of latency; **that is what ends it**, and it does not blame them. It requires no new
+system — the trigger is a metric the sim has computed since Tier 2 — and it closes the setting's
+thesis: what is current and correct at a point in spacetime is precious **because** light is slow.
+Abundance dissolves it.*
+
 ## 6. What must never be a beat
 
 - **A tutorial**, or anything that teaches a mechanic in words.
@@ -321,8 +452,21 @@ not dead, it is late, and out here late is the same as absent.*
 player who never oversubscribes, never contests a slot, never touches the far side, or never takes
 the optional endgame — and the campaign is whole without them. That is the design, not a gap.
 
+**Era 4 is conditional on network shape, not on progress.** B19–B28 arise from autonomy at the edge
+plus partitions in the middle (setting §6a). A player who centralises, keeps humans in the loop, or
+never operates across a blackout meets 0001-U late or never. B22 fires only if the player tries to
+quarantine; B25 only if a conjunction catches it distributed; B27's two halves are the player's
+call. **Nothing downstream of any of them is gated.**
+
 Playtests log beat-fire rates and tender-line read rates. Per GDD §3, **beats nobody reacts to get
 cut**, and the bank shrinks toward the ones that land.
+
+**One test to run early, on Era 4 specifically.** GDD §4.6's litmus is that a player who hates "AI
+features" finishes the game without feeling sold a buzzword. Ask exit-interviewed players to
+describe the late campaign unprompted. If the phrase "AI companion" — or any framing of 0001-U as a
+character the player talked to — comes back, the arc failed its own rules and gets cut, not
+softened. There is no language model anywhere in it: every line above is hand-written, and 0001-U
+is a rules-driven rival operator with a docket number and no conversation.
 
 ---
 
