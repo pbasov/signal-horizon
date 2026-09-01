@@ -1338,3 +1338,14 @@ also puts the corridor metro and coastal backhaul on the board, OFFERED — unsi
 a latency SLA with no beam pointed at it would seed a fake breach. Same discipline as the rest of
 that function: a render seed on the live session, never a sim/action/replay path, so the goldens stay
 provably untouched.
+
+## CI is manual-only for the duration of the redesign (2026-09-01)
+
+`.github/workflows/ci.yml` no longer runs on `push` or `pull_request` — its only trigger is
+`workflow_dispatch`. The gates themselves (Vitest → `tsc --noEmit` → `vite build` → dev-server boot
+smoke → orrery screenshot) are unchanged and still the authority on "green"; they just have to be
+asked for now, via the Actions tab or `gh workflow run ci.yml`. Reason: during the from-scratch
+redesign every commit to main tripped a full 20-minute run, and the notification volume drowned out
+the signal. The push/pull_request block is kept commented in place directly above, so restoring
+automatic runs is uncommenting four lines — do that once the redesign settles and main is a branch
+worth gating again. Local `npm test` / `tools/smoke.mjs` remain the pre-commit check in the meantime.

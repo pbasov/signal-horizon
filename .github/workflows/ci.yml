@@ -5,11 +5,16 @@ name: CI
 # DEV-SERVER boot smoke (catches dev-only module-init crashes the bundled preview
 # build + unit tests miss, e.g. a circular-import TDZ) -> orrery screenshot.
 
+# DISABLED 2026-09-01: automatic runs were too noisy during the from-scratch
+# redesign. The gates below still work -- run them by hand from the Actions tab
+# (or `gh workflow run ci.yml`). Restore the push/pull_request triggers (kept
+# commented out below) when the redesign settles.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
 
 # Cancel superseded runs on the same ref so PR pushes don't pile up.
 concurrency:
