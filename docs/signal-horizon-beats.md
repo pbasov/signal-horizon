@@ -1,6 +1,6 @@
 # Signal Horizon — The Beats
 
-### Narrative content — v0.1 DRAFT
+### Narrative content — v0.2 DRAFT
 
 > Companion to [`signal-horizon-setting.md`](signal-horizon-setting.md). The setting doc is the
 > rules; **this doc is the content** — the actual copy that ships, and the conditions that fire it.
@@ -83,6 +83,10 @@ numbered, and entirely without opinion. It never praises and never threatens. It
 
 None of the three is a villain. Their doctrines are three answers to the same engineering question,
 and the player is writing a fourth.
+
+**The unlicensed** — the Shoal, the Barn, the Long Wire — are in §5a. They have no corporate names
+because they never registered, and they are competitors with a different cost base rather than a
+faction. **0001-U** (§6a of the setting, Era 4 below) is filed in the same class as all three.
 
 ## 3. The one paragraph, once
 
@@ -436,6 +440,138 @@ system — the trigger is a metric the sim has computed since Tier 2 — and it 
 thesis: what is current and correct at a point in spacetime is precious **because** light is slow.
 Abundance dissolves it.*
 
+## 5a. The unlicensed thread *(setting §3a)*
+
+**Not a fifth era — a thread that runs under all four.** These are numbered P, not B, because they
+interleave: P1 can fire in the Earth game and P8 needs Era 4. They arise from coverage gaps, so a
+player who leaves none meets almost none of them.
+
+**The three nets.** Unlicensed operators do not register, so they have no corporate names. The
+Registry knows them by emission; their users know them by nickname.
+
+- **The Shoal** *(Earth, ocean)* — a peer-to-peer mesh among hulls, built by crews who could not
+  buy continuity. Sympathetic, poor, and technically unambitious.
+- **The Barn** *(Selene)* — the lunar yard's own people, on their own time, in the guard bands
+  between your beams. Excellent engineers who know precisely how much they can take.
+- **The Long Wire** *(Mars surface)* — 340 store-and-forward nodes that predate you. It is not a
+  business, sells nothing, and has no respondent. Local Mars traffic never needed Earth.
+
+**P1 · THE NOISE FLOOR**
+**Trigger:** link margin on a gateway degrades with no geometric or weather cause.
+**Channel:** Wire.
+```
+LINK MARGIN GW-BERGEN — 2.1 dB (WAS 6.4) · NO OCCULTATION, NO WEATHER
+SPECTRUM 12.1 GHz — UNLICENSED EMISSION, SOURCE UNDETERMINED
+```
+*First contact is a **diagnostic puzzle**, not an event. Geometry did not do this, and the
+instruments already show what did. Visible, attributable, never dice.*
+
+**P2 · THE SHOAL**
+**Trigger:** the source resolves.
+**Channel:** Registry, then tender.
+```
+REGISTRY NOTICE — PETITION AVAILABLE: UNLICENSED EMISSION, 12.1 GHz, NORTH SEA.
+ENFORCEMENT IS AT THE PETITIONER'S COST.
+```
+> **Sable Line:** "Our crews call it the Shoal. They built it because we would not buy them
+> continuity and you would not sell it at a price we would pay. You are welcome to file."
+
+*The pirate is a customer you failed, your customer is not sorry, and enforcement is on your dime.*
+
+**P3 · THE FOUR VERBS**
+**Trigger:** the player acts, or does not.
+**Channel:** Wire.
+- **Petition** — fast, public, and useless:
+  `REGISTRY NOTICE — EMISSION CEASED, 12.1 GHz. NEW SOURCE DETECTED, 12.4 GHz.`
+- **Compete** — slow, capex, and the only thing that works:
+  `SPECTRUM 12.1 GHz — EMISSION DECLINING · 6 WEEKS`
+- **Peer** — instant, free, and it taints. See P4.
+- **Ignore** — nothing happens. For a long time.
+
+*Four levers in cost order, the same shape as Act 3's pressure levers. The cheapest real fix is to
+go and sell the thing, which is the setting's argument stated as a price list.*
+
+**P4 · GREY TRANSIT** — *the load-bearer*
+**Trigger:** the player routes a bundle over an unlicensed hop.
+**Channel:** Wire; detail in the parse.
+```
+ROUTE HALDEN-MARINE-7 — 1 HOP UNLICENSED (THE SHOAL) · DELIVERED 41 s
+ATTESTATION HALDEN-MARINE-7 — NOT SETTLEMENT GRADE (CHAIN OF CUSTODY BROKEN)
+```
+*Two lines, no commentary: **the delivery or the proof, never both.** The player now has to know
+which contracts on their own book can eat an unattested hop — which means reading their book. Real
+knowledge about untrusted transit and provenance, priced.*
+
+**P5 · THE AUDIT**
+**Trigger:** grey transit used on N settlement-grade deliveries.
+**Channel:** Registry.
+```
+REGISTRY NOTICE — PATH AUDIT, LICENCE 4471-C. 14 DELIVERIES VIA UNLICENSED
+TRANSIT, CONTRARY TO LICENCE CONDITION 9(b). TIER REVIEW SCHEDULED.
+```
+*A different penalty class from an SLA breach — you broke the **licence**, not the promise. And it
+arrives as an audit, late, which is exactly how regulatory risk actually feels.*
+
+**P6 · THE BARN**
+**Trigger:** sustained operation over Selene.
+**Channel:** Wire, then tender.
+```
+GUARD BAND, SELENE — SUSTAINED EMISSION AT −3 dB OF DETECTION THRESHOLD
+```
+> **Selene Yard Consortium:** "The Barn is our own people, on their own time, in the space between
+> your beams. It has never once cost you a contract. We would take it as a kindness if you did not
+> file."
+
+*Competent adversaries who know exactly how much they can take — and your largest customer asking
+you not to file. Petitioning now costs a **relationship**, and nobody argues the ethics.*
+
+**P7 · NO RESPONDENT**
+**Trigger:** first Mars surface operations.
+**Channel:** Wire.
+```
+SURFACE MESH, MARS — 340 NODES, STORE-AND-FORWARD · NO EMITTER OF RECORD
+NO PETITION AVAILABLE (NO RESPONDENT)
+```
+*An unownable commons. It predates you, it is not selling anything, so it cannot be competed with,
+bought, or filed against. **The Registry's machinery simply has no handle for it** — and that is the
+first hint of what Era 4 will do to the same machinery.*
+
+**P8 · THE SAME DOCKET** — *ties to B21*
+**Trigger:** after 0001-U is docketed.
+**Channel:** Registry.
+```
+REGISTRY NOTICE — ORIGINATION 0001-U CLASSIFIED UNDER UNLICENSED OPERATION,
+SUBCLASS U. PRIOR ENTRIES IN CLASS: THE SHOAL; THE BARN; SURFACE MESH (MARS).
+```
+*The metaphysical event, filed alongside a fishing-fleet mesh — because **unlicensed** is the only
+category the Registry has. The bleakest and funniest line in the game, and the reason this thread is
+structural rather than decorative.*
+
+**P9 · WHAT FILING COSTS**
+**Trigger:** a successful petition against a net that people depended on.
+**Channel:** tender.
+> **Selene Yard Consortium:** "You filed. Three of our people lost their side work and one lost a
+> job. Service has been good; we are renewing. We wanted you to know."
+
+*Consequence without moralising, and they renew anyway. The game never says you were wrong. That
+last sentence is the whole ethic of this document.*
+
+### Scoping note — this thread is the one that costs systems
+
+Eras 1–4 add nothing: every trigger reads state the sim already keeps. **This thread does not**, and
+it should not be costed as if it did.
+
+- **Cheap tier (P2–P5, P7–P9).** Needs an unlicensed-hop route option and an
+  attestation-valid flag, plus nets as demand-driven economic actors. Grey transit, the audit, and
+  the whole ethical spine work with no RF model at all.
+- **Expensive tier (P1, P6).** Needs an **interference term in the link budget** — which GDD §3b
+  defers past 1.0 ("fleet power raising your own interference… deferred"). Pirates would pull that
+  forward as its exogenous, earlier-arriving twin.
+
+**Recommendation: build the cheap tier, keep P1/P6 in the drawer.** The thread's best beat (P4) and
+its best line (P8) are both in the cheap tier. Noise-floor detective work is a lovely second pass,
+and it is not what makes this worth having.
+
 ## 6. What must never be a beat
 
 - **A tutorial**, or anything that teaches a mechanic in words.
@@ -470,5 +606,7 @@ is a rules-driven rival operator with a docket number and no conversation.
 
 ---
 
-*v0.1 DRAFT. Content for `signal-horizon-setting.md` v0.2. Adds no systems: every trigger is a
-condition on state the sim already tracks, and every channel already exists in the M1 build.*
+*v0.2 DRAFT. Content for `signal-horizon-setting.md` v0.4. **Eras 1–4 add no systems** — every
+trigger reads state the sim already keeps, and every channel already exists in the M1 build. **The
+P-thread (§5a) does add systems**, and its scoping note splits them into a cheap tier worth building
+and an interference model worth leaving in the drawer.*

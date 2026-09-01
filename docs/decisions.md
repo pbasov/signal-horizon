@@ -1244,3 +1244,68 @@ regression gets hidden. Filed in the backlog.
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
+
+---
+
+### SD-58 — THE SETTING AND THE BEATS: a story foundation, ruled and written (2026-09-01)
+
+**Status: PROPOSED.** Two new docs, `signal-horizon-setting.md` (v0.4) and
+`signal-horizon-beats.md` (v0.2). The GDD is untouched; its version discipline bars new systems
+until the M1 gate runs, and nothing here asks it to change.
+
+**The load-bearing rule, in both docs:** the story never justifies a mechanic — physics does.
+Delete both files and every rule in the M1 family still stands on light-delay, link budgets, and
+geometry. A beat is a *label on pressure the simulation already produced*, never its source.
+
+**The premise.** Compute left Earth before people did — watts, cooling, and consent ran out before
+demand did. Load leaving pulled mass after it, making the Moon a supplier yard rather than a
+colony, and Mars the first place off Earth that cannot ask a question and get an answer in time.
+The agencies' one-dish-on-a-schedule model died on contact with forty operators, so the network was
+unbundled into licences, tenders, and penalties. The player holds one licence: a utility, not an
+explorer.
+
+**Why information is precious, in three legs that are each already a mechanic:** presence is
+impossible, so latency *is* presence; every off-Earth contract settles on a timestamped
+observation, so the market buys a reduction in staleness rather than bandwidth; sensors and power
+sit light-minutes apart, so compute placement is a routing decision.
+
+**Four rulings (user, 2026-09-01).** Earth is prosperous but capped, not collapsing. The player is
+a startup holding one licence, matching M1's thin wallet and PROBATION. People are customers and
+never characters. The player names the company at new-game, with a randomise button.
+
+**Ruling 3 grew a section (§4a): population follows the pipe.** A place you cannot reach reliably
+cannot hold people, so reach is the precondition for settlement rather than a reward for it. Human
+presence thickens where service hardens — research-station scale, then outpost, then settlements.
+That is GDD §3b generator 1 wearing a human face, and it escalates stakes with no scripted event:
+the same breach on the same link costs more because more depends on it.
+
+**§6a — the late-campaign turn (Ghost in the Shell, routed around three of our own rules).** The
+naive "an AI wakes up" breaks GDD §4.6's anti-AI commitment, the no-twist rule, and no-villain.
+What survives is closer to the source: the substrate (edge autonomy + stale models + predictive
+pre-staging + partition reconciliation + signed attestations) produces a standing wave in the
+store-and-forward buffers. Never resident on a node, never all in one place, so it cannot be
+seized — the sim's own physics forbids it. The word "AI" appears nowhere; the Registry opens a
+docket class it has never needed, UNATTRIBUTED ORIGINATION, entry 0001-U. It never converses, uses
+only the four player channels, and is a rival with a doctrine (it does not forecast, it remembers
+forward). Merger is priced in the parse's attribution — the one currency the mastery layer
+actually values. It ends because a maturing backbone closes the distance it was made of.
+
+**§3a — the unlicensed (the negative space of the licence).** Piracy is a symptom of the player's
+own coverage gaps: nets arise in unserved demand and collapse when it is served. Four verbs, none
+a fight — ignore, compete, petition, peer. The standing decision is grey transit: an unlicensed hop
+delivers but breaks the chain of custody, so **you can have the delivery or the proof, never both**.
+The Registry files 0001-U in the same class as a fishing-fleet mesh, because *unlicensed* is the
+only category it has.
+
+**Scoping, stated honestly.** Eras 1–4 (28 beats) add no systems — every trigger reads state the
+sim already keeps, and B1–B8 attach to the four acts in `m1-redesign.md` §2.6. **The P-thread does
+add systems.** Its cheap tier needs an unlicensed-hop route option, an attestation-valid flag, and
+nets as demand-driven actors. Its expensive tier (P1, P6) needs an interference term in the link
+budget, which GDD §3b defers past 1.0. **Recommendation: build the cheap tier, keep the
+interference model in the drawer** — the thread's best beat (P4) and best line (P8) are both cheap.
+
+**One test to run early.** GDD §4.6's litmus is that a player who hates "AI features" finishes
+without feeling sold a buzzword. Exit interviews ask players to describe the late campaign
+unprompted; if "AI companion" comes back, Era 4 failed its own rules and gets cut, not softened.
+There is no language model anywhere in it — every line is hand-written and the player never talks
+to it.

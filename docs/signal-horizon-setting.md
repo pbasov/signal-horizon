@@ -1,6 +1,6 @@
 # Signal Horizon — The Setting
 
-### Story foundation — v0.3 (§6a added: the late-campaign turn)
+### Story foundation — v0.4 (§3a added: the unlicensed)
 
 > **This document is scenery, not design.** It answers two questions and no others: *why is anyone
 > at the Moon and Mars*, and *why does anyone pay for information*. It has no authority over
@@ -66,6 +66,61 @@ You hold a licence. You bid on tenders, you commit to numbers, and when you miss
 is the whole of your authority and the whole of your risk. It is also why the game's economy is
 contracts and penalties rather than missions and glory — **you are a utility, not an explorer**,
 and the game should never once let you feel otherwise.
+
+### 3a. The unlicensed
+
+A licence regime defines its own negative space. If spectrum, slots, and the right to sign
+settlement-grade data are all licensed, then **everyone operating without one is a category the
+world must contain** — and it does.
+
+**What an unlicensed operator cannot do.** Everything about them follows from three exclusions:
+they cannot bid on Registry tenders, they cannot sign an attestation that clears, and they hold no
+protected spectrum. So they work in guard bands, sidebands, and the noise floor; they are paid in
+cash or in kind; and nothing they carry can be proven afterwards.
+
+**What they can do that you cannot.** Serve demand your licence forbids, at prices your cost base
+cannot reach, in places nobody would fund. They pay for no slots and no compliance.
+
+**Where they come from — and this is the whole design.** *Piracy is a symptom of your own coverage
+gaps.* An unlicensed net appears where there is unserved demand with money behind it. Serve that
+demand properly and the economics collapse underneath them; they thin out and go. **The most
+sympathetic pirate in the game is a customer you failed**, and they are usually not sorry.
+
+This is the escalation engine (GDD §3b) run backwards. Success creates the next problem; *neglect
+creates a competitor.* It gives a coverage hole teeth beyond lost revenue, and it means the cheapest
+enforcement available to the player is to go and sell the thing.
+
+**Four verbs, and none of them is a fight.**
+
+| Verb | Cost | What it does |
+|---|---|---|
+| **Ignore** | Free | Works, until it does not |
+| **Compete** | Capex, slow | The only one that actually ends a net — you take its demand away |
+| **Petition** | € and time, and it is public | The Registry acts on petitions at the petitioner's cost. It is fast, and they simply move |
+| **Peer** | Free, and it taints | Grey transit. See below |
+
+**Grey transit — the standing decision.** An unlicensed net has reach where you do not. It will
+carry your bundles, cheaply, right now. But an unlicensed hop breaks the chain of custody, so what
+arrives is **delivered but unprovable**. *You can have the delivery or you can have the proof, never
+both.* A bulk latency-tolerant contract does not care. A settlement-grade fix for an underwriter is
+worthless without the proof. The player must therefore know which contracts on their own book can
+eat an unattested hop — and the Registry audits paths, late, under a different penalty class than an
+SLA breach. Breaking a promise and breaking a licence are not the same failure.
+
+**The tie to §6a.** The unlicensed nets are the ecology **0001-U** grows in: unlogged, unattributed,
+store-and-forward, nobody's licence. A player who has leaned on grey transit has given it more room
+to live. And legally there is no distinction at all — the Registry files an origination in the same
+docket class as a fishing-fleet mesh, because *unlicensed* is the only category it has.
+
+**Three hard rules.**
+
+1. **No combat, no security minigame, no hacking, ever.** The verbs are compete, petition, peer,
+   ignore. Nobody attacks anybody. This is a utility's story and it stays one.
+2. **No villains and no manifestos.** A few are criminal. Most are utilities — a settlement that
+   built its own link because nobody would sell them one. They are competitors with a different
+   cost base, which is the same thing the other three rivals are.
+3. **No moralising, in either direction.** The game never says filing was wrong, and never says it
+   was right. A customer simply declines to renew, or renews and mentions it.
 
 ## 4. Why information is precious
 
@@ -302,5 +357,5 @@ The player's own field accepts anything; the generator sets the tone for what a 
 
 ---
 
-*v0.3. Scenery for GDD §1, §3, §3b, §4.6, §4.8, and §4.10. No mechanic in the M1 family changes if this
+*v0.4. Scenery for GDD §1, §3, §3b, §4.6, §4.8, and §4.10. No mechanic in the M1 family changes if this
 is rejected. §10 ruled 2026-09-01; §4a added by ruling 3.*
