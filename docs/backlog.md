@@ -354,3 +354,65 @@ All 7 findings fixed:
   > **PARTIAL (2026-08-19).** DELETED: `src/panels/link-load.ts` (fully absorbed — its LinkLoadRow/LinkLoadShare model is what TracePipe/TraceRider is, with both of its bugs fixed), its 22 lines of now-unreachable CSS, and the three DEAD camera-preset branches in `setWmPreset` (`"OVERVIEW"`/`"CONNECTIVITY"`/`"ROUTING"` — SD-45 removed those desktops and nothing has matched those literals since; preset names are load-bearing strings with no type linking them to the specs, so a dead branch there is invisible). **NOT deleted: `netPreferControl()` and `ROUTING·PREFER` in `net-planner.ts`.** They are reached only from `netPlannerRenderState()`, which only cache mode calls — so they cost net mode nothing, and removing a live control from the OTHER game in this repo is not SD-53's remit. Also still orphaned from SD-45, and deliberately left alone for the same reason: `howto.ts`, `status-board.ts`, `coverage-roster.ts` — unreferenced by any registry, but their removal belongs to an SD-45 cleanup, not to this one.
 
 *Keep `[x]` honest — tick only when the plan's "Done when" is actually met. M1 was re-aimed v0.3 from the Mars-cache freshness loop to the Earth-orbit connectivity game (`docs/signal-horizon-m1.md` Part I); the old M1 cache code is reclassified to the Act 4 teaser + post-gate, not deleted. The Act 1 coverage opener is the immediate next build. The §7 routing solver is RESOLVED in spec v0.2 (the M1-SLV-* epic): M1 builds the reactive solver (latency + congestion, `w_stab=0`), the per-contract weight, the self-diagnosing trace view, and the predictability seed; everything in Acts 2–3 needs it. Re-detail M2+ after the M1 gate.*
+
+---
+
+### EPIC — SD-55 · THE AGENT-EVAL HARNESS (an LLM agent plays FIRST LIGHT cold)
+
+> Specs: `docs/agent-eval.md` (harness + boundaries + the PDQ clock artifact),
+> `docs/agent-eval-metrics.md` (deterministic, pre-registered), `docs/agent-eval-judge.md`
+> (blind rubric — written, **deliberately unbuilt**), `docs/agent-eval-artifacts.md` (bundle schema).
+> The scripted loop (`tools/playtest.mjs`) is untouched: it proves the loop still works, this proves
+> a cold agent can find it. **Neither earns the M1 gate — that is five cold humans, the user's to run.**
+
+- [x] **AE-01** Pre-registration — *S* · the four docs above, committed **before** the first run so no
+      metric can be defined after seeing a result. Amendments need a dated entry + a decisions note.
+      · Verify: SD-55 recorded; every metric in §2 has an extraction rule and a rationale.
+- [ ] **AE-02** The substrate: `__actionLog()` probe + `tools/ctx.mjs` — *S* · dev-only probe exposing
+      the recorded `SimAction` log (`applyAndRecordNetAction` already writes it; nothing could read
+      it), plus the `ctx` helper factory extracted from `playtest.mjs` **unchanged in behaviour** so
+      scripted scenes and the agent share one action vocabulary. Widen vitest's include to
+      `tools/**/*.test.mjs`. · Verify: full `node tools/playtest.mjs` green after the extraction;
+      `__actionLog()` returns the launch/accept payloads a scene just committed.
+- [ ] **AE-03** The design-free observation builder — *M* · visible-DOM text (visibility-filtered:
+      the pad's DOM exists while the book face shows, and an agent must not read hidden UI) +
+      affordance list (`[data-net=…]` keys, labels, enabled state) + the player-visible probe facts.
+      Persona capability restriction applied **here** (withheld panels never rendered, their summon
+      verbs absent). Emits `observations.jsonl` — the only file the judge will ever be given.
+      · Verify: a boot observation contains the tender, the wallet and the pad-closed state, and
+      contains **no** hidden-panel text; `novice-floor` observations contain no TRACE/parse text.
+- [ ] **AE-04** The deterministic metrics extractor + Wilson intervals — *M* · pure functions over
+      `actions.jsonl` + `probes.jsonl` implementing M1–M13, the fourteen-surface mapping (with
+      `unavailable` as a third state), and Wilson 95% (never Wald). Vitest-tested like a sim module.
+      · Verify: hand-built fixtures pin each metric; Wilson at 5/5 gives lower bound ≈0.57.
+- [ ] **AE-05** The brain seat — *M* · tool-less `claude -p` subprocess, `--session-id`/`--resume`
+      for memory + cache warmth, strict-JSON action extraction with a schema-repair retry, per-turn
+      usage/cost/latency recorded from the CLI's own JSON. · Verify: a two-turn scripted exchange
+      proves memory carries; recorded cost matches the CLI's `total_cost_usd`.
+- [ ] **AE-06** The driver — *L* · the PDQ loop (pause → observe → think → act → fast-forward the
+      chosen dwell), budgets (turns/wall/USD), stall escalation through *distinct* strategies, clean
+      landings with a named termination reason, and the full artifact bundle. · Verify: a real run
+      reaches a served contract or terminates with a reason; bundle validates against the schema.
+- [ ] **AE-07** The five personas — *S* · optimizer / satisficer / literalist / impatient /
+      novice-floor as prompt files, hashed into `prompt_version`. · Verify: the `literalist` run's
+      transcript shows it acting only on on-screen imperatives (and M4 catches any it found).
+- [ ] **AE-08** Baselines in the scoreboard — *S* · random floor from the `fuzz` scene, scripted
+      ceiling from the authored scenes, human ceiling printed `not measured` until the gate hour runs;
+      normalised score beside the raw value. · Verify: the report prints all three on every row.
+- [ ] **AE-09** `report.md` renderer — *S* · metrics table with baselines + intervals, the
+      turn-by-turn intent trail, the findings list, and the standing caveats (PDQ artifact, n=5 limits,
+      leads-not-verdicts). · Verify: a report from a real run reads without the reader needing the code.
+- [ ] **AE-10** Replay mode — *S* · feed recorded brain responses back so a failed run is
+      re-inspectable for free; the sim's LIVE==REPLAY discipline extended to the agent.
+      · Verify: replaying a bundle reproduces its `metrics.json` byte-identically.
+- [ ] **AE-11** *(P1, GATED)* The blind judge + calibration set — *L* · build **only** once a
+      legibility question that matters is provably unanswerable from the action log. Ships only at
+      inter-annotator κ ≥ 0.6 **and** judge-to-human κ ≥ 0.5 over 100–150 hand-labelled transcripts,
+      with the judge model *version* pinned as an artifact. · Dep: AE-04 exhausted first.
+- [ ] **AE-12** *(P2)* LCRT clock mode — *M* · inject measured decision latency back into the integer
+      clock before applying the action, converting the PDQ caveat into a number. · Verify: PDQ and
+      LCRT runs of the same seed differ in `injected_latency_ms_total` and are never pooled.
+- [ ] **AE-13** *(P2)* VLM + CVD perception probe, **reject-only** — *M* · run a vision model over the
+      frame and over Brettel/Viénot CVD-simulated variants; a *failure* to read a critical cue is a
+      lead, a *pass* proves nothing. The machine layer of the X-03 colour-off exit check, not a
+      replacement for it.

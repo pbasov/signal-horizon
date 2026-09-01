@@ -861,3 +861,79 @@ English; the proposal and critique survive only as git history and as merged GDD
    only in git history.
 6. Minor GDD fixes from the same review: motion rules 1 and 4 are stated as a pair (rule 1 sets
    the budget, rule 4 spends it), and deadlines vs age stamps never share iconography (§8).
+
+---
+
+### SD-55 — THE AGENT-EVAL HARNESS: an LLM agent plays FIRST LIGHT cold, scored twice (pre-registration, 2026-09-01)
+
+**Status: ACCEPTED (user-directed build; pre-registration committed before the first run).**
+
+**Context.** The machine side of the M1 gate was, until now, *authored* play: `tools/playtest.mjs`
+drives 12 scripted scenes with hard assertions. Those prove the loop still works; they cannot ask
+whether a cold player would know what to press, because the scene author knew. The other half —
+"play the game and judge it" — had only ever been done by an agent hand-driving the Playwright MCP
+server interactively: no transcript, no metrics, no repeatability, no cost ceiling, and the agent had
+read the design docs first, so it was never a cold read. This epic builds the automated version.
+
+**The decisions, and the reasons that are not obvious:**
+
+1. **Scoring splits in two, and the deterministic half ships first.** Countable behaviour (committed
+   actions, decision surfaces touched, hand-aim before commit, invalid/no-op action rates,
+   time-to-first-served, softlock) comes from the sim's own action log with no LLM in the loop.
+   Only comprehension claims need a judge, and that is where every documented judge failure mode
+   lives. Docs: `agent-eval-metrics.md` (built) and `agent-eval-judge.md` (**written, deliberately
+   unbuilt**).
+2. **The judge is gated on a falsifiable condition, not a schedule.** It gets built when we hold a
+   legibility question that matters *and* the action log provably cannot answer it. If the random
+   and scripted baselines already separate builds, and the `literalist` persona already catches
+   instruction leaks, the nightly gate needs no judge — and building one early buys flakiness we
+   would then pay to calibrate away. When it is built it does not ship until inter-annotator
+   Cohen's κ ≥ 0.6 and judge-to-human κ ≥ 0.5 over 100–150 hand-labelled transcripts.
+3. **playwright-core for the automated loop; MCP stays interactive.** MCP's accessibility snapshots
+   are token-expensive and vary turn to turn, with no cost ceiling and no transcript. The existing
+   `ctx` helpers become the one shared action vocabulary (extracted to `tools/ctx.mjs`), so a
+   scripted trajectory and an agent trajectory are the same format.
+4. **The brain is a tool-less `claude -p` seat, not the Claude Agent SDK** — a deliberate deviation
+   from the research brief. The agent needs no tools: the driver is the actuator and the brain emits
+   one JSON action per turn. Run with `--tools ""` `--setting-sources ""`
+   `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`, the design-free boundary becomes
+   *structural* — the brain physically cannot read the repo, the GDD or the golden path, so no
+   `PreToolUse` hook has to be trusted to deny it. Measured: 309 input tokens on turn 1 (vs 11k+
+   with the default Claude Code system prompt) and `--resume` demonstrably carries memory across
+   turns. Zero new dependencies. Revisit if the SDK ever buys something this cannot.
+5. **Observations are text, not pixels.** BALROG (arXiv:2411.13543) finds multimodal agents do
+   *worse* given an image than a textual observation, and the weakness is spatial/geometric
+   reasoning — which is the whole of this game. Orbital geometry goes through the numeric probe
+   channel; screenshots are captured for the human reading the bundle and for a reject-only VLM
+   perception probe (P2), never as the agent's primary channel.
+6. **PDQ (paused-during-query) is declared as an artifact, not hidden.** Sim-time pauses while the
+   agent thinks (2.8–3.3 s/turn measured), which deletes real-time pressure from the measurement:
+   no link loss can land *while* the agent decides, and tempo becomes a free choice. `clock_mode`
+   is part of the run key so PDQ and LCRT runs can never be pooled. LCRT — injecting measured
+   latency back into the integer clock — is recorded as P2.
+7. **Personas are policy coverage, never player archetypes.** Persona expression drifts and
+   self-reports dissociate from behaviour (arXiv:2509.03730), so the harness claims only that a
+   stance produces a distinct trajectory. Five: optimizer / satisficer / **literalist** (the
+   instruction-leak detector — if it can finish an act, imperative copy leaked past the LAW-2 lint)
+   / impatient / **novice-floor** (capability-restricted: TRACE, the parse and diagnosis-class
+   probes withheld from the observation, which is the machine reading of GDD §9 claim 4).
+8. **Three baselines or the number is unreadable.** Random floor = the existing `fuzz` scene.
+   Scripted ceiling = the authored scenes. Human ceiling = the M1 gate hour, printed as
+   `not measured` until it runs. Normalised `(agent − random)/|scripted − random|` prints beside the
+   raw value, never instead of it.
+9. **n=5 is for existence and regression only.** Every rate carries a Wilson 95% interval (never
+   Wald, which collapses at 0/5 and 5/5 — at 5/5 the Wilson lower bound is ≈0.57). Ranking claims
+   and the phrase "the build passes" are forbidden without more seeds.
+10. **The Goodhart clause, standing.** The game is never tuned so the *agent* completes it. An agent
+    has perfect text comprehension, no visual attention and infinite patience — the inverse of the
+    target player. The harness finds defects and unreachable states cheaply; it is not evidence
+    about fun, pacing or comprehension, and every legibility reading it emits is a lead for human
+    playtesting. **The M1 gate remains five cold humans, and the user's to run.**
+
+**Consequences.** Four new docs (`agent-eval.md`, `agent-eval-metrics.md`, `agent-eval-judge.md`,
+`agent-eval-artifacts.md`) are pre-registration: amending a metric definition needs a dated amendment
+plus a decisions entry, never a silent edit. `src/main.ts` gains one dev-only probe (`__actionLog`)
+so the recorded `SimAction` log — already written by `applyAndRecordNetAction`, previously
+unreachable from the page — becomes the metric substrate. `tools/ctx.mjs` is extracted from
+`playtest.mjs` unchanged in behaviour. Vitest's include widens to cover `tools/**/*.test.mjs` so the
+pure metric extractor is tested like any sim module.
