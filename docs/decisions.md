@@ -1247,9 +1247,46 @@ constructor) remains unbuilt and is now the largest open piece of the §7 epic.
 
 ---
 
-### SD-58 — THE SETTING AND THE BEATS: a story foundation, ruled and written (2026-09-01)
+### SD-58 — THE SETTING AND THE BEATS: a story foundation, ruled, written, and (in part) built (2026-09-01)
 
-**Status: PROPOSED.** Two new docs, `signal-horizon-setting.md` (v0.4) and
+**Status: docs PROPOSED; the first three slices BUILT on `story-into-game`.**
+
+**BUILT (2026-09-01), verified by playing:**
+
+1. **The cast.** Contracts carry a folded `clientId`; the copy lives in `panels/clients.ts` and
+   is looked up at render, so the sim stays headless and every word stays under copy-lint. All
+   five authored tenders are cast BY ENFORCED AXIS — Halden Marine on Act 1's connectivity-only
+   opener, Thule Polar on Act 2's 62°N availability wall, Verity Wire on Act 3a's latency
+   corridor, Sable Line on the bulk backhaul that shares the pipe, Tharsis Survey on Act 4's
+   Mars teaser. Renewals inherit the client. Persist spreads the contract, so no golden re-pin.
+2. **The Registry.** B1 FIRST LIGHT (`LICENCE 4471-C ACTIVE. FIRST SERVICE RECORDED.`) on the
+   first service ever recorded, and B4 on the first contract to reach "failed" — both
+   licence-level, once per game, render-only edges in `drainMissionWire`. No new folded state.
+3. **The premise, in the cold open** — see the AS BUILT note in `signal-horizon-beats.md` §3.
+   The 84-word block had nowhere to live, so it compressed to two sentences, preceded by the
+   Registry issuing the licence. The intro is skippable three ways (any input with a visible
+   affordance, a persisted "never show this again", and `?intro=0`).
+
+The act1 playtest scene now pins B1 and the tender reason line, so the story layer is covered
+by the thing that actually plays the game. 958 tests green; smoke clean; 17/17 playtest.
+
+**Two defects found while building, both fixed here:**
+- `storePrefs` had **two call sites that rebuilt the prefs literal** instead of spreading the
+  stored one, so any pref they did not know about was silently wiped on a mono or mute toggle.
+  `skipIntro` was the first casualty; tsc caught it the moment the field was added. Both now
+  spread, and a test pins it.
+- A red playtest assertion for B1 turned out to be a **stale vite dev server**, not a defect:
+  its file watcher had silently stopped picking up edits, so it served pre-edit transforms of
+  `copy.ts` and `main.ts`. A red assertion against a stale server is indistinguishable from a
+  real bug — check what the server is actually serving (`curl` the module) before believing it.
+
+**STILL DOC-ONLY:** everything past Act 4 — Eras 2–4 (cislunar, Mars, Custody/0001-U) and the
+whole unlicensed P-thread, whose cheap tier needs an unlicensed-hop route option and an
+attestation-valid flag, and whose P1/P6 need an interference term GDD §3b defers past 1.0.
+
+---
+
+**The docs as proposed:** Two new docs, `signal-horizon-setting.md` (v0.4) and
 `signal-horizon-beats.md` (v0.2). The GDD is untouched; its version discipline bars new systems
 until the M1 gate runs, and nothing here asks it to change.
 
