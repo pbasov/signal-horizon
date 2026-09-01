@@ -91,7 +91,18 @@ import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
 import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS, offerNetContract, type Contract } from "./sim/net/contract";
-import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N, NET_ACT2_REGION } from "./sim/net/scenario";
+import {
+  ACT1_CONTRACT_ID,
+  ACT2_CONTRACT_ID,
+  ACT2_SLA_AVAIL,
+  ACT2_ZERO_GAP_N,
+  NET_ACT2_REGION,
+  // SD-56 — the dev console reads these to print WHY the current act's gate has not fired
+  // (the hand-off cycle it must clear) and to re-offer a lapsed tender on the canon window.
+  NET_HANDOFF_CYCLE_S,
+  NET_OFFER_WINDOW_S,
+  ACT3B_FAULT_SCRIPTS,
+} from "./sim/net/scenario";
 import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
@@ -155,7 +166,7 @@ import {
 import type { PrefetchMode } from "./sim/m1/policy";
 import { Shell, type PanelHandle } from "./wm/shell";
 import { PRESET_SPECS, NET_PRESET_SPECS, buildGrid } from "./wm/presets";
-import { WindowRail, RAIL_PANELS, NET_RAIL_PANELS } from "./wm/window-rail";
+import { WindowRail, RAIL_PANELS, NET_RAIL_PANELS, DEV_RAIL_PANEL } from "./wm/window-rail";
 import { Orrery } from "./orrery/orrery";
 import { deriveReadout } from "./orrery/readout";
 import { CueBus, AudioCue, emitCueTransition, type CueDemandSlice } from "./audio/cue";
@@ -171,6 +182,28 @@ import { StatusStrip } from "./panels/status";
 // CORE CONCEPT, fired off the scenario beats (act1 at the cold open; the rest when the cursor reaches
 // them). Render/UI only — no sim math, net mode ONLY. See drainNetOnboarding below for the trigger.
 import { Onboarding, type OnboardingConcept } from "./panels/onboarding";
+// SD-56 — THE DEV CONSOLE: the dev-only cheats/debug tile (skip acts, warp time, top up the
+// wallet, collapse the launch pipeline, arm/clear faults, jump to a seeded bench). Registered
+// ONLY under import.meta.env.DEV / ?dev=1 — see `devEnabled` below.
+import { DevConsole, type DevGateRow, type DevHooks, type DevViewState } from "./panels/devtools";
+import {
+  DEV_ACT_IDS,
+  DEV_LAST_CURSOR,
+  cheatArmFences,
+  cheatCircularizeAll,
+  cheatClearBreach,
+  cheatClearFaults,
+  cheatDeployNow,
+  cheatDisarmFaults,
+  cheatFreezeOffers,
+  cheatGrantEur,
+  cheatReopenLapsed,
+  cheatRewindCursor,
+  cheatSafeLaunch,
+  cheatSetBalance,
+  devContractCounts,
+  devFleetCounts,
+} from "./sim/net/devtools";
 import type { ContractReadout, ContractsRenderState, FrameState, NetEconomy } from "./types";
 
 applyDither();
@@ -3958,6 +3991,286 @@ function ledgerFleetState(): LedgerFleetState {
   };
 };
 
+// ── SD-56 — THE DEV CONSOLE (cheats + debug, a tile of its own) ────────────────────────
+// The playtest accelerator: SKIP ACT / jump to any beat, warp or turbo sim-time, top up the
+// wallet, collapse the launch pipeline, freeze the tender clock, arm or clear faults, and
+// jump to one of the two seeded bench states. It is a PANEL like any other (host `devtools`,
+// rail button DEV, key `\`), so it obeys the tiling invariant and the §8 chrome.
+//
+// GATED: enabled in a DEV build (`import.meta.env.DEV`) or explicitly with `?dev=1`, and only
+// in net mode (every cheat operates on the net session — the cache/M2/M3 worlds are inert
+// here). An ordinary production run registers no host, no rail button and no key, so the
+// console is DORMANT — the module is still in the bundle (it is a static import), it is simply
+// never constructed and unreachable. `?dev=1` opens it in a built bundle ON PURPOSE: the
+// screenshot harness runs `vite preview` against production, and a prod-only bug needs the
+// same console a dev run gets.
+//
+// HONEST BY CONSTRUCTION: a cheat goes `netSession.snapshot()` → a pure transform in
+// `sim/net/devtools.ts` → `netSession.restore()`, and is NEVER recorded to the SaveGame action
+// log. So a cheated run does not replay, the console says exactly that on its face, the run's
+// CHEATS FIRED counter flips to "CHEATED" on the first click, and every cheat writes an amber
+// DEBUG line to the WIRE. The replay harness builds its own session from the golden action log
+// and never touches any of this — the three goldens are untouched.
+const devEnabled = netMode && (import.meta.env.DEV || NET_QUERY.get("dev") === "1");
+
+/** Extra sim ticks drained per frame beyond the clock's own accel (1 = off). The clock caps a
+ * frame at MAX_TICKS_PER_FRAME, so this is the only way past ~600× — under a wall budget. */
+let devTurbo = 1;
+/** While on, the wallet is topped back up to the opening balance whenever it dips below it. */
+let devSolventLock = false;
+/** While on, every in-flight launch member is forced to a clean outcome before it deploys. */
+let devSafeLaunchLock = false;
+/** How many cheats this run has fired (0 ⇒ the run is still clean + replayable). */
+let devCheatCount = 0;
+/** The last cheat's note (shown in the console + written to the WIRE). */
+let devLastCheat = "";
+/** The wall-time budget (ms) a single turbo burst may spend, so the UI never freezes. */
+const DEV_TURBO_BUDGET_MS = 12;
+/** The synchronous-warp tick ceiling — a hard stop so a fat-fingered warp cannot hang the tab.
+ * 1 sim-hour at DT = 1/60 is 216 000 ticks, which is the intended top button. */
+const DEV_WARP_TICK_CAP = 240_000;
+
+/** Write a cheat's note to the WIRE as an amber DEBUG line and bump the cheated counter, so a
+ * cheated run is legible in the log, in the panel, and in any screenshot of either. */
+function devNote(msg: string, value = "CHEAT"): void {
+  if (msg === "") return;
+  devCheatCount++;
+  devLastCheat = msg;
+  log.append({ tSim: clock.seconds, sev: "warn", entity: "DEBUG", value, msg: `${msg} · NOT recorded — this run no longer replays` });
+}
+
+/**
+ * The one round trip every cheat takes: capture the fold, run a pure transform over it, hand it
+ * back. `fn` returns the WIRE note (or "" for a no-op, which is not counted as a cheat).
+ */
+function devCheat(fn: (snap: ReturnType<typeof netSession.snapshot>) => string): void {
+  const snap = netSession.snapshot();
+  const note = fn(snap);
+  netSession.restore(snap);
+  devNote(note);
+}
+
+/**
+ * SKIP ACT — advance the scenario cursor by ONE beat the way the gate would have, and let the
+ * newly-current beat's authored `emit` fire.
+ *
+ * Two details make this correct rather than merely quick. (1) FENCES: `act3b.emit` THROWS
+ * unless the act3a re-tame witness is latched, so {@link cheatArmFences} arms what the target
+ * beat asserts BEFORE the cursor moves. (2) THE STEP: `restore` marks every beat up to the
+ * restored cursor as already-emitted, so a bare `advanceCursor` would move the cursor with no
+ * arrival — the `step` here is what actually puts the next act's demand on the board.
+ */
+function devSkipAct(): void {
+  if (netSession.cursor >= DEV_LAST_CURSOR) {
+    devNote(`already on ${DEV_ACT_IDS[DEV_LAST_CURSOR]} — the cursor stops at the frontier`, "NO-OP");
+    return;
+  }
+  const target = netSession.cursor + 1;
+  const snap = netSession.snapshot();
+  const armed = cheatArmFences(snap, target);
+  netSession.restore(snap);
+  netSession.advanceCursor(clock.tick);
+  netSession.step(eph, clock.seconds, DT);
+  devNote(`${armed === "" ? "" : `${armed} · `}act skipped → ${DEV_ACT_IDS[target]}`, "SKIP ACT");
+}
+
+/** JUMP TO ACT — forward walks one beat at a time (so every act's arrival lands); backward is a
+ * cursor rewind. Landing on the current act is a no-op. */
+function devJumpToAct(cursor: number): void {
+  const target = Math.max(0, Math.min(DEV_LAST_CURSOR, Math.trunc(cursor)));
+  if (target === netSession.cursor) return;
+  if (target < netSession.cursor) {
+    devCheat((snap) => cheatRewindCursor(snap, target));
+    return;
+  }
+  while (netSession.cursor < target) devSkipAct();
+}
+
+/**
+ * WARP — step the sim forward `seconds` synchronously through the SAME {@link tickSim} the
+ * frame loop drains, so the log, the audio cues, the autosave cadence and every act gate see
+ * an ordinary run of ticks (a warp is not a teleport: gates can and do fire inside one).
+ * The frame stalls for the duration; the tick cap is the fat-finger stop.
+ */
+function devWarp(seconds: number): void {
+  const ticks = Math.min(DEV_WARP_TICK_CAP, Math.max(1, Math.round(seconds / DT)));
+  const t0 = clock.seconds;
+  for (let i = 0; i < ticks; i++) {
+    clock.setTick(clock.tick + 1);
+    tickSim(clock.seconds);
+  }
+  devNote(`warped +${(clock.seconds - t0).toFixed(0)} sim-s (${ticks} ticks) → t ${clock.seconds.toFixed(0)} s`, "WARP");
+}
+
+/** The per-frame turbo drain + the two standing locks. Called from {@link frame} while the
+ * console is enabled; a no-op when nothing is armed, so the cost off-duty is one branch. */
+function devFrameTick(): void {
+  if (devSafeLaunchLock) {
+    const snap = netSession.snapshot();
+    const note = cheatSafeLaunch(snap);
+    // Only pay the restore when there was actually something to fix, and stay silent on the
+    // WIRE — the lock is a standing policy, and one line per frame would drown the log.
+    if (note !== "nothing in flight to fix") netSession.restore(snap);
+  }
+  if (devSolventLock && netSession.balance < NET_OPENING_BALANCE) {
+    const snap = netSession.snapshot();
+    cheatSetBalance(snap, NET_OPENING_BALANCE);
+    netSession.restore(snap);
+  }
+  if (devTurbo <= 1 || clock.paused) return;
+  // Drain extra ticks past the clock's own MAX_TICKS_PER_FRAME ceiling, bounded by a wall
+  // budget so the browser keeps painting (a turbo that freezes the tab teaches nothing).
+  const deadline = performance.now() + DEV_TURBO_BUDGET_MS;
+  const extra = (devTurbo - 1) * 60;
+  for (let i = 0; i < extra; i++) {
+    clock.setTick(clock.tick + 1);
+    tickSim(clock.seconds);
+    if ((i & 63) === 63 && performance.now() > deadline) break;
+  }
+}
+
+/** The CURRENT beat's gate predicates, so the console says WHY the act has not advanced —
+ * read straight off the same session getters the gates themselves call. */
+function devGateRows(): DevGateRow[] {
+  const t = clock.seconds;
+  switch (netSession.cursor) {
+    case 0: {
+      const served = netSession.contracts.some(
+        (c) => c.state === "active" && c.lastServedFraction > 0 && c.earnedEur > 0,
+      );
+      return [{ label: "a contract SERVED and paid out", met: served }];
+    }
+    case 1: {
+      const c = netSession.contractById(ACT2_CONTRACT_ID);
+      const held = c !== null && c.state === "active" && c.lastAvailability >= c.slaAvail;
+      const streak = netSession.nowS - netSession.cleanSinceS;
+      return [
+        { label: `${ACT2_CONTRACT_ID} availability ≥ ${(ACT2_SLA_AVAIL * 100).toFixed(0)}%`, met: held },
+        {
+          label: `clean hand-off streak ${streak.toFixed(0)}/${NET_HANDOFF_CYCLE_S.toFixed(0)} s`,
+          met: streak >= NET_HANDOFF_CYCLE_S,
+        },
+      ];
+    }
+    case 2:
+      return [{ label: "escalation tame → outgrow → RE-TAMED", met: netSession.escalationReTamed() }];
+    case 3:
+      return [
+        { label: "weathered ≥1 fault while serving", met: netSession.weatheredFault() },
+        { label: "the trace surfaced a shortfall", met: netSession.traceSurfacedShortfall() },
+      ];
+    default:
+      return [{ label: `no gate — act4 is a read (t ${t.toFixed(0)} s)`, met: true }];
+  }
+}
+
+const devHooks: DevHooks = {
+  skipAct: () => devSkipAct(),
+  rewindAct: () => devJumpToAct(netSession.cursor - 1),
+  jumpToAct: (cursor) => devJumpToAct(cursor),
+  warp: (seconds) => devWarp(seconds),
+  setTurbo: (mult) => {
+    devTurbo = mult;
+    devNote(`turbo ×${mult}${mult === 1 ? " (off)" : ""}`, "TURBO");
+  },
+  money: (deltaEur) => {
+    // BROKE and the solvent lock are contradictory asks, and the lock wins on the very next
+    // frame — so the wallet snaps back and the button reads broken. Asking for broke releases
+    // the lock (found by clicking both, in that order, in the browser).
+    if (deltaEur === null && devSolventLock) {
+      devSolventLock = false;
+      devNote("solvent lock released — BROKE would have been topped up on the next frame", "LOCK");
+    }
+    devCheat((snap) => (deltaEur === null ? cheatSetBalance(snap, 0) : cheatGrantEur(snap, deltaEur)));
+  },
+  toggleSolventLock: () => {
+    devSolventLock = !devSolventLock;
+    devNote(`solvent lock ${devSolventLock ? "ON — wallet held at the opening balance" : "off"}`, "LOCK");
+  },
+  signAllOffers: () => {
+    // The REAL accept verb (bonus, frozen pay, term start), applied per offer — not a snapshot
+    // poke, because the state machine's accept does real work the fold cannot fake.
+    const offers = netSession.contracts.filter((c) => c.state === "offered").map((c) => c.id);
+    for (const id of offers) netSession.acceptContract(id, clock.seconds);
+    devNote(offers.length === 0 ? "no offer on the board" : `signed ${offers.length} offer(s): ${offers.join(" · ")}`, "SIGN ALL");
+  },
+  freezeOffers: () => devCheat((snap) => cheatFreezeOffers(snap)),
+  reopenLapsed: () => devCheat((snap) => cheatReopenLapsed(snap, clock.seconds, NET_OFFER_WINDOW_S)),
+  clearBreach: () => devCheat((snap) => cheatClearBreach(snap, clock.seconds)),
+  deployNow: () => devCheat((snap) => cheatDeployNow(snap, clock.seconds)),
+  safeLaunch: () => devCheat((snap) => cheatSafeLaunch(snap)),
+  toggleSafeLaunchLock: () => {
+    devSafeLaunchLock = !devSafeLaunchLock;
+    devNote(`launch-failure lock ${devSafeLaunchLock ? "ON — every launch separates clean" : "off"}`, "LOCK");
+  },
+  circularizeAll: () => devCheat((snap) => cheatCircularizeAll(snap)),
+  armFaults: () => {
+    // enableFaults is the act3b emit's own verb; the mild-first trio is the authored queue.
+    netSession.enableFaults(ACT3B_FAULT_SCRIPTS);
+    devNote("fault generator ARMED + mild-first trio queued (degradation → transient → telegraphed)", "FAULTS");
+  },
+  clearFaults: () => devCheat((snap) => cheatClearFaults(snap)),
+  disarmFaults: () => devCheat((snap) => cheatDisarmFaults(snap)),
+  seedLiveNetwork: () => {
+    seedNetLiveNetworkDebugView();
+    devNote("seeded the LIVE NETWORK bench (GEO + N=4 LEO constellation, both signed, escalation on)", "SEED");
+  },
+  seedMarsFrontier: () => {
+    seedNetMarsDebugView();
+    devNote("seeded the ACT-4 MARS FRONTIER bench (relay up, sample present and ageing)", "SEED");
+  },
+  quickSave: () => vaultSave("quick"),
+  quickLoad: () => vaultLoad("quick"),
+  restartRun: () => window.location.reload(),
+  copyState: () => {
+    const json = JSON.stringify({ tick: clock.tick, hash: netStateHash(netSession).toString(), net: netSession.snapshot() }, null, 2);
+    void navigator.clipboard?.writeText(json).catch(() => {});
+    // eslint-disable-next-line no-console
+    console.log("[DEV CONSOLE] net snapshot", json);
+    devNote("snapshot copied to the clipboard + printed to the console", "PROBE");
+  },
+  logActions: () => {
+    // eslint-disable-next-line no-console
+    console.log("[DEV CONSOLE] recorded action log", save.actions.map(actionToDict));
+    devNote(`${save.actions.length} recorded action(s) printed to the console`, "PROBE");
+  },
+};
+
+const devConsole = devEnabled ? new DevConsole(devHooks) : null;
+
+/** Assemble the console's per-frame read (only while it is actually on screen). */
+function devViewState(): DevViewState {
+  const snap = netSession.snapshot();
+  const fleet = devFleetCounts(snap);
+  const contracts = devContractCounts(snap);
+  const faults = netSession.faults;
+  return {
+    cursor: netSession.cursor,
+    actId: DEV_ACT_IDS[netSession.cursor] ?? `cursor ${netSession.cursor}`,
+    actCount: DEV_ACT_IDS.length,
+    gateRows: devGateRows(),
+    tick: clock.tick,
+    simSeconds: clock.seconds,
+    speedLabel: clock.scaleLabel,
+    turbo: devTurbo,
+    balanceEur: netSession.balance,
+    sats: fleet.live,
+    pending: fleet.pending,
+    underburn: fleet.underburn,
+    offered: contracts.offered,
+    active: contracts.active,
+    completed: contracts.completed,
+    failed: contracts.failed,
+    escalation: netSession.escalationEnabled,
+    faultsArmed: netSession.faultsEnabled,
+    faultLine: faults.length === 0 ? "—" : faults.map((f) => `${f.satId} ${f.kind}`).join(" · "),
+    cheatCount: devCheatCount,
+    lastCheat: devLastCheat,
+    solventLock: devSolventLock,
+    safeLaunchLock: devSafeLaunchLock,
+  };
+}
+
 const orreryHandle: PanelHandle = {
   title: "ORRERY",
   content: orrery.host,
@@ -3985,6 +4298,9 @@ if (netMode) {
   // That satisfies DD-10's own merge test without an argument and keeps m1-redesign §2.1's rule
   // that no loop beat requires leaving MISSION. The TRACE desktop is a later, gated commit.
   registry.set("trace", tracePanel);
+  // SD-56 — THE DEV CONSOLE, dev builds only (or ?dev=1). Registered like any other host so it
+  // tiles, swaps and summons normally; absent entirely from a production build.
+  if (devConsole !== null) registry.set("devtools", devConsole);
 } else {
   registry.set("contracts", contractsPanel);
   registry.set("fleet", fleetPanel);
@@ -4001,7 +4317,10 @@ shellRef = shell; // viewport watchdog can now heal + relayout.
 // net/ Act-1 — net mode offers ONLY the net-relevant rail set (NET_RAIL_PANELS: globe, LAUNCH,
 // SYSTEM.LOG, FINANCE, PARSE) so the cache/M2/M3 panels (TELEMETRY feeds, the M2 CONTRACTS board,
 // FLEET) are not summonable here. Cache mode keeps the full RAIL_PANELS.
-const windowRail = new WindowRail(shell, netMode ? NET_RAIL_PANELS : RAIL_PANELS, (host, changed) => {
+// SD-56 — the DEV button is APPENDED to the rail set only when the console is enabled, so a
+// production rail has no dead button (and the const rail sets stay the shipped truth).
+const railPanels = netMode ? NET_RAIL_PANELS : RAIL_PANELS;
+const windowRail = new WindowRail(shell, devConsole !== null ? [...railPanels, DEV_RAIL_PANEL] : railPanels, (host, changed) => {
   if (host === "parse" && changed) refreshParse(true);
 });
 windowRailRef = windowRail;
@@ -4279,6 +4598,12 @@ window.addEventListener("keydown", (e) => {
       vaultSave("quick");
     } else if (k === "V") {
       vaultLoad("quick");
+    } else if (k === "\\" && devConsole !== null) {
+      // SD-56 — `\` TOGGLES THE DEV CONSOLE: summon it into the focused tile if it is off
+      // screen, else hand the focused tile back to the MISSION pad. Dev builds only; in a
+      // production build the key is not bound at all (devConsole is null).
+      if (shell.visibleHosts().includes("devtools")) windowRail.summon("mission-top");
+      else windowRail.summon("devtools");
     } else if (k === "c" || k === "C") {
       // UX sweep fix (this branch was unreachable — it lived AFTER the net-mode `return`,
       // so the documented C shortcut NEVER fired since R1): in net mode C places the
@@ -4488,6 +4813,9 @@ function frame(now: number): void {
   while (clock.nextTick() !== null) {
     tickSim(clock.seconds);
   }
+  // SD-56 — the DEV CONSOLE's standing locks + the TURBO drain (extra ticks past the clock's
+  // own per-frame ceiling, under a wall budget). One branch when the console is off.
+  if (devConsole !== null) devFrameTick();
   m = perfMark("sim", m);
 
   // Render at the latest sim time (interpolation deferred — analytic Kepler
@@ -4605,6 +4933,10 @@ function frame(now: number): void {
     missionTopPanel.render(missionTopState());
     ledgerFleetPanel.render(ledgerFleetState());
     tracePanel.render(traceState());
+    // SD-56 — the DEV CONSOLE repaints only while it is actually on screen: its read takes a
+    // full session snapshot, which is cheap but not free, and an off-screen debug tile has no
+    // business costing a live playtest anything.
+    if (devConsole !== null && shell.visibleHosts().includes("devtools")) devConsole.render(devViewState());
     drainMissionWire();
   } else {
     // M2d — paint the CONTRACTS board (the offer list + the served% + the earn). Project

@@ -1384,3 +1384,36 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 .pipe-pick.blind { color: var(--grey); border-style: dashed; }
 .pipe-pick.active { border-color: var(--cyan); }
 .pipe-repoint.active { color: var(--cyan); border-color: var(--cyan); }
+
+/* ---- SD-56 — THE DEV CONSOLE (dev-only cheats/debug tile) ------------------
+   Reuses the .telem dashed-group housing + .net-btn chrome so it reads as part of the
+   same machine. The ONLY console-specific colour is the amber DEBUG banner and the
+   gate glyphs — and both carry a WORD (the banner text; MET / WAITING), so the panel
+   reads colour-off (DD-1 / X-03). */
+.dev-console .group { border-style: dashed; }
+.dev-banner {
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: var(--ts-cap);
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+  background: rgba(255, 158, 46, 0.07);
+}
+/* The CURRENT act's gate predicates — what the beat is actually waiting on. Indented under
+   the ACT row so it reads as that row's detail, not a new section. */
+.dev-gates { display: flex; flex-direction: column; gap: 0; margin: 1px 0 3px 8px; }
+.dev-gate { display: flex; gap: 6px; align-items: baseline; font-size: var(--ts-cap); color: var(--fg-dim); }
+.dev-gate-glyph { flex: 0 0 auto; width: 0.9em; text-align: center; color: var(--grey); }
+.dev-gate-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-gate-word { margin-left: auto; flex: 0 0 auto; color: var(--amber); letter-spacing: 0.06em; }
+.dev-gate.met .dev-gate-glyph, .dev-gate.met .dev-gate-word { color: var(--green); }
+/* Console buttons run denser than the pad's — there are many, and none is a commit. */
+.dev-btn { font-size: var(--ts-cap); padding: 3px 5px; letter-spacing: 0.04em; }
+.dev-wrap { flex-wrap: wrap; }
+.dev-cap {
+  flex: 0 0 auto; align-self: center; color: var(--fg-dim);
+  font-size: var(--ts-cap); letter-spacing: 0.12em; padding-right: 2px;
+}
+.dev-note { font-size: var(--ts-cap); }

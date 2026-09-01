@@ -69,6 +69,13 @@ export const NET_RAIL_PANELS: RailPanel[] = [
   // coverage-roster/link-load/howto) are RETIRED from net mode — the loop lives on MISSION.
 ];
 
+/**
+ * SD-56 — THE DEV CONSOLE's rail entry. Kept OUT of both rail sets above and appended by
+ * `main.ts` only when the console is enabled (`import.meta.env.DEV` or `?dev=1`), so a
+ * production rail has no dead button and the shipped bundle carries no cheat surface.
+ */
+export const DEV_RAIL_PANEL: RailPanel = { host: "devtools", label: "DEV" };
+
 
 export class WindowRail {
   readonly element: HTMLElement;
