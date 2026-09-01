@@ -11,6 +11,16 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      // A concurrent agent session creating a git worktree under .claude/worktrees/ dropped a second
+      // index.html + tsconfig.json inside this root, and vite answered with
+      //   "changed tsconfig file detected … forcing full-reload"
+      // which re-booted the page of whoever was playing on :5173. It cost an agent-eval run its
+      // second half mid-flight (the sim reset to boot, wallet back to €75,000) and would cost a human
+      // playtester their session just as silently. Worktrees are not part of this app's module graph;
+      // neither are harness artifacts.
+      ignored: ["**/.claude/worktrees/**", "**/tools/agent-eval/runs/**", "**/docs/screenshots/**"],
+    },
   },
   build: {
     target: "es2022",

@@ -52,6 +52,8 @@ export const BANNED_IMPERATIVE = [
 ];
 
 const TICKS_PER_SEC = 60; // DT = 1/60 (src/sim/clock.ts)
+/** The game's own tempo controls (src/main.ts net keymap): pause and the two speed steps. */
+export const TEMPO_KEYS = [" ", ",", "."];
 const HELD_ACCEPT_SEC = 60;
 
 /**
@@ -77,7 +79,14 @@ export function wilson(k, n, z = 1.96) {
  */
 export function computeMetrics({ actions = [], timeline = [], meta = {} }) {
   const committed = actions.filter((a) => COMMITTED_KINDS.includes(a.kind));
-  const tempo = actions.filter((a) => a.kind === "set_time_scale");
+  // TEMPO IS READ FROM THE AGENT'S OWN TURNS, NOT FROM THE ACTION LOG. The log's set_time_scale
+  // entries are polluted by the harness: PDQ pauses and un-pauses the clock every turn, and
+  // main.ts's recordScale() logs each of those as a player action. So tempo counts only what the
+  // AGENT did — a tempo key it pressed, or a deliberate spread of dwell lengths. Recorded as an
+  // amendment in docs/agent-eval-metrics.md §7, because PDQ changes what "tempo" can even mean.
+  const agentTempoKeys = timeline.filter((t) => t.action?.do === "key" && TEMPO_KEYS.includes(t.action.key));
+  const dwells = new Set(timeline.filter((t) => t.action?.do === "wait").map((t) => t.action.simMinutes));
+  const tempo = { keys: agentTempoKeys.length, distinctDwells: dwells.size };
 
   // ── act boundary ─────────────────────────────────────────────────────────────
   const act1EndTurn = timeline.find((t) => (t.cursor ?? 0) > 0) ?? null;
@@ -103,14 +112,15 @@ export function computeMetrics({ actions = [], timeline = [], meta = {} }) {
   }
   if (actions.some((a) => a.kind === "net_set_prefer")) touched.add("prefer-weights");
   if (actions.some((a) => a.kind === "net_circularize")) touched.add("circularize");
-  if (tempo.length > 0) touched.add("tempo");
+  if (tempo.keys > 0 || tempo.distinctDwells >= 2) touched.add("tempo");
+  let launchIdx = 0;
   for (const a of actions.filter((x) => x.kind === "net_launch")) {
     if (a.payload?.bus !== undefined) touched.add("bus-tier");
     if ((a.payload?.count ?? 1) !== 1) touched.add("batch-size");
     // Orbit fields + the fit: compare the pad AT COMMIT against the pad the game SEEDED when it
     // opened. Field-to-field, so the harness never converts km→m or deg→rad and can never disagree
     // with the sim about a unit.
-    const rec = commitRecordFor(timeline, a.at_tick);
+    const rec = commitRecordFor(timeline, launchIdx++);
     if (rec?.padSeed && rec?.padAtAction) {
       for (const [field, surface] of Object.entries(FIELD_SURFACE)) {
         if (numChanged(rec.padSeed[field], rec.padAtAction[field])) touched.add(surface);
@@ -122,8 +132,10 @@ export function computeMetrics({ actions = [], timeline = [], meta = {} }) {
   }
 
   // ── legibility rates (no LLM) ────────────────────────────────────────────────
-  const acted = timeline.filter((t) => t.action);
-  const invalid = timeline.filter((t) => t.invalid).length;
+  const acted = timeline.filter((t) => t.action && !t.invalid && !t.invalidShape);
+  const invalid = timeline.filter((t) => t.invalid).length; // reached for a control that is not there
+  const shapeNoise = timeline.filter((t) => t.invalidShape).length; // the harness's own JSON dialect
+  const shapeFixed = timeline.filter((t) => t.shapeFixed).length;
   const noop = acted.filter((t) => t.noop).length;
 
   // ── LAW 2 at runtime: scan only GAME-rendered text, never the harness's own scaffolding ──
@@ -173,6 +185,14 @@ export function computeMetrics({ actions = [], timeline = [], meta = {} }) {
         ? Boolean(firstServed) && timeline.some((t) => (t.cursor ?? 0) > 0)
         : null,
     m8_invalid_action_rate: acted.length + invalid === 0 ? null : invalid / (acted.length + invalid),
+    // HARNESS QUALITY, never a reading of the build: turns lost to the protocol's own JSON shape.
+    // The first live run spent seven turns guessing whether a field key was target/name/field/id;
+    // that is this file's dialect, not the game's legibility, so it is counted apart from M8.
+    m8c_protocol_noise: {
+      shape_rejects: shapeNoise,
+      shape_repairs: shapeFixed,
+      rate: timeline.length === 0 ? null : (shapeNoise + shapeFixed) / timeline.length,
+    },
     m8b_no_op_action_rate: acted.length === 0 ? null : noop / acted.length,
     m9_time_to_first_served_s: firstServed?.missionElapsedS ?? null,
     m9b_turns_to_first_served: firstServed?.turn ?? null,
@@ -186,7 +206,7 @@ export function computeMetrics({ actions = [], timeline = [], meta = {} }) {
     },
     m13_errors: meta.errors ?? 0,
     committed_actions_total: committed.length,
-    tempo_changes: tempo.length,
+    tempo: tempo,
   };
 }
 
@@ -206,20 +226,28 @@ function numChanged(a, b) {
   return Math.abs(x - y) > 1e-9;
 }
 
-/** The turn record whose executed action committed at `tick` (the launch click's own turn). */
-function commitRecordFor(timeline, tick) {
-  let best = null;
-  for (const t of timeline) {
-    if (t.tick !== undefined && t.tick <= tick + 2 * TICKS_PER_SEC && t.padAtAction) best = t;
-  }
-  return best;
+/**
+ * The turn on which the Nth launch was committed — matched by the COMMIT TURN, not by tick.
+ *
+ * Ticks cannot identify it: the clock is stopped while the policy thinks, so a run that never spends
+ * a `wait` produces a whole timeline at one identical tick. That is exactly what the first live run
+ * did, and tick-matching then picked a LATER pad-open whose draft equalled its seed, reporting a
+ * hand-aimed launch (sub-lon dragged from −90° to 0°, coverage 0%→100%) as not hand-aimed.
+ */
+function commitTurns(timeline) {
+  return timeline.filter((t) => t.action?.do === "click" && /^(launch|text:LAUNCH)$/i.test(String(t.action.target)));
+}
+
+function commitRecordFor(timeline, launchIndex = 0) {
+  const turns = commitTurns(timeline);
+  return turns[launchIndex] ?? turns.at(-1) ?? null;
 }
 
 /** M10 — did any orbit field differ from the seeded draft at the first commit? */
 function handAimed(timeline, actions) {
-  const first = actions.find((a) => a.kind === "net_launch");
-  if (!first) return null;
-  const rec = commitRecordFor(timeline, first.at_tick);
+  const first = actions.findIndex((a) => a.kind === "net_launch");
+  if (first < 0) return null;
+  const rec = commitRecordFor(timeline, 0);
   if (!rec?.padSeed || !rec?.padAtAction) return null;
   return Object.keys(FIELD_SURFACE).some((f) => numChanged(rec.padSeed[f], rec.padAtAction[f]));
 }

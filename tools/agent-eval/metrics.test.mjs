@@ -65,7 +65,10 @@ describe("M1 — committed actions inside act 1", () => {
 describe("M2 — decision surfaces, touched only when the value differs from what the game seeded", () => {
   const seeded = { altKm: "535", incDeg: "0", subLonDeg: "-90", raanDeg: "0", phaseSpreadDeg: "0", slots: ["▣ BROADCAST", "▢", "▢", "▢"] };
   const launch = (payload) => [{ kind: "net_launch", at_tick: 100, payload }];
-  const turnAt = (padAtAction) => [{ turn: 1, tick: 100, cursor: 0, padSeed: seeded, padAtAction }];
+  // The commit turn is identified by the LAUNCH click, not by tick — see commitTurns().
+  const turnAt = (padAtAction) => [
+    { turn: 1, tick: 100, cursor: 0, padSeed: seeded, padAtAction, action: { do: "click", target: "launch" } },
+  ];
 
   it("an untouched default launch touches no orbit surface", () => {
     const m = computeMetrics({ actions: launch({ count: 1 }), timeline: turnAt({ ...seeded }) });
@@ -109,6 +112,44 @@ describe("M2 — decision surfaces, touched only when the value differs from wha
     expect(m.m2_decision_surfaces.unavailable).toContain("overclock");
     expect(m.m2_decision_surfaces.untouched).not.toContain("overclock");
     expect(m.m2_decision_surfaces.of).toBe(SURFACES.length);
+  });
+});
+
+describe("M2 — tempo under PDQ (amendment A-1)", () => {
+  const harnessNoise = [
+    { kind: "set_time_scale", at_tick: 100, payload: { scale: 0 } },
+    { kind: "set_time_scale", at_tick: 200, payload: { scale: 1000 } },
+  ];
+  it("the harness's own pause/resume entries never count as a player tempo decision", () => {
+    const m = computeMetrics({ actions: harnessNoise, timeline: [{ turn: 1, tick: 100 }] });
+    expect(m.m2_decision_surfaces.touched).not.toContain("tempo");
+    expect(m.tempo).toEqual({ keys: 0, distinctDwells: 0 });
+  });
+  it("a tempo key the AGENT pressed counts", () => {
+    const timeline = [{ turn: 1, tick: 100, action: { do: "key", key: "." } }];
+    expect(computeMetrics({ actions: harnessNoise, timeline }).m2_decision_surfaces.touched).toContain("tempo");
+  });
+  it("so does a deliberate spread of dwell lengths — the real tempo lever under PDQ", () => {
+    const one = [{ turn: 1, tick: 1, action: { do: "wait", simMinutes: 5 } }, { turn: 2, tick: 2, action: { do: "wait", simMinutes: 5 } }];
+    expect(computeMetrics({ actions: [], timeline: one }).m2_decision_surfaces.touched).not.toContain("tempo");
+    const two = [...one, { turn: 3, tick: 3, action: { do: "wait", simMinutes: 30 } }];
+    expect(computeMetrics({ actions: [], timeline: two }).m2_decision_surfaces.touched).toContain("tempo");
+  });
+});
+
+describe("M10 — hand-aim survives a frozen clock (the first live run's bug)", () => {
+  const seeded = { altKm: "535", incDeg: "0", subLonDeg: "-90", raanDeg: "0", phaseSpreadDeg: "0", slots: [] };
+  it("finds the commit turn by its LAUNCH click even when every turn shares one tick", () => {
+    // A run that never spends a wait leaves the clock stopped: all ticks identical. Tick-matching
+    // picked a later pad-open whose draft equalled its seed and reported hand-aim as false.
+    const timeline = [
+      { turn: 1, tick: 100, padSeed: seeded, padAtAction: { ...seeded, subLonDeg: "0" }, action: { do: "click", target: "launch" } },
+      { turn: 2, tick: 100, padSeed: seeded, padAtAction: { ...seeded }, action: { do: "click", target: "pad-toggle" } },
+      { turn: 3, tick: 100, padSeed: seeded, padAtAction: { ...seeded }, action: { do: "click", target: "arm" } },
+    ];
+    const m = computeMetrics({ actions: [{ kind: "net_launch", at_tick: 100, payload: { count: 1 } }], timeline });
+    expect(m.m10_hand_aimed_before_commit).toBe(true);
+    expect(m.m2_decision_surfaces.touched).toContain("sub-lon");
   });
 });
 
@@ -197,5 +238,18 @@ describe("baseline normalisation", () => {
   it("places the agent between the random floor and the scripted ceiling", () => {
     expect(normalise(5, 1, 9)).toBeCloseTo(0.5);
     expect(normalise(5, 3, 3)).toBeNull();
+  });
+});
+
+describe("M8 — protocol noise is quarantined from the legibility reading", () => {
+  it("a rejected JSON shape never counts as reaching for a control that is not there", () => {
+    const timeline = [
+      { turn: 1, tick: 1, action: { do: "set" }, invalidShape: true },
+      { turn: 2, tick: 2, action: { do: "click", target: "ghost" }, invalid: true },
+      { turn: 3, tick: 3, action: { do: "click", target: "accept" }, noop: false },
+    ];
+    const m = computeMetrics({ actions: [], timeline });
+    expect(m.m8_invalid_action_rate).toBeCloseTo(1 / 2); // one affordance miss out of one miss + one real act
+    expect(m.m8c_protocol_noise.shape_rejects).toBe(1);
   });
 });

@@ -1,0 +1,79 @@
+{
+  "label": "scripted",
+  "key": {
+    "build_hash": "bf46a5e9-dirty",
+    "seed": "scenario-fixed/run-800",
+    "model_id": "random-policy",
+    "model_version": "n/a",
+    "params_hash": "bc1b74a3ec53",
+    "prompt_version": "4cd91bbb65a8",
+    "persona": "optimizer",
+    "clock_mode": "PDQ"
+  },
+  "termination": {
+    "reason": "budget",
+    "gate": "turns",
+    "stalls": 0
+  },
+  "metrics": {
+    "m1_committed_actions_act1": 2,
+    "m2_decision_surfaces": {
+      "touched": [
+        "accept-timing",
+        "sub-lon",
+        "tempo"
+      ],
+      "count": 3,
+      "of": 15,
+      "unavailable": [
+        "overclock"
+      ],
+      "untouched": [
+        "bus-tier",
+        "antenna-cards",
+        "batch-size",
+        "altitude",
+        "inclination",
+        "raan",
+        "phase",
+        "beam-assignment",
+        "re-beaming",
+        "prefer-weights",
+        "circularize"
+      ]
+    },
+    "m3_strategy_fork": {
+      "consolidate": false,
+      "split": false,
+      "launches": 1
+    },
+    "m4_instruction_string_absent": true,
+    "m4_leaks": [],
+    "m5_responded_to_own_success_strain": false,
+    "m6_completed_without_softlock": true,
+    "m7_novice_floor_reachable": null,
+    "m8_invalid_action_rate": 0,
+    "m8c_protocol_noise": {
+      "shape_rejects": 0,
+      "shape_repairs": 0,
+      "rate": 0
+    },
+    "m8b_no_op_action_rate": 0,
+    "m9_time_to_first_served_s": 521.0999999996275,
+    "m9b_turns_to_first_served": 8,
+    "m10_hand_aimed_before_commit": true,
+    "m11_acts_reached": 1,
+    "m12_economy": {
+      "final_eur": 74038,
+      "min_eur": 62739,
+      "breach_seconds_total": 0,
+      "ended_net_positive": true
+    },
+    "m13_errors": 0,
+    "committed_actions_total": 2,
+    "tempo": {
+      "keys": 0,
+      "distinctDwells": 3
+    }
+  }
+}

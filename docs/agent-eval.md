@@ -32,6 +32,13 @@ softlocks, regressions, exploits and balance sweeps. It is *not* evidence about 
 comprehension. Every legibility reading this harness emits is a **lead for human playtesting**,
 never a verdict.
 
+**The agent is not a novice about the domain — only about the interface.** An LLM already knows that
+GEO sits near 35,786 km, that a polar region needs inclination, that light-delay scales with
+distance. The first live run typed the GEO altitude before it had opened the coverage comb. A cold
+human tester has none of that. So every discoverability number this harness produces is an **upper
+bound**: it says what a player who already knows the physics can find in this UI. When the agent
+cannot find something, that is strong evidence; when it can, it is weak evidence.
+
 **The Goodhart clause — the standing prohibition.** The game is never tuned so that the *agent*
 completes it. An agent has perfect text comprehension, no visual attention, infinite patience and
 no boredom: the inverse of the target player. Tuning toward agent success would optimise FIRST

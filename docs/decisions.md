@@ -937,3 +937,55 @@ so the recorded `SimAction` log — already written by `applyAndRecordNetAction`
 unreachable from the page — becomes the metric substrate. `tools/ctx.mjs` is extracted from
 `playtest.mjs` unchanged in behaviour. Vitest's include widens to cover `tools/**/*.test.mjs` so the
 pure metric extractor is tested like any sim module.
+
+**Addendum (2026-09-01) — what the first two live runs found, and where it landed.**
+
+The harness works: run 2 opened the pad cold, read the parked draft's 0 % coverage, dragged sub-lon
+from −90° to 0°, armed, launched, waited for the bird, signed only once it was up, reached the act-1
+gate, then found the availability wall on its own ("2 satellites with 180° phase spread give 83 % —
+still short of 99 %"). No instructions, no design docs, $0.23 for 22 turns.
+
+**Four defects in the harness, found before it found anything in the game — the right order.** All
+four are fixed and each has its own guard:
+
+1. **"Blind by construction" was false.** The first run's debrief named `protocol.mjs`, `brain.mjs`,
+   `personas` and concluded it was in an eval harness. `--tools ""` does stop the seat from *reading*
+   anything, but Claude Code puts the working directory and project context in its dynamic prompt
+   sections. Reproduced both ways: asked its own cwd, a seat in the repo answered
+   "/home/basov/Games/signal-horizon — a … signal-horizon project (…M1 mechanics, orbit sim game)";
+   the identical seat in an empty tmpdir said it could not tell. The seat now runs in a fresh empty
+   temp dir. *A blindness claim has to be tested, not asserted from a flag.*
+2. **PDQ leaked into the fiction.** The harness holds the clock while the policy thinks, so the game
+   truthfully renders "time PAUSE" — and the agent read that as a broken game, spending 17 of 22
+   turns guessing control ids like `play` and `time-toggle` for a button that does not exist. The
+   observation now restates, every turn, that the seat holds the clock and `wait` is the only way
+   time passes, plus a nudge after three frozen turns. That is a statement about the harness, not a
+   hint about the game, so it costs the measurement nothing.
+3. **M10 mis-scored the exact thing the milestone exists to prove.** It reported a hand-aimed launch
+   as un-aimed, because with the clock stopped every turn shares one tick and tick-matching picked a
+   later pad-open whose draft equalled its seed. The commit turn is now identified by its LAUNCH
+   click. Regression test pinned.
+4. **A shared dev server is a shared fate.** A concurrent session's worktree under
+   `.claude/worktrees/` dropped a second `index.html` + `tsconfig.json` into this root; vite answered
+   "changed tsconfig file detected … forcing full-reload" and re-booted the page mid-run, so the
+   second half of run 2 played a fresh world with the first half's history discarded. Two fixes, and
+   the first one protects humans too: `vite.config.ts` now excludes `.claude/worktrees/**` (and
+   harness/screenshot artifacts) from the dev watcher, and every run serves the tree it measures on
+   its own port. Belt and braces: a tick or action-log count going backwards ends the run as
+   `reboot` — **unscorable**, reported as such, never scored through.
+
+**Three leads for the game, two of them verified by hand outside the agent run** (leads, not
+verdicts — §1 of `agent-eval.md`):
+
+- **FIT is inert on the opening state.** Both live runs flagged it independently ("FIT didn't change
+  anything visibly"). Verified: slots and the draft chip are byte-identical before and after. The
+  §3.3 assist is supposed to offer a viable-but-imperfect starting fit.
+- **The typed altitude ceiling is silent.** Any value above 900 km snaps back to 900 with no message
+  (verified at 35 786 / 10 000 / 2 000 km). A player reaching for the real-world GEO number lands at
+  900 km — above this body's parked altitude, so the comb drops to ~29 % duty — and the agent
+  concluded the bus had an orbital-range limit that does not exist. LAW 1 says the instrument shows
+  facts; silently overriding the player's number is the instrument telling a different story.
+- **Preview versus post-launch diagnosis (unverified).** Run 2 turn 8: with the bird parked and the
+  pad's chip reading "serving NOW", the signed region read DARK and the shortfall line said a LEO
+  "only visits". Worth a look, but the run was already inside the reboot window, so it is a
+  transcript quote and nothing more until someone reproduces it.
