@@ -1349,3 +1349,75 @@ redesign every commit to main tripped a full 20-minute run, and the notification
 the signal. The push/pull_request block is kept commented in place directly above, so restoring
 automatic runs is uncommenting four lines — do that once the redesign settles and main is a branch
 worth gating again. Local `npm test` / `tools/smoke.mjs` remain the pre-commit check in the meantime.
+
+
+---
+
+### SD-59 — CONCURRENT WORKTREES STOP COLLIDING: a port per checkout, a lock per playtest (X-08, 2026-09-01)
+
+**Status:** ACCEPTED.
+
+**Context.** This repo is worked on by several agents at once, each in its own git worktree under
+`.claude/worktrees/` — ten of them on the day this was written. Every worktree is a complete
+checkout with its own `vite.config.ts`, and every one of them asked for **the same port**, `:5173`.
+
+Three things went wrong from that, in rising order of nastiness:
+
+1. **A dev server that would not start.** `strictPort: true` means the second tree to run
+   `npm run dev` fails outright. Loud, and the least of it.
+2. **A playtest that tested the wrong code.** `tools/playtest.mjs`, `tools/smoke.mjs`,
+   `tools/shoot.mjs` and every probe defaulted to a *literal* `http://localhost:5173`. Run from a
+   worktree while the main checkout served that port, they drove **someone else's app** and reported
+   GREEN — for code they had never loaded. This is the defect that matters: the harness lies, and it
+   lies in the passing direction.
+3. **Two playtests at once.** Chromium, the GPU and the wall clock are machine-wide. Two concurrent
+   playtests measure their contention with each other, not the game.
+
+SD-55/AE-06 had already met the same wall inside the agent-eval harness — a concurrent session's
+worktree made vite force-reload the shared server and re-booted the app mid-run — and solved it
+*locally* by giving each run its own port. That fix was right and too narrow: the rule "nothing may
+share a dev server" is not one harness's business.
+
+**Decision.** A port belongs to a **checkout**, not to the repo.
+
+- `tools/workspace.mjs` answers `devPort()`. The main checkout keeps `5173` — muscle memory and
+  AGENTS.md stay true. Each worktree is allocated its own port from `5174–5372`, recorded in a
+  registry inside the **main repo's `.git`**: the one directory every worktree shares, outside all of
+  them, so it can never be committed (the four accidental `.claude/worktrees` gitlink stubs of
+  2026-07-16 are a standing reminder of what "inside a tree" costs). Allocation reuses the gap a
+  deleted worktree left, so the range cannot drain away.
+- `vite.config.ts` asks for `devPort()`, and **keeps `strictPort`**. If the port is taken the right
+  answer is a loud failure, never a quiet slide onto a neighbour's number.
+- Every tool defaults to `devBase()` instead of a literal. Passing no url is now the *safe* option
+  rather than the dangerous one.
+- `tools/playtest.mjs` ensures a server for its own tree — reusing this tree's if it is up, else
+  starting and owning one — so it can no longer test a neighbour's code at all.
+- `tools/lock.mjs` is a repo-wide advisory mutex, held for the length of a playtest. Acquisition is
+  an atomic `O_EXCL` create: the filesystem arbitrates, not us. A holder that died is reaped (dead
+  pid, or older than a 45-minute stale window), so a crashed run never wedges the repo; a process
+  reaped as stale can never delete the lock its successor now owns, because release checks the token
+  first. `SH_NO_LOCK=1` opts out for anyone who knows they are alone.
+
+**Rationale for a lock rather than more parallelism.** Serialising playtests costs wall-clock and
+buys correctness: a lock is one number's worth of code, and the alternative (per-run GPU/display
+isolation) is a much larger machine to maintain for a benefit nobody asked for. The second runner
+waits and *says who it is waiting for*, which is the part that makes a queue tolerable.
+
+**What is deliberately NOT locked.** `agent-eval` runs. They already serve their own port
+(SD-55/AE-06, now `tools/serve.mjs`), they are long, and the harness explicitly supports running
+several at once — putting them behind the playtest lock would have taken away a capability to solve
+a problem they do not have.
+
+**Verified, not asserted.** With another tree holding `:5173`, this worktree's `npm run dev` came up
+on `:5174`; `npm run smoke` with no argument found it; `npm run playtest` with no server running
+started and tore down its own. Two playtests fired at the same instant serialised — the second sat
+blocked ~9 s, then ran its own 8.5 s, both GREEN. 17 new unit tests pin the lock's exclusion, its
+reaping of dead/stale/corrupt holders, the never-delete-a-successor's-lock rule and the port
+allocator. Full suite 977/977 green, `tsc --noEmit` clean, `npm run build` green.
+
+**Consequences.** `AGENTS.md` §3 no longer names a port; it names a *rule* (pass no url). `tools/`
+gains `workspace.mjs`, `lock.mjs` and `serve.mjs`; `tools/agent-eval/serve.mjs` becomes a re-export
+so its importers are untouched. `vite.config.ts` gained a `.mjs` import, which `npm run build`
+typechecks — hence `tools/workspace.d.mts`, the seam where the plain-ESM harness meets the typed
+side. **The fix only protects a tree that has this commit:** the nine worktrees that predate it
+still ask for `:5173` until they rebase.

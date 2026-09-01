@@ -30,7 +30,8 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - Any change to `src/orrery/`, `src/wm/`, `src/panels/`, `src/style.css`, or `index.html` is a **frontend change**.
 - Frontend changes **must** be verified with a Playwright screenshot using `tools/shoot.mjs` or a headful test. "It compiles" is not sufficient.
 - Visual regressions are bugs. Compare screenshots before and after when changing rendering, layout, or styling.
-- The app runs at `http://localhost:5173` via `npm run dev`. Start it before shooting.
+- The app runs via `npm run dev` — on **this checkout's own port**: `5173` in the main checkout, and one owned port per worktree under `.claude/worktrees/` (`tools/workspace.mjs`). `tools/shoot.mjs`, `tools/smoke.mjs` and the playtest all default to it, so **pass no url** and you cannot shoot a neighbouring tree's app by accident. Ask for the number with `node -e 'import("./tools/workspace.mjs").then(m=>console.log(m.devPort()))'`.
+- `npm run playtest` starts a dev server for its own tree if none is up, and holds a **repo-wide lock** while it runs: a second playtest in any worktree waits rather than fighting it for the GPU. `SH_NO_LOCK=1` opts out; `BASE=<url>` points it somewhere else entirely.
 - For complex UI changes, write a Playwright test script, not just a one-off screenshot.
 
 ---

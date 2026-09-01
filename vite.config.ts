@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { devPort } from "./tools/workspace.mjs";
 
 // Root is left implicit so it defaults to the cwd — i.e. this directory, since
 // `npm run {dev,build,preview}` always run from the package root. This keeps the
@@ -6,10 +7,15 @@ import { defineConfig } from "vitest/config";
 // body dataset (data/system.json) is a real file inside the root, so no
 // cross-tree `server.fs.allow` widening is needed.
 export default defineConfig({
-  // Tauri expects a fixed dev port and quiet screen.
+  // Tauri expects a stable dev port (stable PER CHECKOUT — see server.port) and a quiet screen.
   clearScreen: false,
   server: {
-    port: 5173,
+    // NOT a constant. Several agents work this repo at once, each in its own worktree, and a shared
+    // :5173 meant a worktree's playtest could drive — and report green against — another tree's app.
+    // The main checkout keeps 5173; each worktree owns a port of its own (tools/workspace.mjs).
+    port: devPort(),
+    // strictPort stays: if the port is taken, the right answer is a loud failure, never a silent
+    // slide onto :5174 that some other tree is already serving from.
     strictPort: true,
     watch: {
       // A concurrent agent session creating a git worktree under .claude/worktrees/ dropped a second

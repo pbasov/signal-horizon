@@ -1,7 +1,8 @@
 import { chromium } from "playwright-core";
+import { devBase } from "./workspace.mjs";
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox","--enable-unsafe-swiftshader","--use-gl=angle","--use-angle=swiftshader"] });
 const page = await browser.newPage({ viewport: { width: 1600, height: 980 } });
-await page.goto("http://localhost:5173", { waitUntil: "networkidle" });
+await page.goto(devBase(), { waitUntil: "networkidle" });
 await page.waitForTimeout(2000);
 await page.evaluate(() => document.querySelector("[data-net=pad-toggle]")?.click());
 await page.evaluate(() => { const i = document.querySelector("[data-net=param-subLonDeg]"); i.value = "0"; i.dispatchEvent(new Event("change", { bubbles: true })); });

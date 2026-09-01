@@ -5,7 +5,14 @@
  * each scene in order, collect fail/pass, drop screenshots.
  *
  * Usage: node tools/playtest.mjs [sceneName ...]   (default: all scenes, in dependency order)
- * Env:   HEADLESS=1 — SwiftShader CI path (no display). BASE=<url> (default localhost:5173).
+ * Env:   HEADLESS=1 — SwiftShader CI path (no display). BASE=<url> to drive a server of your own.
+ *        SH_NO_LOCK=1 to skip the cross-worktree lock (know that you are alone before you do).
+ *
+ * TWO THINGS KEEP CONCURRENT WORKTREES OUT OF EACH OTHER'S PLAYTEST (SD-59 / X-08):
+ *   1. It drives THIS TREE'S port (tools/workspace.mjs) and, if nothing answers there, starts and
+ *      owns a vite for this tree. It can no longer test a neighbour's code and call it green.
+ *   2. It holds a repo-wide lock while it runs. Two playtests at once fought over the GPU, the
+ *      display and each other's timing; now the second one waits and says who it is waiting for.
  *
  * Each scene module exports { name, run(ctx) }:
  *   ctx.page      playwright-core Page
@@ -21,13 +28,17 @@
 
 import { chromium } from "playwright-core";
 import { makeCtx } from "./ctx.mjs";
+import { devPort, treeName } from "./workspace.mjs";
+import { ensureServer } from "./serve.mjs";
+import { acquire } from "./lock.mjs";
 import { mkdirSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(here, "..");
-const BASE = process.env.BASE ?? "http://localhost:5173";
+const PORT = devPort();
+const BASE_OVERRIDE = process.env.BASE ?? null;
 const EXEC = process.env.CHROMIUM_BIN ?? "/usr/bin/chromium";
 const HEADLESS = process.env.HEADLESS === "1" || process.env.HEADFUL !== "1";
 const args = HEADLESS
@@ -41,6 +52,28 @@ mkdirSync(SHOTS, { recursive: true });
 const wanted = new Set(process.argv.slice(2));
 const sceneDir = join(here, "scenes");
 const files = readdirSync(sceneDir).filter((f) => f.endsWith(".mjs")).sort();
+
+// Serialize across every worktree BEFORE spending anything: chromium, the GPU and the wall clock
+// are machine-wide resources, and a playtest that shares them with another playtest measures the
+// contention, not the game.
+const lock = await acquire("playtest", {
+  what: `npm run playtest in ${treeName()}`,
+  timeoutMs: Number(process.env.SH_LOCK_TIMEOUT_MS ?? 20 * 60 * 1000),
+});
+
+// Borrow this tree's dev server if it is up, else run one for the duration. Either way it serves
+// THIS tree — the port belongs to the checkout, so "already up" cannot mean a neighbour.
+const server = BASE_OVERRIDE
+  ? { base: BASE_OVERRIDE, started: false, stop() {} }
+  : await ensureServer({ root: ROOT, port: PORT, log: (m) => console.log(m) }).catch((e) => {
+      lock.release();
+      throw e;
+    });
+// A scene that hard-crashes the process must not leak a vite behind it. (The lock releases itself
+// the same way — see tools/lock.mjs.)
+process.once("exit", () => { if (server.started) server.stop(); });
+const BASE = server.base;
+console.log(`▸ ${treeName()} playtest → ${BASE}${server.started ? " (ours)" : ""}`);
 
 const browser = await chromium.launch({ executablePath: EXEC, headless: HEADLESS, args });
 let failures = 0;
@@ -80,5 +113,7 @@ for (const f of files) {
 }
 
 await browser.close();
+if (server.started) server.stop();
+lock.release();
 console.log(`\n══ PLAYTEST ${failures === 0 ? "GREEN" : "RED"}: ${assertions} assertions, ${failures} failed · ${((Date.now() - t0) / 1000).toFixed(1)}s ══`);
 process.exit(failures === 0 ? 0 : 1);

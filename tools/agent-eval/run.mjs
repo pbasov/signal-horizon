@@ -16,7 +16,7 @@
  *   node tools/agent-eval/run.mjs [--persona=optimizer] [--turns=24] [--usd=2] [--wall=1200]
  *                                 [--policy=llm|random|scripted] [--baseline=random|scripted]
  *                                 [--model=claude-sonnet-5] [--run=1]
- *                                 [--base=http://localhost:5173] [--headful]
+ *                                 [--base=<url of a server you already own>] [--headful]
  */
 
 import { chromium } from "playwright-core";

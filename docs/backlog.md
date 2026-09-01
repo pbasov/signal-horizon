@@ -312,6 +312,7 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 - [x] **X-05** Audio system — Web Audio API; one-way event-bus → cues. **First cue landed (M1-11/E5):** `src/audio/cue.ts` lazy gesture-unlock + `CueBus` (sim stays Web-Audio-free). Health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.
 - [ ] **X-07** Test-suite wall-clock margin — full suite ≈ 7.6 min local; the whales are the replay goldens (`net-replay` worst 27.8 s against the 60 s global `testTimeout` in `vite.config.ts` — thin on a slow CI runner). If CI flakes on timeouts again: budget the goldens explicitly (120 s) first; the honest speed fix is sim-step perf, not smaller windows.
+- [x] **X-08** Concurrent-worktree isolation (SD-59) — every checkout owns a dev port instead of all of them asking for `:5173` (`tools/workspace.mjs`, registry in the main repo's `.git`, main tree keeps 5173), and `npm run playtest` holds a repo-wide lock (`tools/lock.mjs`) so two playtests never share the GPU. The silent failure this kills: a worktree's playtest driving — and reporting green against — **another tree's app**. Verified with two simultaneous playtests (the second sat blocked 9 s, both GREEN) and a worktree vite coming up on 5174 while another tree held 5173.
 
 ---
 
