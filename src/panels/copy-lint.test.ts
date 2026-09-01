@@ -25,6 +25,7 @@ const BANNED: { name: string; re: RegExp }[] = [
 const FILES = [
   // FL-02: the lint covers EVERY panel that can render player-facing copy — the retired
   // SD-44 panels included (they still mount in ?mode=cache). Add new panels HERE.
+  "clients.ts",
   "copy.ts",
   "mission-top.ts",
   "trace.ts",
