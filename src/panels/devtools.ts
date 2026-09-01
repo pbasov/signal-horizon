@@ -27,7 +27,7 @@
  * @see src/sim/net/devtools.ts (the pure cheat engine) · docs/decisions.md SD-56
  */
 import type { PanelHandle } from "../wm/shell";
-import { DEV_ACT_LABELS } from "../sim/net/devtools";
+import { DEV_ACT_LABELS, type BeatDescription } from "../sim/net/devtools";
 
 /** The console's TURBO steps — extra sim ticks drained per frame beyond the clock's own
  * time-accel, so a run can be pushed past the `MAX_TICKS_PER_FRAME` ceiling. ×1 = off. */
@@ -88,10 +88,22 @@ export interface DevViewState {
   /** Live toggle states the console lights. */
   solventLock: boolean;
   safeLaunchLock: boolean;
+  /** SANDBOX MODE — the one-switch sightseeing state (all acts, all missions, ∞ money, no
+   * expiry). Standing, not one-shot: it keeps holding as new offers arrive. */
+  sandbox: boolean;
+  /** Which authored contract ids are on the board right now, so the mission browser can say
+   * which missions are already up. */
+  onBoard: ReadonlySet<string>;
 }
 
 /** Every verb the console offers. `main.ts` supplies them; the panel only wires clicks. */
 export interface DevHooks {
+  /** THE ONE SWITCH: unlock every act, put every authored mission on the board, hold the
+   * wallet, and stop everything expiring. Toggles SANDBOX MODE off again. */
+  toggleSandbox(): void;
+  /** Put ONE beat's authored demand on the board WITHOUT moving the scenario cursor — the
+   * "let me just look at this mission" verb. */
+  offerBeat(cursor: number): void;
   /** Advance ONE beat (fences armed, the new beat's emit fired). */
   skipAct(): void;
   /** Step back ONE beat so its gate can be re-driven by hand. */
@@ -153,10 +165,22 @@ export class DevConsole implements PanelHandle {
   private readonly turboBtns: HTMLButtonElement[] = [];
   private readonly solventBtn: HTMLButtonElement;
   private readonly safeLaunchBtn: HTMLButtonElement;
+  private readonly sandboxBtn: HTMLButtonElement;
+  private readonly sandboxState: HTMLElement;
+  private readonly missionRows: { root: HTMLElement; btn: HTMLButtonElement; state: HTMLElement; ids: string[] }[] = [];
   private readonly cheatNote: HTMLElement;
   private lastSig = "";
 
-  constructor(private hooks: DevHooks) {
+  /**
+   * @param hooks the verbs `main.ts` fulfils
+   * @param beats what each authored beat emits — DERIVED at boot by
+   *        {@link import("../sim/net/devtools").describeBeats}, never hand-listed here, so
+   *        the mission browser cannot drift from `scenario.ts`.
+   */
+  constructor(
+    private hooks: DevHooks,
+    private beats: BeatDescription[] = [],
+  ) {
     this.content = el("div", "telem dev-console");
 
     // --- the DEBUG banner: the first thing read, and the reason the panel is trustworthy.
@@ -164,6 +188,51 @@ export class DevConsole implements PanelHandle {
     banner.textContent =
       "DEBUG · cheats are NOT recorded to the action log — a cheated run does not replay, and its screenshot is not evidence.";
     this.content.append(banner);
+
+    // --- SANDBOX — THE ONE SWITCH -------------------------------------------------
+    // Top of the panel because it is the answer to "I just want to look at the missions":
+    // one click (or one key) replaces jump-to-act-4 + freeze + top-up + un-lapse, and unlike
+    // those one-shots it KEEPS holding as the run goes on.
+    const sandbox = group("SANDBOX · THE ONE SWITCH");
+    this.sandboxBtn = btn("UNLOCK EVERYTHING", () => this.hooks.toggleSandbox());
+    this.sandboxBtn.classList.add("dev-big");
+    sandbox.append(buttons([this.sandboxBtn]));
+    this.sandboxState = el("div", "net-hint dev-sandbox-state");
+    sandbox.append(this.sandboxState);
+    sandbox.append(
+      hint(
+        "All acts unlocked · every authored mission on the board · wallet topped up · offers never lapse, pay never decays, and a signed mission can't breach out from under you. A term can still COMPLETE — finishing is a result worth seeing, not a way to die. Key: \\ opens this panel, | is the switch.",
+      ),
+    );
+    this.content.append(sandbox);
+
+    // --- MISSIONS — the browser ----------------------------------------------------
+    // One row per authored beat, naming the demands its emit puts on the board. OFFER fires
+    // exactly that beat's own `emit` at the current sim-time and does NOT move the cursor —
+    // so a mission can be inspected outside the act that would normally gate it.
+    const missions = group("MISSIONS · PUT ANY ON THE BOARD");
+    for (const b of this.beats) {
+      const row = el("div", "dev-mission");
+      const head = el("div", "dev-mission-head");
+      const act = el("span", "dev-mission-act");
+      act.textContent = DEV_ACT_LABELS[b.cursor] ?? b.actId;
+      const what = el("span", "dev-mission-what");
+      const demands = b.labels.length > 0 ? b.labels.join(" + ") : "no demand";
+      what.textContent = b.effects.length > 0 ? `${demands} · arms ${b.effects.join(" + ")}` : demands;
+      const state = el("span", "dev-mission-state");
+      const go = btn(b.labels.length > 0 ? "OFFER" : "ARM", () => this.hooks.offerBeat(b.cursor));
+      go.classList.add("dev-mission-btn");
+      head.append(act, what, state, go);
+      row.append(head);
+      missions.append(row);
+      this.missionRows.push({ root: row, btn: go, state, ids: b.contractIds });
+    }
+    missions.append(
+      hint(
+        "OFFER fires that beat's own authored arrival at the current sim-time and leaves the cursor where it is — the mission lands on the board outside its act, which is the point. Idempotent: the board de-dupes by id.",
+      ),
+    );
+    this.content.append(missions);
 
     // --- RUN STATE ----------------------------------------------------------------
     const state = group("RUN STATE");
@@ -226,7 +295,7 @@ export class DevConsole implements PanelHandle {
     // --- MONEY --------------------------------------------------------------------
     const money = group("MONEY");
     money.append(buttons(DEV_MONEY_STEPS.map((m) => btn(m.label, () => this.hooks.money(m.deltaEur)))));
-    this.solventBtn = btn("∞ SOLVENT", () => this.hooks.toggleSolventLock());
+    this.solventBtn = btn("∞ MONEY", () => this.hooks.toggleSolventLock());
     money.append(buttons([this.solventBtn]));
     this.content.append(money);
 
@@ -320,6 +389,8 @@ export class DevConsole implements PanelHandle {
   render(s: DevViewState): void {
     const sig = [
       s.cheatCount > 0 ? "dirty" : "clean",
+      s.sandbox,
+      [...s.onBoard].sort().join(","),
       s.cursor,
       s.gateRows.map((g) => `${g.label}${g.met ? 1 : 0}`).join("|"),
       s.tick,
@@ -371,6 +442,24 @@ export class DevConsole implements PanelHandle {
     }
     this.solventBtn.classList.toggle("active", s.solventLock);
     this.safeLaunchBtn.classList.toggle("active", s.safeLaunchLock);
+
+    // SANDBOX: the switch reads its own state as a WORD, and spells out the four holds so
+    // nobody has to remember what "unlocked" covered (it also reads colour-off).
+    this.sandboxBtn.classList.toggle("active", s.sandbox);
+    this.sandboxBtn.textContent = s.sandbox ? "SANDBOX ON — CLICK TO RESTORE" : "UNLOCK EVERYTHING";
+    const allUp = this.beats.every((b) => b.contractIds.every((id) => s.onBoard.has(id)));
+    this.sandboxState.textContent = s.sandbox
+      ? `▣ acts unlocked  ▣ missions ${allUp ? "all on the board" : "landing"}  ▣ ∞ money  ▣ no expiry`
+      : "▢ off — the run gates, prices and expires normally";
+    this.sandboxState.className = `net-hint dev-sandbox-state${s.sandbox ? " warn" : ""}`;
+
+    // MISSIONS: mark the rows whose demand is already up, so the browser reads as a checklist.
+    for (const row of this.missionRows) {
+      const up = row.ids.length > 0 && row.ids.every((id) => s.onBoard.has(id));
+      row.state.textContent = row.ids.length === 0 ? "" : up ? "ON BOARD" : "";
+      row.root.classList.toggle("up", up);
+      row.btn.textContent = row.ids.length === 0 ? "ARM" : up ? "RE-OFFER" : "OFFER";
+    }
     this.cheatNote.textContent = s.lastCheat === "" ? "No cheat fired yet — this run still replays." : `↳ ${s.lastCheat}`;
     this.cheatNote.className = `net-hint dev-note${s.lastCheat === "" ? " good" : " warn"}`;
   }

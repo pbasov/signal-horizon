@@ -1003,3 +1003,46 @@ one new panel host (`devtools`), one rail entry appended at runtime (`DEV_RAIL_P
 const rail sets), and the `\` key. `src/sim/` is untouched apart from the new pure module — no session
 field, no new action kind, no golden re-pin. Reaching a five-act, five-satellite, faults-armed,
 escalation-on bench is now four clicks and about two seconds, against several minutes of driven play.
+
+**Amendment (2026-09-01) — SANDBOX MODE: one switch for sightseeing.** The console as first built
+optimised the *fast* playtest (get to act 3a and test it). The user's follow-up asked for a different
+thing: *"I want to playtest any mission, just to see what they're like — outside of the act."* That is
+sightseeing, not driving, and it wants one switch, not six clicks.
+
+9. **SANDBOX is a MODE, not a macro.** `|` (or the console's top button) unlocks every act, puts every
+   authored mission on the board, tops the wallet, and stops things expiring. Crucially it then keeps
+   holding: each frame re-freezes offers that have *since* arrived and re-zeroes breach windows, so a
+   mission stays inspectable however long you look at it. A one-shot macro would have decayed back
+   into a normal run within a sim-hour, which is exactly the failure the request was about.
+10. **What "no expiration" does and does not suppress.** Offers never lapse and pay never decays; a
+    signed mission cannot breach out from under you (the window is held at zero — the breach is still
+    computed and still *shown*, it just never reaches the grace limit). Contract COMPLETION is
+    deliberately left alone: finishing a term is a success and a thing worth watching, not a way for
+    a mission to die while you read it.
+11. **The cheap gate is load-bearing, not an optimisation.** Writing session state means
+    `snapshot()` (a deep copy of the roster and every contract) then `restore()` — and **restore
+    clears the router's solve cache**. A standing mode that wrote every frame would have forced a
+    full re-solve on every frame of the run. So each mode first asks a free question of the live
+    session (`balance`, `contracts`, `launchEvents` are plain getters) and only reaches for the
+    snapshot when the answer is yes; in the steady state that is never. Measured: sim p50 stays 0 ms
+    and frame p50 moves 1.1 → 1.2 ms with the mode on. The same fix retired the original `∞ SOLVENT`
+    lock's per-frame write (it now tops up to a high bankroll above a low floor, rather than holding
+    the wallet at exactly the opening balance, which opex pushed off every single tick).
+12. **The mission browser is DERIVED by running the beats, never hand-listed.** `describeBeats()`
+    executes each beat's own `emit` on a throwaway session and diffs the board, so the browser names
+    what an act *actually* offers. Add a demand to a beat and the browser lists it on the next boot
+    with no edit. `OFFER` then fires that same beat's emit at the current sim-time **without moving
+    the cursor** — which is the literal reading of "see a mission outside its act". A test pins the
+    authored set (`REGION-0`, `REGION-1`, `REGION-2`, `BACKHAUL-3`, `MARS-1`) and that each is
+    reachable from exactly one beat.
+13. **The sign-on window is left ticking on purpose.** Freezing it produced a contract the board has
+    no honest way to draw — the MISSION panel rendered the bonus countdown as *"the window closes in
+    Infinitym NaNs"* (found by pressing the switch and reading the board, not by a test). Freezing it
+    also buys nothing: a €2,000 bonus beside a cheat that mints millions. The projection in
+    `main.ts` additionally gained the `Number.isFinite` guard its sibling `expiresInS` line already
+    had — an un-clocked window is a legal `Contract` state, so the panel should never have NaN'd on
+    one.
+
+**Known, not fixed:** `ACT1B_CONTRACT_ID` (`"REGION-C"`, the FL-07 second Act-1 tender) is declared in
+`scenario.ts` and emitted by nothing. The derived catalogue makes this visible and its test pins the
+live set at five contracts. Wiring or deleting it is a design call, not a debug-tool one.

@@ -23,7 +23,10 @@
  *
  * @see docs/decisions.md SD-56
  */
-import type { NetSnapshot } from "./session";
+import { NetSession, type NetSnapshot } from "./session";
+import { M1_SCENARIO } from "./scenario";
+import type { Contract } from "./contract";
+import type { PendingLaunch } from "./session";
 
 /** The scenario beat ids, by cursor index (mirrors `M1_SCENARIO`'s order). */
 export const DEV_ACT_IDS = ["act1", "act2", "act3a", "act3b", "act4"] as const;
@@ -215,7 +218,9 @@ export function cheatFreezeOffers(snap: NetSnapshot): string {
     if (c.state !== "offered") continue;
     c.offerExpiresAtS = Infinity;
     c.payHalvingS = Infinity;
-    c.signOnBonusUntilS = Infinity;
+    // The SIGN-ON window is deliberately left ticking. Freezing it buys nothing (the bonus is
+    // €2,000 against a cheat that can mint millions) and it puts the contract in a state the
+    // board has no honest way to draw — an un-clocked bonus is a countdown with no end.
     n++;
   }
   return n === 0 ? "no offer on the board" : `${n} offer(s) frozen · no lapse, no decay`;
@@ -256,6 +261,138 @@ export function cheatClearBreach(snap: NetSnapshot, tS: number): string {
   }
   snap.cleanServedSinceS = tS;
   return n === 0 ? "clean streak restarted" : `${n} breach window(s) cleared · clean streak restarted`;
+}
+
+// --- SANDBOX: the standing "just let me look at it" mode ---------------------
+
+/** What the sandbox tops the wallet up TO. Large enough that money stops being a variable
+ * at all — the point of the mode is to look at missions, not to run an economy. */
+export const DEV_SANDBOX_BANKROLL_EUR = 10_000_000;
+
+/** The sandbox only touches the wallet once it drops BELOW this. A floor rather than a
+ * per-frame "hold at exactly X" matters for real: writing the wallet means a
+ * `restore()`, and restore clears the router's solve cache — so a naive every-frame
+ * top-up would force a full re-solve on every frame of the run. With a floor this far
+ * below the bankroll, the write happens approximately never. */
+export const DEV_SANDBOX_FLOOR_EUR = 1_000_000;
+
+/**
+ * Does the sandbox have anything to do right now? A pure predicate over the LIVE read-only
+ * views, so the caller can skip taking a snapshot at all on the overwhelming majority of
+ * frames. This is the cheap gate in front of the expensive write path (snapshot deep-copies
+ * the roster + contracts; restore wipes the router cache).
+ */
+export function sandboxNeedsWork(contracts: readonly Contract[], balanceEur: number): boolean {
+  if (balanceEur < DEV_SANDBOX_FLOOR_EUR) return true;
+  for (const c of contracts) {
+    if (c.state === "offered" && (Number.isFinite(c.offerExpiresAtS) || Number.isFinite(c.payHalvingS))) return true;
+    if (c.state === "active" && c.breachSecondsAccum > 0) return true;
+  }
+  return false;
+}
+
+/** The same cheap gate for the launch-failure lock: is there anything in flight to fix? */
+export function safeLaunchNeedsWork(events: readonly PendingLaunch[]): boolean {
+  for (const ev of events) {
+    if (ev.lost === 1) return true;
+    for (const m of ev.members) if (m.deployed === 0 && m.outcome !== "ok") return true;
+  }
+  return false;
+}
+
+/**
+ * SANDBOX — the standing enforcement, applied whenever {@link sandboxNeedsWork} says so.
+ * Three holds, and nothing else:
+ *
+ *   1. NO EXPIRY — every offer's lapse clock and pay decay are set to Infinity, including
+ *      offers that arrive later (this runs every frame the mode is on, not once).
+ *   2. NO BREACH-OUT — an ACTIVE contract's consecutive-breach window is held at zero, so a
+ *      signed mission cannot FAIL out from under you while you are looking at it. The breach
+ *      is still computed and still shown; it just never reaches the grace limit.
+ *   3. MONEY — the wallet is topped back up to the bankroll below the floor.
+ *
+ * Deliberately NOT held: contract COMPLETION. Reaching the end of a term is a success and a
+ * thing worth seeing; only the ways a mission dies are suppressed.
+ */
+export function cheatSandbox(snap: NetSnapshot, tS: number): string {
+  const notes: string[] = [];
+  let frozen = 0;
+  let unbreached = 0;
+  for (const c of snap.contracts) {
+    if (c.state === "offered" && (Number.isFinite(c.offerExpiresAtS) || Number.isFinite(c.payHalvingS))) {
+      c.offerExpiresAtS = Infinity;
+      c.payHalvingS = Infinity;
+      // The sign-on window keeps ticking — see the note in cheatFreezeOffers.
+      frozen++;
+    }
+    if (c.state === "active" && c.breachSecondsAccum > 0) {
+      c.breachSecondsAccum = 0;
+      unbreached++;
+    }
+  }
+  if (snap.balance < DEV_SANDBOX_FLOOR_EUR) {
+    snap.balance = DEV_SANDBOX_BANKROLL_EUR;
+    notes.push(`wallet topped to ${eur(DEV_SANDBOX_BANKROLL_EUR)}`);
+  }
+  snap.cleanServedSinceS = Math.min(snap.cleanServedSinceS, tS);
+  if (frozen > 0) notes.push(`${frozen} offer(s) frozen`);
+  if (unbreached > 0) notes.push(`${unbreached} breach window(s) held`);
+  return notes.join(" · ");
+}
+
+// --- the mission catalogue (derived, never hand-listed) ----------------------
+
+/** What one authored beat's `emit` actually puts on the board, and what else it turns on. */
+export interface BeatDescription {
+  /** The beat's cursor index. */
+  cursor: number;
+  /** The stable beat id ("act1" … "act4"). */
+  actId: string;
+  /** Contract ids this beat's emit offers (empty for act3b, which offers no demand). */
+  contractIds: string[];
+  /** Those contracts' player-facing labels ("equatorial metro", …). */
+  labels: string[];
+  /** Side effects beyond demand ("escalation", "faults"), in the order detected. */
+  effects: string[];
+}
+
+/**
+ * DERIVE what every scenario beat emits, by RUNNING each beat's own `emit` on a throwaway
+ * session and diffing. Nothing here is hand-listed, so the console's mission browser cannot
+ * drift from `scenario.ts` — add a demand to a beat and the browser names it on the next
+ * boot, with no edit here.
+ *
+ * Each beat gets its OWN fresh session (so ids do not accumulate across beats), with the
+ * fences armed first, because `act3b.emit` throws unless the act3a re-tame witness is set.
+ *
+ * PURE and deterministic: fresh sessions, no ephemeris, no stepping — `emit` is defined to
+ * touch only session state, never physics. Call it once and cache; it is not free.
+ */
+export function describeBeats(): BeatDescription[] {
+  const out: BeatDescription[] = [];
+  for (let i = 0; i < M1_SCENARIO.length; i++) {
+    const beat = M1_SCENARIO[i];
+    const probe = new NetSession();
+    const armed = probe.snapshot();
+    cheatArmFences(armed, i);
+    probe.restore(armed);
+    const before = new Set(probe.contracts.map((c) => c.id));
+    const escalationBefore = probe.escalationEnabled;
+    const faultsBefore = probe.faultsEnabled;
+    beat.emit(probe, 0);
+    const fresh = probe.contracts.filter((c) => !before.has(c.id));
+    const effects: string[] = [];
+    if (!escalationBefore && probe.escalationEnabled) effects.push("escalation");
+    if (!faultsBefore && probe.faultsEnabled) effects.push("faults");
+    out.push({
+      cursor: i,
+      actId: beat.id,
+      contractIds: fresh.map((c) => c.id),
+      labels: fresh.map((c) => c.label),
+      effects,
+    });
+  }
+  return out;
 }
 
 // --- pure readers (the console's state block) --------------------------------
