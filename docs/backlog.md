@@ -791,3 +791,36 @@ All 7 findings fixed:
       tender stays pinned at the top; which instrument to shrink remains the user's call, and this fix
       does not make it. · Verify: ARM/LAUNCH at y≈577, `clickable: true`, inner scroller 447/1017 px;
       `docs/screenshots/pad-commit-row.png`; act1 20/0, hour 15/0, panels 142/142.
+### EPIC — SD-70 · THE DEV CONSOLE (in-game cheats/debug tile) · ships the playtest accelerator
+
+*Rationale + the eight decisions in `docs/decisions.md` SD-70. The whole epic is DEV-side: no sim
+field, no new action kind, no golden re-pin. Cheats go `session.snapshot()` → a pure transform →
+`session.restore()`, are never recorded to the action log, and are labelled as such on the panel,
+on the WIRE, and in the run's CHEATS FIRED counter.*
+
+- [x] **DEV-01** The pure cheat engine — *M* · `src/sim/net/devtools.ts`: snapshot surgery for the
+      wallet, the scenario cursor + its fences, the launch pipeline (deploy-now / safe-launch /
+      circularize-all), faults (clear / disarm), and tenders (freeze / re-offer lapsed / clear
+      breach), plus the console's pure readers. Vitest-tested like any sim module.
+      · Verify: a naive `advanceCursor` loop throws `act3b fence violated`; the engine's path reaches
+      act4 with all five acts' demands on the board. Re-offer refuses a contract that was WORKED.
+- [x] **DEV-02** The console panel — *M* · `src/panels/devtools.ts`: host `devtools`, rail button
+      `DEV`, key `\`. §8 1-bit chrome, amber DEBUG banner, the RUN STATE block (act + the current
+      beat's gate predicates + tick/speed/wallet/fleet/demand/systems/faults), and the verb groups.
+      Built once; the per-frame render is signature-dirty-checked and runs only while visible.
+      · Verify: colour-off (M) reads the same — every meaning rides a word or an inverted fill.
+- [x] **DEV-03** TIME: WARP + TURBO — *S* · WARP steps synchronously through the loop's own `tickSim`
+      (gates fire inside a warp); TURBO drains extra ticks per frame past the clock's
+      `MAX_TICKS_PER_FRAME` ceiling, bounded by a 12 ms wall budget so the tab keeps painting.
+      · Verify: +1 m lands in ~20 ms; ×16 reaches a scripted fault in a couple of wall-seconds.
+- [x] **DEV-04** The standing locks — *S* · `∞ SOLVENT` and `NO FAILURES` as per-frame policies (a
+      one-shot cannot pre-empt a roll that has not happened). `BROKE` releases the solvent lock.
+      · Verify: found by hand — clicking BROKE under the lock snapped straight back before the fix.
+- [x] **DEV-05** Bench seeds + probes — *S* · the two existing boot-time debug views
+      (`?netview=net` / `?netview=mars`) reachable MID-RUN as buttons, plus quick save/load, restart,
+      COPY STATE (snapshot + state hash to the clipboard) and LOG ACTIONS.
+      · Verify: SEED LIVE NET reaches 5 sats / 2 signed / escalation-on in ~1.8 s from a cold boot.
+- [x] **DEV-06** The production fence — *S* · constructed only under `import.meta.env.DEV` or an
+      explicit `?dev=1`; otherwise no host, no rail button, no key.
+      · Verify: `vite preview` of the production bundle shows 7 rail buttons and no console;
+      the same bundle with `?dev=1` shows 8 and mounts it.

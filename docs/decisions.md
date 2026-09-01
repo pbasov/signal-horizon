@@ -2299,3 +2299,69 @@ load-bearing (*"the Act-1 hand-aim criterion is structural now"*) and exists bec
 build's first sin was a pre-aimed default that meant "the game solved itself". A stale comment
 asserting the opposite is how that gets helpfully "fixed" back in, so it was corrected in place rather
 than deleted.
+
+---
+
+### SD-70 — THE DEV CONSOLE: an in-game cheats/debug tile that collapses the slow parts of a playtest (2026-09-01, landed on main 2026-09-02)
+
+**Status: ACCEPTED (user-directed build).**
+
+**Context.** Every hand-playtest of FIRST LIGHT re-pays the same tax before it can test anything.
+Reaching Act 3a means driving the full gated arc — sign, aim, launch, hold a hand-off cycle, let
+escalation grow, re-tame it — which is many minutes of sim-time even at 1000×, and the clock caps a
+frame at `MAX_TICKS_PER_FRAME` so 1000× is really ~600×. Checking a fault needs the act3b beat, which
+is *structurally* fenced behind the act3a re-tame witness. Poking at the launch pad for two minutes
+lapses the tender you were going to sign. The two existing escape hatches — `?netview=net` and
+`?netview=mars` — are boot-time-only, all-or-nothing, and require a page reload, so they cannot help
+mid-run. The result was that the expensive part of a playtest was the setup, not the test.
+
+**The decisions, and the reasons that are not obvious:**
+
+1. **The cheat surface is the SNAPSHOT, not new session methods.** `NetSnapshot` is already the
+   complete fold of the net session — wallet, roster, contracts, cursor, every act witness, the
+   launch pipeline, the fault map. So every cheat is a pure function over a snapshot the caller owns
+   (`sim/net/devtools.ts`), applied as `snapshot() → transform → restore()`. `session.ts` gains **not
+   one** debug field and **not one** debug branch, no cheat can reach a private the fold does not
+   already carry, and a new fold field cannot quietly escape the cheats. The replay harness builds
+   its own session from the golden action log and never imports the module, so the three goldens are
+   *provably* untouched (and the full 912-test suite confirms it).
+2. **A cheat is not a player action, and the console says so.** Nothing here is recorded to the
+   SaveGame action log, so a cheated run does not replay. Rather than hide that, it is the panel's
+   headline: an amber DEBUG banner, a `CHEATS FIRED` row that flips from green "run is CLEAN" to red
+   "run is CHEATED" on the first click, and one amber `DEBUG` line per cheat on the WIRE. A cheated
+   run can never be mistaken for real play, and its screenshot is never mistaken for evidence.
+3. **SKIP ACT arms fences and steps — it does not just move the cursor.** Two details make it
+   correct. `act3b.emit` *throws* unless `escalationReTamed()`, so the jump latches the witnesses the
+   target beat asserts before the cursor moves. And `restore()` marks every beat up to the restored
+   cursor as already-emitted, so a bare `advanceCursor` would move the cursor with **no arrival** —
+   the `step()` after each advance is what actually lands the act's authored demand on the board. A
+   test pins both: the naive loop throws `act3b fence violated`; the console's path reaches act4 with
+   all five acts' contracts on the board and the fault generator armed.
+4. **TURBO drains extra ticks per frame under a WALL BUDGET; WARP steps synchronously.** The clock's
+   `MAX_TICKS_PER_FRAME` ceiling is a death-spiral guard worth keeping, so TURBO goes around it by
+   draining extra ticks in `frame()` — bounded to 12 ms so the browser keeps painting, because a
+   turbo that freezes the tab teaches nothing. WARP runs through the same `tickSim` the loop drains,
+   so gates, the WIRE, audio cues and autosave all see an ordinary run of ticks: a warp is not a
+   teleport, and a gate can and does fire inside one.
+5. **Standing LOCKS, not one-shots, for the two things that recur.** `∞ SOLVENT` (wallet held at the
+   opening balance) and `NO FAILURES` (every in-flight member forced to a clean outcome) are per-frame
+   policies, because a one-shot is useless against a failure that has not rolled yet. Found by
+   playing it: `BROKE` while the solvent lock is on snaps straight back, so asking for broke now
+   releases the lock and says so.
+6. **`FREEZE OFFERS` earns its place beside the glamorous verbs.** The cheat that removes the most
+   friction is not skipping an act — it is stopping the tender clock, because a two-sim-hour offer
+   window lapses long before a hand-driven experiment on the pad finishes.
+7. **The console prints WHY a gate has not fired.** Each act's gate predicates are shown as rows
+   (`clean hand-off streak 137/300 s · WAITING`), read off the same session getters the gates
+   themselves call. This turned out to be the panel's second job: not only skipping a beat, but
+   diagnosing a beat that should have fired and did not.
+8. **Dormant in production, openable with `?dev=1`.** An ordinary production run registers no host,
+   no rail button and no key. The module is still in the bundle (a static import) — it is simply
+   never constructed. `?dev=1` opens it in a built bundle *on purpose*: the screenshot harness runs
+   `vite preview` against production, and a prod-only bug needs the same console a dev run gets.
+
+**Consequences.** Two new modules (`src/sim/net/devtools.ts` + its Vitest suite, `src/panels/devtools.ts`),
+one new panel host (`devtools`), one rail entry appended at runtime (`DEV_RAIL_PANEL`, kept out of both
+const rail sets), and the `\` key. `src/sim/` is untouched apart from the new pure module — no session
+field, no new action kind, no golden re-pin. Reaching a five-act, five-satellite, faults-armed,
+escalation-on bench is now four clicks and about two seconds, against several minutes of driven play.
