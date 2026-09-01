@@ -1244,3 +1244,99 @@ regression gets hidden. Filed in the backlog.
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
+
+### SD-58 — THE CAMPAIGN SURVIVES THE TAB: resume-on-boot, a save-on-exit checkpoint, and a real migration ladder (X-04b, 2026-09-01)
+
+**Status: ACCEPTED.**
+
+**Context.** X-04's machinery was already built and pinned: a pure checkpoint envelope
+(`sim/net/persist.ts`), a localStorage vault (`vault.ts`), quick save/load on `v`/`V`, a
+120-sim-s autosave cadence, and a fold-hash round-trip proving a restore is bit-exact. What
+was never wired was the one path a player actually takes. **Nothing read the vault at boot.**
+Every browser refresh threw the run away and cold-opened at €75,000, tick 0 — with a perfectly
+good autosave sitting in storage the whole time. The feature existed; the door was locked.
+
+**Decision.**
+
+1. **A cold boot RESUMES the newest slot**, before the first sim tick. Ordering is not
+   cosmetic: that first tick arms the autosave cadence and would otherwise overwrite the very
+   save being read with a fresh tick-0 world. Which slot is a pure function
+   (`pickResumeSlot`) — newest wall stamp, ties broken on further-along sim-time then slot
+   order, so "continue where I left off" never depends on iteration luck.
+2. **A `pagehide` / `visibilitychange` checkpoint** closes the up-to-120-sim-s window the
+   cadence alone leaves open. What you get back is where you actually were, not two sim-minutes
+   earlier.
+3. **The envelope is versioned WITH a ladder, not a cliff.** v2 adds the presentation-only
+   accel/pause cursor so a resumed run comes back at the speed it was left at.
+   `migrateCheckpoint` walks an old envelope up one rung per version; a version off the ladder
+   or *from the future* reads as "no save" rather than a half-load. The v1→v2 rung touches
+   presentation only, and a test pins that a migrated v1 save still restores **bit-exact** —
+   that is the whole point of the folded/presentation split.
+4. **Two deliberate cold starts**, because "always resume" with no way out is its own trap:
+   `?fresh=1` is a SCRATCH SESSION (reads nothing, writes nothing) and **NEW RUN** (shift-N)
+   confirms, wipes, and reloads clean.
+
+**Why `?fresh=1` had to stop WRITING too.** Declining to *load* the campaign is only half a
+promise. The first sim tick arms the autosave, so a cold boot that still wrote to the shared
+slot would destroy the player's run purely for having been opened once. Fresh therefore means
+read-nothing **and** write-nothing. A deliberate `v` is still honoured — that is the player
+explicitly asking to keep the scratch run.
+
+**Why NEW RUN reloads CLEAN rather than through `?fresh=1`.** Emptying the vault already
+guarantees a cold boot (there is nothing left to resume), and it leaves the new run a normal
+session that autosaves like any other. Reloading into a scratch session would have started the
+new campaign in a mode that never persists — this exact bug, freshly re-laid.
+
+**Three defects this pass found in its own work, all caught by PLAYING it, none by the types.**
+
+1. **NEW RUN silently did nothing.** `clearVault()` emptied the slots, the reload fired
+   `pagehide`, and the exit hook wrote the erased campaign straight back in — which the next
+   boot dutifully resumed. Fixed with a `vaultDisarmed` latch set *before* the wipe: anything
+   that could re-save between wipe and reload has to be shut off, not just the handler that
+   happened to catch it.
+2. **A module-init TDZ crash.** `vaultDisarmed` was declared beside the vault verbs near the
+   end of `main.ts`, but the boot tick calls `vaultSave` during module init — so the `let` was
+   still in its temporal dead zone and reading it threw *"Cannot access 'vaultDisarmed' before
+   initialization"*. `tsc` was clean and every unit test passed; only booting the live dev
+   server caught it. Declared with the other vault state at the top instead.
+3. **A restore read as an act ADVANCE.** The act-beat and autosave edge-triggers sat at their
+   sentinels, so resuming into act 3 announced "act 3" with the gate chime as though it had
+   just happened. The trackers are now re-seated on the restored cursor in `vaultRestore` — the
+   ONE restore path, shared by the manual load and the boot resume so they cannot drift.
+
+Also corrected: the NEW RUN confirm read *"241667 min flown"* — the envelope's `tSim` is
+ABSOLUTE sim-time (the clock boots at the J2000 scenario epoch), so it needs the
+mission-elapsed shift before a human reads it.
+
+**A dev-loop trap worth recording.** `vite.config.ts` ignores `**/.claude/worktrees/**` in
+`server.watch.ignored` (added so a worktree could not force-reload the page of whoever was
+playing on :5173). Inside a worktree that pattern matches *every source file*, so the dev
+server never picks up an edit: the browser silently serves stale code and the playtest scores
+the previous version. The dev server must be **restarted** after each edit when working from a
+worktree. Two confusing red runs came from exactly this.
+
+**Consequences.** `NET_SAVE_VERSION` is 2; `tools/scenes/vault.mjs` tracks the bump. New
+coverage: `vault.test.ts` (the resume-slot choice, 6), the migration ladder in
+`persist.test.ts` (+4), and `tools/scenes/resume.mjs` — 17 assertions that build a run, **hit
+F5**, and prove the same world came back (fleet, wallet, contract, act, clock, fold hash),
+then that both cold starts still work. X-04 moves to done. Not addressed: named save slots (`a`
+/ `b` exist in the vault but have no UI), a load board over `vaultContents()`, and cache-mode
+saves, which still have no vault flow.
+
+**Test state at merge (merged on the user's instruction: "skip the tests and merge this straight
+into main, we test and reconcile after").** GREEN: `npm test` 954/954 in 81 files (baseline before
+this work was 942/80, so +12 and no regressions — the net-replay goldens are untouched, which is
+the pin that matters for a folded-state change), `tsc --noEmit`, `npm run build`, and the boot
+smoke gate against the live `vite dev` server. The new `resume` playtest scene is GREEN 17/17.
+Other scenes GREEN in the full sweep: act1, blob, boot, frontier, fuzz, mono, perf, prefs, vault.
+
+RED in the full sweep and NOT caused by this change: `audio` (3), `hour` (4), `trace` (6). The
+`audio` three were reproduced IDENTICALLY on stashed baseline code, so they predate this work.
+`trace` scored 12/13 when run alone, its one failure being *"Target page, context or browser has
+been closed"* — an external kill, this machine was running several parallel agent jobs. `hour`'s
+lead failure is a `timeout` on the long Act-2 gate under that same contention. Mechanically, none
+of the three can be reached by this change: each navigates ONCE into a fresh browser context, so
+its vault is empty, the boot resume is a no-op, and nothing new executes on their path.
+`hour` was NOT re-run on baseline — the comparison was interrupted by the merge instruction, and
+it is the one loose end to reconcile. This matches the pre-existing playtest instability already
+recorded under SD-57.

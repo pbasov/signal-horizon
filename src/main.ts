@@ -27,12 +27,13 @@
 import "./style.css";
 import { applyDither } from "./dither";
 import { loadEphemeris } from "./sim/system-data";
-import { SimClock, DT } from "./sim/clock";
+import { SimClock, DT, TIME_SCALES } from "./sim/clock";
 import { oneWaySeconds } from "./sim/delay";
 import { earthMarsLos } from "./sim/links";
 import { Mission } from "./sim/mission";
 import { M1Session, type SessionRenderState } from "./sim/m1/session";
 import { SCENARIO, missionElapsedSeconds } from "./sim/m1/scenario";
+import { fmtDuration, fmtEuro } from "./format";
 import { parseRun, type RunContext } from "./sim/m1/parse";
 import { OPENING_BALANCE } from "./sim/m1/economy";
 import { conjunctionApproach } from "./orrery/readout";
@@ -64,7 +65,16 @@ import { BuildSession } from "./sim/m2/session";
 import { NetSession, NET_RNG_SEED, NET_OPENING_BALANCE, BREACH_GRACE_SECONDS, launchFailureRates } from "./sim/net/session";
 import { checkpointNet } from "./sim/net/persist";
 import { runBootSequence } from "./panels/boot";
-import { saveToVault, readVault, loadPrefs, storePrefs } from "./vault";
+import {
+  saveToVault,
+  readVault,
+  loadPrefs,
+  storePrefs,
+  vaultContents,
+  clearVault,
+  resumeSlot,
+  type VaultSlot,
+} from "./vault";
 import { netStateHash } from "./sim/net/canon";
 import { applyNetAction } from "./sim/net/apply-action";
 import {
@@ -320,6 +330,30 @@ const netDebugView = netMode && (NET_QUERY.get("netview") === "mars" || NET_QUER
 // surface only, NOT a sim/action/replay path (the replay harness builds its own session), so the
 // three goldens are provably untouched. Never reached in normal play; DEBUG-labelled.
 const netLiveDebugView = netMode && (NET_QUERY.get("netview") === "net" || NET_QUERY.get("netact") === "3");
+// X-04b — `?fresh=1`: a SCRATCH SESSION. Cold-boots even when the vault holds a run, AND
+// writes nothing back to it: no resume, no autosave cadence, no save-on-exit.
+//
+// Both halves are load-bearing. Declining to LOAD the campaign is only half a promise — the
+// first sim tick arms the autosave, so a cold boot that still wrote to the shared slot would
+// overwrite the player's run with a tick-0 world just for having looked. "Fresh" therefore
+// means read-nothing AND write-nothing; a deliberate `v` quick-save is still honoured, since
+// that is the player explicitly asking to keep the scratch run.
+//
+// (NEW RUN does NOT come through here — it empties the vault and reloads clean, so the run it
+// starts autosaves normally like any other.)
+const freshBoot = NET_QUERY.get("fresh") === "1";
+/**
+ * X-04b — may this page AUTOMATICALLY read and write the vault? One predicate, so the resume,
+ * the autosave cadence and the save-on-exit hook can never disagree about it — an earlier cut
+ * of this had the exit hook excluding the debug views while the cadence still wrote, which let
+ * `?netview=mars` leave its artificial seeded world in the slot for the next real boot to
+ * resume into.
+ *
+ * Excluded: cache mode (its own flow), the two DEBUG screenshot views (they drive the live
+ * session to synthetic states for a shot — never a run), and `?fresh=1` (the scratch session).
+ * A deliberate `v` quick-save still works anywhere; this governs only what happens on its own.
+ */
+const autoVaultEnabled = netMode && !netDebugView && !netLiveDebugView && !freshBoot;
 // The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps). The
 // preset is the FLOOR (§3.1: one-click); it SETS the editable draft below. Dragging the draft is the
 // CEILING. -1 ⇒ no preset matches the current (hand-dragged) draft, so no preset button lights.
@@ -2606,6 +2640,21 @@ let lastNetCursor = -1;
 // X-04 — the vault's cadence trackers (sim-time; no wall clocks anywhere near the sim path).
 let lastVaultSaveS = -1e9;
 let lastNetCursor_VAULT = -1;
+/**
+ * X-04b — once NEW RUN is committed the vault is DISARMED for the rest of the page's life.
+ *
+ * Without this the wipe cannot stick: `clearVault()` empties the slots, the reload fires
+ * `pagehide`, and the exit hook writes the very campaign the player just chose to erase
+ * straight back in — which the next boot then dutifully resumes. NEW RUN looked like it did
+ * nothing at all. Anything that could re-save between the wipe and the reload has to be shut
+ * off, not just the one handler that happened to catch it.
+ *
+ * Declared HERE, beside the other vault state, and NOT down beside the vault verbs: the boot
+ * tick calls vaultSave during module init, so a `let` sitting further down the file is still
+ * in its temporal dead zone and reading it throws (it did — "Cannot access 'vaultDisarmed'
+ * before initialization", which only the live dev boot catches).
+ */
+let vaultDisarmed = false;
 
 function tickSim(t: number): void {
   // net/ Act-1 — drive the NET session on the SAME fixed tick (design §4): step() runs the
@@ -2629,10 +2678,12 @@ function tickSim(t: number): void {
   }
 
   // X-04 — AUTOSAVE cadence (a sim-time budget: pause stops autosaving too). Every 120 sim-s.
+  // X-04b: gated on autoVaultEnabled — a scratch session must not overwrite the campaign it
+  // declined to load, and a debug screenshot view must not leave its seeded world in a slot.
   if (netSession.cursor !== lastNetCursor_VAULT || clock.seconds - lastVaultSaveS >= 120) {
     lastVaultSaveS = clock.seconds;
     lastNetCursor_VAULT = netSession.cursor;
-    if (APP_MODE === "net") vaultSave("autosave", true);
+    if (autoVaultEnabled) vaultSave("autosave", true);
   }
 
   // THE CACHE / M2-BUILD SIM IS CACHE-MODE ONLY. In net mode the connectivity game is the
@@ -4304,8 +4355,37 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
   if (prefs.mono) document.documentElement.classList.add("cvd-mono");
   netAudio.setMuted(prefs.muted);
 }
+// ── X-04b — RESUME ON BOOT ────────────────────────────────────────────────────────────
+// The campaign outlives the tab. A browser refresh used to drop the player back at €75,000
+// tick 0 with the whole run gone; now the newest slot in the vault is restored BEFORE the
+// first sim tick, so reloading the page continues the run instead of ending it.
+//
+// It runs before `tickSim` below on purpose: that first tick arms the autosave cadence and
+// would otherwise overwrite the very save we're about to read with a fresh tick-0 world.
+//
+// Gated on autoVaultEnabled — see there for what's excluded and why. The headless harnesses
+// each get a brand-new browser context per run, so their storage is already empty and their
+// cold boots are unaffected either way.
+let resumedAtBoot = false;
+if (autoVaultEnabled) {
+  const slot = resumeSlot();
+  const cp = slot === null ? null : readVault(slot);
+  if (slot !== null && cp !== null) {
+    vaultRestore(cp, slot, "resumed");
+    resumedAtBoot = true;
+  }
+}
+
 if (!netDebugView && !netLiveDebugView) {
-  runBootSequence(app, { version: "NET FLIGHTSOFT rev FIRST-LIGHT", seed: String(NET_RNG_SEED) });
+  runBootSequence(app, {
+    version: "NET FLIGHTSOFT rev FIRST-LIGHT",
+    seed: String(NET_RNG_SEED),
+    // The boot console tells the truth about which world you're waking into: a resumed run
+    // says so (and where it left off) instead of pretending this is first light.
+    resumed: resumedAtBoot
+      ? `RUN RESTORED · act ${netSession.cursor + 1} · €${Math.round(netSession.balance).toLocaleString("en-US")}`
+      : null,
+  });
 }
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
@@ -4427,6 +4507,9 @@ window.addEventListener("keydown", (e) => {
       vaultSave("quick");
     } else if (k === "V") {
       vaultLoad("quick");
+    } else if (k === "N") {
+      // X-04b — NEW RUN (shift-only: a run is hours of work, a bare `n` must never wipe it).
+      vaultNewRun();
     } else if (k === "c" || k === "C") {
       // UX sweep fix (this branch was unreachable — it lived AFTER the net-mode `return`,
       // so the documented C shortcut NEVER fired since R1): in net mode C places the
@@ -4820,7 +4903,13 @@ requestAnimationFrame(frame);
  * the run bit-exact. */
 function vaultSave(slot: "quick" | "autosave", quiet = false): void {
   if (APP_MODE !== "net") return; // cache mode keeps its own flow for now (X-04 follow-up)
-  const cp = checkpointNet(netSession, clock.tick, Date.now());
+  if (vaultDisarmed) return; // a NEW RUN is committed — this world is on its way out.
+  // The time-accel cursor rides along as PRESENTATION metadata (never folded) so a resumed
+  // run comes back at the speed the player left it at, not at the boot default.
+  const cp = checkpointNet(netSession, clock.tick, Date.now(), {
+    scaleIndex: clock.scaleIndex,
+    paused: clock.paused,
+  });
   const problem = saveToVault(slot, cp);
   if (quiet && problem === null) return; // autosaves stay silent unless they FAILED
   log.append({
@@ -4835,6 +4924,41 @@ function vaultSave(slot: "quick" | "autosave", quiet = false): void {
   });
 }
 
+/**
+ * THE ONE RESTORE PATH — used by the manual load (V) and by the boot-time resume alike, so
+ * "continue where I left off" and "roll back to my checkpoint" can never drift apart.
+ *
+ * Restores the folded session, then the clock: the tick (sim-time) plus the presentation-only
+ * accel cursor and pause state. `how` only colours the wire line.
+ */
+function vaultRestore(cp: NonNullable<ReturnType<typeof readVault>>, slot: VaultSlot, how: "resumed" | "loaded"): void {
+  netSession.restore(cp.session as ReturnType<NetSession["snapshot"]>);
+  clock.setTick(cp.tick);
+  // Presentation half of the envelope: come back at the speed/pause the run was left at.
+  clock.scaleIndex = Math.min(TIME_SCALES.length - 1, Math.max(0, cp.scaleIndex));
+  clock.paused = cp.paused;
+  // The render layer reads the session fresh every frame, so nothing here rebuilds views —
+  // but the LAUNCH DRAFT is player intent that predates the restore, so drop it (an armed
+  // pad aimed at a world that no longer exists is a lie the player would act on).
+  r1Armed = false;
+  // Re-seat the EDGE-TRIGGER trackers on the restored cursor. They exist to fire once per act
+  // ADVANCE; left at their sentinels a restore reads as an advance, so a player resuming into
+  // act 3 would be told "act 3" (with the gate chime) as though it had just happened, and the
+  // autosave cadence would re-fire on the same edge. A restore is not an advance.
+  lastNetCursor = netSession.cursor;
+  lastNetCursor_VAULT = netSession.cursor;
+  lastVaultSaveS = clock.seconds;
+  const hh = netStateHash(netSession);
+  log.append({
+    tSim: clock.seconds,
+    sev: "info",
+    entity: "VAULT",
+    value: `${slot} · fold ${hh.toString(16)}`,
+    msg: `${how} €${Math.round(netSession.balance).toLocaleString("en-US")} · act ${netSession.cursor + 1} — the fold hash proves the restore is the run`,
+  });
+  netAudio.play("vault_load");
+}
+
 /** LOAD the quick checkpoint — restore the session and the clock to it. */
 function vaultLoad(slot: "quick" | "autosave"): void {
   if (APP_MODE !== "net") return;
@@ -4843,18 +4967,59 @@ function vaultLoad(slot: "quick" | "autosave"): void {
     log.append({ tSim: clock.seconds, sev: "warn", entity: "VAULT", value: slot, msg: "no checkpoint in that slot" });
     return;
   }
-  netSession.restore(cp.session as ReturnType<NetSession["snapshot"]>);
-  clock.setTick(cp.tick);
-  // Render-side fresh state: the pending-launch freshness ring + aim draft should reset.
-  const hh = netStateHash(netSession);
-  log.append({
-    tSim: clock.seconds,
-    sev: "info",
-    entity: "VAULT",
-    value: `${slot} · fold ${hh.toString(16)}`,
-    msg: `resumed €${Math.round(netSession.balance).toLocaleString("en-US")} · act ${netSession.cursor + 1} — the fold hash proves the restore is the run`,
-  });
-  netAudio.play("vault_load");
-  // Rebuild: the renders all read the session per frame (the restore is the truth).
+  vaultRestore(cp, slot, "loaded");
+}
+
+/**
+ * NEW RUN — abandon the saved campaign and cold-boot. Destructive (it wipes every slot), so it
+ * names what it is about to erase and asks first.
+ *
+ * It reloads WITHOUT `?fresh=1` on purpose: emptying the vault is already enough to guarantee
+ * a cold boot (there is nothing left to resume), and it leaves the new run a NORMAL session
+ * that autosaves like any other. Reloading into a scratch session instead would start the new
+ * campaign in a mode that never persists — the exact bug we're here to fix, freshly re-laid.
+ * The flag is also STRIPPED, so hitting NEW RUN from a scratch session hands back a real one.
+ */
+function vaultNewRun(): void {
+  if (APP_MODE !== "net") return;
+  const saved = vaultContents(); // newest first
+  if (saved.length > 0) {
+    const newest = saved[0];
+    // The envelope's tSim is ABSOLUTE sim-time (the clock boots at the J2000 scenario epoch),
+    // so it has to be shifted to MISSION-ELAPSED before a human reads it — unshifted it claimed
+    // "241667 min flown" about a twenty-minute run. fmtDuration keeps a short run legible too
+    // ("24s" rather than a rounded-down "0 min").
+    const flown = fmtDuration(Math.max(0, missionElapsedSeconds(newest.tSim)));
+    const ok = window.confirm(
+      `Start a NEW RUN?\n\nThis erases the saved campaign — act ${newest.act + 1}, ${fmtEuro(newest.balanceEur)}, ${flown} flown.\n\nThis cannot be undone.`,
+    );
+    if (!ok) return;
+  }
+  // Disarm BEFORE the wipe: the reload below fires pagehide, and an exit save landing after
+  // clearVault() would put the erased campaign straight back.
+  vaultDisarmed = true;
+  clearVault();
+  const url = new URL(window.location.href);
+  url.searchParams.delete("fresh");
+  window.location.replace(url.toString());
 }
 const SLOT_LABELS: Record<"quick" | "autosave", string> = { quick: "quick", autosave: "auto" };
+
+// ── X-04b — SAVE ON THE WAY OUT ───────────────────────────────────────────────────────
+// The autosave cadence is every 120 sim-s, so on its own a refresh could still cost the
+// player two sim-minutes of work. Checkpointing as the page goes away closes that window:
+// what you get back is where you actually were.
+//
+// `pagehide` is the reliable one (it fires on reload, navigation and tab close, and unlike
+// `beforeunload` it also fires when the page goes into the back/forward cache).
+// `visibilitychange`→hidden is the belt: some paths tear a tab down without a pagehide.
+// localStorage writes are synchronous, so both land before the page is gone.
+//
+// Gated on autoVaultEnabled — same exclusions as the resume and the cadence.
+if (autoVaultEnabled) {
+  const saveOnExit = (): void => vaultSave("autosave", true);
+  window.addEventListener("pagehide", saveOnExit);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") saveOnExit();
+  });
+}

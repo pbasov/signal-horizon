@@ -7,12 +7,44 @@
  * PURE: JSON-safe types, no DOM, no wall clock. The WALL timestamp on the envelope is
  * presentation-only metadata handed in by the caller (never folded, never read back into
  * the sim).
+ *
+ * --- FOLDED vs PRESENTATION ------------------------------------------------------------
+ * `session` is the FOLDED truth — it decides the state hash, so a restore is bit-exact.
+ * Everything beside it (`tSim`, `balanceEur`, `act`, `savedAtMs`, `scaleIndex`, `paused`)
+ * is PRESENTATION: written for the slot label and the view's own comfort, never read back
+ * into the sim, never folded. That split is why the time-accel cursor can ride along in v2
+ * without touching a single golden.
+ *
+ * --- VERSIONING + MIGRATION ------------------------------------------------------------
+ * A save sitting in a player's browser outlives the code that wrote it. `NET_SAVE_VERSION`
+ * is the format stamp and {@link migrateCheckpoint} is the upgrade ladder: one rung per
+ * version, applied in order, until the envelope reads current. A version with NO rung is
+ * unreadable and reads as "no save" rather than as a half-load. A save from the FUTURE (a
+ * newer build wrote it) is likewise refused — we cannot invent fields we never wrote.
  */
 
 import type { NetSession } from "./session";
 
-/** The current save format version. */
-export const NET_SAVE_VERSION = 1;
+/** The current save format version. v1 -> v2 added the presentation-only view state. */
+export const NET_SAVE_VERSION = 2;
+
+/**
+ * The time-accel cursor a pre-v2 save (or a field-less envelope) is read at. v1 never
+ * recorded the accel, so there is nothing to recover — this is deliberately the COLD-BOOT
+ * accel, `TIME_SCALES[0]` === 1x real-time, which is what net mode starts a run at. Resuming
+ * an old save at 1x is the honest answer to "we don't know"; inheriting 100x would fling the
+ * player's restored world forward at a speed they never chose. Held as a plain number rather
+ * than imported from the clock so this module stays a leaf.
+ */
+const LEGACY_SCALE_INDEX = 0;
+
+/** The view state riding along with a checkpoint. PRESENTATION ONLY — never folded. */
+export interface CheckpointView {
+  /** Index into `TIME_SCALES` (the time-accel cursor) at save. */
+  scaleIndex: number;
+  /** Whether the run was paused at save. */
+  paused: boolean;
+}
 
 /** A checkpoint payload: what a save slot holds. JSON-safe. */
 export interface NetCheckpoint {
@@ -27,12 +59,21 @@ export interface NetCheckpoint {
   act: number;
   /** Wall-clock ms when saved (PRESENTATION ONLY — for the slot label; never folded). */
   savedAtMs: number;
+  /** Time-accel cursor at save (PRESENTATION ONLY — restored into the clock, never folded). */
+  scaleIndex: number;
+  /** Paused at save (PRESENTATION ONLY — restored into the clock, never folded). */
+  paused: boolean;
   /** The session snapshot (opaque to this module — truth lives in session.snapshot()). */
   session: unknown;
 }
 
 /** Build a checkpoint from the live session. Pure except the caller-provided wall stamp. */
-export function checkpointNet(session: NetSession, tick: number, savedAtMs: number): NetCheckpoint {
+export function checkpointNet(
+  session: NetSession,
+  tick: number,
+  savedAtMs: number,
+  view: CheckpointView = { scaleIndex: LEGACY_SCALE_INDEX, paused: false },
+): NetCheckpoint {
   return {
     version: NET_SAVE_VERSION,
     tick,
@@ -40,6 +81,8 @@ export function checkpointNet(session: NetSession, tick: number, savedAtMs: numb
     balanceEur: session.balance,
     act: session.cursor,
     savedAtMs,
+    scaleIndex: view.scaleIndex,
+    paused: view.paused,
     session: toJSONSafe(session.snapshot()),
   };
 }
@@ -78,12 +121,55 @@ function fromJSONSafe(obj: unknown): unknown {
   };
 }
 
+// ── the migration ladder ─────────────────────────────────────────────────────────
+
+/** One rung: take an envelope AT version N and hand back the same run AT version N+1. */
+type Rung = (raw: Record<string, unknown>) => Record<string, unknown>;
+
+/**
+ * The ladder, keyed by the version each rung upgrades FROM. Adding a format break =
+ * bumping NET_SAVE_VERSION and adding exactly ONE rung here; the walk below does the rest.
+ *
+ * 1 -> 2: the presentation-only view state (time-accel cursor + paused) joined the
+ *         envelope. A v1 save never recorded it, so it resumes at the clock's own
+ *         defaults. The FOLDED half is untouched, so a migrated v1 save restores bit-exact.
+ */
+const LADDER: Record<number, Rung> = {
+  1: (raw) => ({ ...raw, version: 2, scaleIndex: LEGACY_SCALE_INDEX, paused: false }),
+};
+
+/**
+ * Walk an envelope up the ladder to {@link NET_SAVE_VERSION}. Returns the upgraded
+ * envelope, or null when it cannot be read at all:
+ *   - no integer `version` (not one of our envelopes);
+ *   - a version NEWER than this build wrote (we would have to invent fields);
+ *   - a version with no rung (a break nobody wrote a migration for).
+ * An already-current envelope passes through untouched.
+ */
+export function migrateCheckpoint(raw: Record<string, unknown>): Record<string, unknown> | null {
+  if (typeof raw.version !== "number" || !Number.isInteger(raw.version)) return null;
+  if (raw.version > NET_SAVE_VERSION) return null; // a save from the FUTURE: refuse, don't guess.
+  let cur = raw;
+  // Each rung MUST raise the version (asserted in-loop), so this walk cannot spin.
+  while (typeof cur.version === "number" && cur.version < NET_SAVE_VERSION) {
+    const from = cur.version;
+    const rung = LADDER[from];
+    if (rung === undefined) return null;
+    cur = rung(cur);
+    if (typeof cur.version !== "number" || cur.version <= from) return null; // a bad rung.
+  }
+  return cur;
+}
+
 /** Validate + read a checkpoint back. Returns the SESSION-side restore inputs, or null
- * with the problem string when the envelope is unusable (bad version / wrong shape). */
-export function readCheckpoint(raw: unknown): { tick: number; session: NetCheckpoint["session"]; meta: { tSim: number; balanceEur: number; act: number; savedAtMs: number } } | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const c = raw as Partial<NetCheckpoint>;
-  if (c.version !== NET_SAVE_VERSION) return null; // future migrations hang HERE.
+ * when the envelope is unusable (bad version / wrong shape). Older formats are walked up
+ * the migration ladder FIRST, so a v1 save still loads. */
+export function readCheckpoint(raw: unknown): { tick: number; session: NetCheckpoint["session"]; meta: { tSim: number; balanceEur: number; act: number; savedAtMs: number; scaleIndex: number; paused: boolean } } | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const migrated = migrateCheckpoint(raw as Record<string, unknown>);
+  if (migrated === null) return null; // unreadable format = "no save" (never a half-load).
+  const c = migrated as Partial<NetCheckpoint>;
+  if (c.version !== NET_SAVE_VERSION) return null; // belt: the ladder must land on current.
   if (typeof c.tick !== "number" || !Number.isInteger(c.tick) || c.tick < 0) return null;
   if (typeof c.session !== "object" || c.session === null) return null;
   return {
@@ -94,6 +180,11 @@ export function readCheckpoint(raw: unknown): { tick: number; session: NetCheckp
       balanceEur: typeof c.balanceEur === "number" ? c.balanceEur : 0,
       act: typeof c.act === "number" ? c.act : 0,
       savedAtMs: typeof c.savedAtMs === "number" ? c.savedAtMs : 0,
+      scaleIndex:
+        typeof c.scaleIndex === "number" && Number.isInteger(c.scaleIndex) && c.scaleIndex >= 0
+          ? c.scaleIndex
+          : LEGACY_SCALE_INDEX,
+      paused: c.paused === true,
     },
   };
 }

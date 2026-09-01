@@ -61,6 +61,8 @@ export function readVault(slot: VaultSlot): NetCheckpoint | null {
       balanceEur: back.meta.balanceEur,
       act: back.meta.act,
       savedAtMs: back.meta.savedAtMs,
+      scaleIndex: back.meta.scaleIndex,
+      paused: back.meta.paused,
       session: back.session,
     };
   } catch {
@@ -68,14 +70,49 @@ export function readVault(slot: VaultSlot): NetCheckpoint | null {
   }
 }
 
-/** List which slots hold saves (for a future load board). */
-export function vaultContents(): { slot: VaultSlot; savedAtMs: number; tSim: number; act: number; balanceEur: number }[] {
-  const out: { slot: VaultSlot; savedAtMs: number; tSim: number; act: number; balanceEur: number }[] = [];
+/** A slot's headline, as the load board (and the resume picker) read it. */
+export interface VaultEntry {
+  slot: VaultSlot;
+  savedAtMs: number;
+  tSim: number;
+  act: number;
+  balanceEur: number;
+}
+
+/** List which slots hold saves, NEWEST FIRST (the load board's order). */
+export function vaultContents(): VaultEntry[] {
+  const out: VaultEntry[] = [];
   for (const slot of SLOTS) {
     const cp = readVault(slot);
     if (cp !== null) out.push({ slot, savedAtMs: cp.savedAtMs, tSim: cp.tSim, act: cp.act, balanceEur: cp.balanceEur });
   }
-  return out;
+  return out.sort(compareRecency);
+}
+
+/**
+ * The RESUME ordering (pure, so it's unit-testable without a browser): newest wall stamp
+ * wins. Ties break on the further-along run (more sim-time), then on slot order — the
+ * autosave and a quick save written in the same millisecond must still order DETERMINISTICALLY,
+ * or "continue where I left off" would depend on Object key iteration luck.
+ */
+export function compareRecency(a: VaultEntry, b: VaultEntry): number {
+  if (b.savedAtMs !== a.savedAtMs) return b.savedAtMs - a.savedAtMs;
+  if (b.tSim !== a.tSim) return b.tSim - a.tSim;
+  return SLOTS.indexOf(a.slot) - SLOTS.indexOf(b.slot);
+}
+
+/**
+ * Pick the slot a cold boot should resume from: the most recent save across all slots, or
+ * null when the vault is empty. Pure over the listing so the choice is testable.
+ */
+export function pickResumeSlot(entries: VaultEntry[]): VaultSlot | null {
+  if (entries.length === 0) return null;
+  return [...entries].sort(compareRecency)[0].slot;
+}
+
+/** The slot a cold boot should resume from, read straight off browser storage. */
+export function resumeSlot(): VaultSlot | null {
+  return pickResumeSlot(vaultContents());
 }
 
 /** Clear one slot (or all — a full NG+ wipe affordance). */

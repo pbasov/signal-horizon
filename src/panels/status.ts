@@ -127,6 +127,11 @@ export class StatusStrip {
       // X-04 — the vault keys.
       appendKeys(keys, "V");
       keys.append(" vault ");
+      // X-04b — NEW RUN. The run now resumes itself on every boot, so "how do I start over?"
+      // has no other answer on screen; an undiscoverable verb would read as being stuck in
+      // one campaign forever. (Shift-N, and it confirms before erasing.)
+      appendKeys(keys, "N");
+      keys.append(" new ");
       appendKeys(keys, "M");
       keys.append(" mono");
     } else {

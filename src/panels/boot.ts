@@ -9,8 +9,14 @@ import { MISSION_WELCOME } from "../panels/copy";
 const LINE_DELAY_MS = 260;
 const HOLD_MS = 900;
 
-/** Mount the boot sequence onto the app root. Returns the dismiss function (for tests). */
-export function runBootSequence(app: HTMLElement, meta: { version: string; seed: string }): () => void {
+/**
+ * Mount the boot sequence onto the app root. Returns the dismiss function (for tests).
+ *
+ * `meta.resumed` (X-04b) is the one-line receipt for a run restored from the vault — when
+ * present the console says the campaign came BACK rather than replaying the first-light
+ * welcome at someone forty minutes into their hour.
+ */
+export function runBootSequence(app: HTMLElement, meta: { version: string; seed: string; resumed?: string | null }): () => void {
   if (document.querySelector(".boot-seq")) return () => {};
   const back = document.createElement("div");
   back.className = "boot-seq";
@@ -28,10 +34,13 @@ export function runBootSequence(app: HTMLElement, meta: { version: string; seed:
   back.appendChild(box);
   app.appendChild(back);
 
+  const resumed = meta.resumed ?? null;
   const lines = [
     "LINK MARGINS OK · RF SUBSYSTEMS NOMINAL",
     `EPHEMERIS LOADED · seed ${meta.seed}`,
-    MISSION_WELCOME,
+    // A resumed run replaces the cold-open welcome: the player is mid-campaign, and greeting
+    // them as a newcomer is the one line that would read as the save having been lost.
+    resumed ?? MISSION_WELCOME,
   ];
   let i = 0;
   const timers: ReturnType<typeof setTimeout>[] = [];

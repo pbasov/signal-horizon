@@ -32,7 +32,7 @@ export default {
     ctx.ok("the save lands on the wire", saveWire.includes("checkpoint saved"), saveWire.slice(0, 140));
     const envelope = await ctx.eval(() => localStorage.getItem("signalhorizon.net.v1.quick"));
     ctx.ok("the slot holds a checkpoint envelope", envelope !== null && envelope.length > 1000, envelope ? `${envelope.length} bytes` : "empty");
-    ctx.ok("envelope is version-tagged", envelope?.includes("\"version\":1") ?? false);
+    ctx.ok("envelope is version-tagged", envelope?.includes("\"version\":2") ?? false);
 
     // WRECK: sign the polar tender dark (mistake, it bleeds ×2) and let it ride a while.
     await ctx.eval(() => {
