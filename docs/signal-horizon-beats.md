@@ -90,7 +90,8 @@ faction. **0001-U** (§6a of the setting, Era 4 below) is filed in the same clas
 
 ## 3. The one paragraph, once
 
-The only place the premise is stated outright. New-game screen, 84 words, no music sting.
+The only place the premise is stated outright. No music sting. **As drafted** — 84 words, on a
+new-game screen:
 
 > Earth is rich and out of room. The power, the water, and the permission ran out before the demand
 > did, so the load went up — and the industry followed it to the Moon, and then further. The
@@ -98,6 +99,27 @@ The only place the premise is stated outright. New-game screen, 84 words, no mus
 > else. You hold a licence, a thin account, and one dish.
 >
 > Somewhere out there a customer needs to know something right now, and light is not going to help.
+
+### AS BUILT (SD-58) — the premise compressed to the medium
+
+**There is no new-game screen to put 84 words on.** The build opens on a typed boot console
+(`panels/boot.ts`) that auto-fades and is dismissed by any input, and the only other
+always-visible surface is the Wire, which must stay causal and never literary (§1 rule 4). An
+84-word block fits neither. So the premise **compressed to the medium** rather than the medium
+stretching to the paragraph — two sentences carrying rulings §10.1 and §10.2:
+
+> Earth is rich and out of room, so the load went up. You hold a licence, a thin account, and one
+> dish — and dark regions pay when signal reaches them, while hardware and physics decide whether
+> it does.
+
+The line above it issues the licence in the Registry's own voice —
+`LICENCE 4471-C ISSUED · ORBITAL ALLOCATION REGISTRY` — establishing the regulator and the
+player's standing at no reading cost, before the premise lands.
+
+**Skippable three ways**, because an intro nobody can escape is worse than no intro: any key or
+click (with a *visible* affordance — an undiscoverable skip is not a skip), a "never show this
+again" control that persists to prefs, and `?intro=0`. It never pauses the sim, and the debug
+views never mount it.
 
 ## 4. Grammar
 

@@ -4435,8 +4435,18 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
   if (prefs.mono) document.documentElement.classList.add("cvd-mono");
   netAudio.setMuted(prefs.muted);
 }
-if (!netDebugView && !netLiveDebugView) {
-  runBootSequence(app, { version: "NET FLIGHTSOFT rev FIRST-LIGHT", seed: String(NET_RNG_SEED) });
+// SD-58 — the intro console is OPT-OUT and the opt-out sticks. Three ways past it: any key or
+// click (visible affordance in the box), "never show this again" (persists to prefs), and
+// ?intro=0 for tooling and for anyone who wants it gone from the URL. Debug views never see it.
+{
+  const introSuppressed = loadPrefs().skipIntro || NET_QUERY.get("intro") === "0";
+  if (!netDebugView && !netLiveDebugView && !introSuppressed) {
+    runBootSequence(
+      app,
+      { version: "NET FLIGHTSOFT rev FIRST-LIGHT", seed: String(NET_RNG_SEED) },
+      { onNeverShowAgain: () => storePrefs({ ...loadPrefs(), skipIntro: true }) },
+    );
+  }
 }
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
@@ -4535,7 +4545,9 @@ window.addEventListener("keydown", (e) => {
       // X-03 — the 1-bit purist monochrome toggle (colour-off fully playable, the exit check).
       const el = document.documentElement;
       el.classList.toggle("cvd-mono");
-      storePrefs({ mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
+      // SPREAD the stored prefs, never rebuild them: a literal here silently WIPES every
+      // pref this call site does not know about (SD-58's skipIntro was the first casualty).
+      storePrefs({ ...loadPrefs(), mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,
         sev: "info",
@@ -4546,7 +4558,8 @@ window.addEventListener("keydown", (e) => {
     } else if (k === "u" || k === "U") {
       // X-05 — hard mute (persists). No cross-typed cues to manage; the canary stays silent.
       netAudio.setMuted(!netAudio.isMuted);
-      storePrefs({ mono: document.documentElement.classList.contains("cvd-mono"), muted: netAudio.isMuted });
+      // Spread, don't rebuild — see the mono toggle above.
+      storePrefs({ ...loadPrefs(), mono: document.documentElement.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,
         sev: "info",
