@@ -120,7 +120,17 @@
 - [x] **SD-56 — THE COVERAGE RE-SCALE + the launch interface as instruments** (2026-09-01). Beam cones become enforced physics (`BeamAim` in the link budget, `outside_beam` cause, `coneReachRad` projecting a cone half-angle at the SAT into a central angle at the BODY); horizon mask forks to a net-local 10°; the LEO family moves 310 → 400 km. Coverage stops being free: the measured zero-gap minimum for REGION-1 goes 4 → 9 sats and altitude becomes a real lever (~11° of ground painted from a low pass, ~19° from a parked GEO). The canonical hour is re-choreographed around it — sign REGION-1 only once the rolling availability window has filled, circularise the underburned bird BEFORE measuring, aim the fill batch with the `(ω − n)·Δt` co-phasing correction (the old formula undid the body's spin only), and derive the act-3 corridor ids from launch order instead of hard-coding them. Manifest discount 15% → 45% so the constellation the geometry now demands is affordable. Arc ends +€4,376, floor €3,488, four gates in order. ONE golden re-pin → `16791777382910013853n`. The pad is rebuilt as INSTRUMENTS (`src/panels/pad-instruments.ts`): the tender pinned above the aim with a draft-vs-requirement comparison, a side-on altitude horizon drawing the beam onto the ground, an inclination dial marking the customer's latitude, and THE RING showing what you already fly plus the hole a replacement wants; inert controls (RAAN at zero tilt, phase spread on a batch of one) grey out and say why; drag-scrub numbers replace the spinner boxes. 900 tests green.
 - [x] **SD-58 — THE BOARD IS A MAP: every tender is a place you can look at** (2026-09-01). The orrery drew exactly ONE region (the teaching cursor's), so from act 3a the corridor metro and the coastal backhaul were signed, billed and breached without ever appearing on the ball — reported as *"coastal backhaul and corridor metro are never shown in the orrery"*. `NetRenderState.otherRegions` + a pooled disc/label set draws the WHOLE standing market, lit by each contract's own served verdict, with a redundant glyph (▣ carrying · ▨ signed and dark · ▢ offered). Clicking a tender row TARGETS it: the camera swings onto its region and HOLDS it as the globe turns (`Orrery.followRegion`, released by any camera drag), it becomes the globe's primary region (so the draft's coverage-gap overlay measures against it), and the pad's coverage analysis — comb, compare table, FIT — designs against it. The three inline "which tender is the target" pickers collapse into one `r1TargetContract()`. Selection is render-only: not folded, not logged, goldens untouched by it. New pure module `src/orrery/aim.ts` (the camera-angle inversion + short-way azimuth unwrap) with 7 tests.
 - [x] **SD-58b — the equatorial board stops being one dot** (2026-09-01). Follow-on from the above, on the user's *"are we serving the same place with 3 different missions? that's kinda dumb no?"*: REGION-0 (0°), REGION-2 (3°E) and BACKHAUL-3 (6°W) were three 10°-radius discs whose centres all sat inside each other — three separately-priced tenders on one patch of ground. The mechanics only ever needed CO-VISIBILITY, and the measured bands are far wider: the corridor's 3 ms bar still clears at 2.73 ms from 20°E on the same equatorial ACCESS ring, and the parked GEO floodlights the backhaul 100% of the day out to 40°W (reach cliff between 40° and 45°). Corridor → 20°E, backhaul → 35°W, disc radius 10° → 6° (sim-INERT: the router bridges the region CENTRE — verified, 6° alone reproduces the old hash bit-for-bit). Act-4 canon beats retimed +1 tick to follow the act-3b gate (58104 → 58105). Arc ends RICHER: trough €3,488 → €4,100, mean €4,316 → €5,018, final €4,376 → €4,858. ONE golden re-pin → `10981192184426294200n`. 968 tests green (rebased onto the routing-graph work).
-- [ ] **TRACE scene instability (found reconciling SD-57, 2026-09-01)** — `npm run playtest` full-run is RED at `origin/main` 158acd7: 121 assertions, 3 failed, all in TRACE, and the failing SET varies run to run (`REPOINT opens a target picker — 0 options` / `STOW is offered` / `committing a target closes the picker — 5 options still showing` / `the table does not rebuild its DOM on a moving number — 36 rebuilds`). The scene passes GREEN 44/0 run ALONE. Pre-SD-56 tips ran GREEN 121/0, so the coverage re-scale + pad rewrite introduced it. Two candidates: the picker depends on prior-scene state the full run leaves behind, and `the commit lands one beam action` asserts on the LAST wire line (`tools/scenes/trace.mjs:486`) which a following `first signal` line can outrace. Deliberately NOT patched inside SD-57. **SD-64 (2026-09-01) re-measured it at `012ae8a`: 6 failures, and they read as DOWNSTREAM of act 2 rather than as the flakiness above — `0 flows`, `widest=[]`, `0.00` load across the window. The act-2 gate never fires (RC-09), so act 3 never opens and TRACE has nothing to trace. Re-measure this entry once RC-09/RC-10 land; the run-to-run variance may be a second, smaller defect hiding behind the first.**
+- [x] **TRACE scene instability (found reconciling SD-57, 2026-09-01; CLOSED by SD-65)** — `npm run playtest` full-run is RED at `origin/main` 158acd7: 121 assertions, 3 failed, all in TRACE, and the failing SET varies run to run (`REPOINT opens a target picker — 0 options` / `STOW is offered` / `committing a target closes the picker — 5 options still showing` / `the table does not rebuild its DOM on a moving number — 36 rebuilds`). The scene passes GREEN 44/0 run ALONE. Pre-SD-56 tips ran GREEN 121/0, so the coverage re-scale + pad rewrite introduced it. Two candidates: the picker depends on prior-scene state the full run leaves behind, and `the commit lands one beam action` asserts on the LAST wire line (`tools/scenes/trace.mjs:486`) which a following `first signal` line can outrace. Deliberately NOT patched inside SD-57. **SD-64 (2026-09-01) re-measured it at `012ae8a`: 6 failures, and they read as DOWNSTREAM of act 2 rather than as the flakiness above — `0 flows`, `widest=[]`, `0.00` load across the window. The act-2 gate never fires (RC-09), so act 3 never opens and TRACE has nothing to trace. Re-measure this entry once RC-09/RC-10 land; the run-to-run variance may be a second, smaller defect hiding behind the first.** **RESOLVED (SD-65).** It was two defects, and both
+guesses in this entry were right. (1) The varying SET was the act-2 gate: without it the board holds
+whatever partial state the run happened to reach, so the scene's later assertions were reading
+different worlds each time. (2) The scene clicked `querySelector("[data-net=repoint]")` — the FIRST
+repoint button — and which pipe is first depends on the live worst-first ordering, so it sometimes
+grabbed the act-1 GEO's parked BROADCAST floodlight, whose picker has nothing to commit: the click
+was a no-op, the picker stayed open with 4 options, and no beam action reached the WIRE. It now
+prefers a pipe whose antenna can actually be aimed. And `the commit lands one beam action` did read
+only the LAST wire line, which a concurrent "first signal" line outraces — it now searches the lines
+added since the commit. Three consecutive runs byte-identical green: **51 ok / 0 failed, 37 s** (was
+29 ok / 6 failed, 170 s).
 - [ ] **OWED from SD-56** — the full-screen LAUNCH view (deferred by the user, "maybe skip the launch screen for now"); globe click-to-aim is wired but its FEEL is unverified by hand; M1's gate criterion still claims an hour the build does not have (measured: ~18 min, 20 actions) — restate it or build the sustain loop.
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, DEFERRED to M2 per user 2026-08-08 — massKg is the anchor, not dead code); WM minimize/collapse op.
 > - **Verification method:** every phase gated by the Playwright playtest loop (see memory `playwright-playtest-loop`) + 725 tests / tsc / build / boot smoke. NOTE: the MCP-driven Chromium pins its viewport at 1920×1080 — "GUI doesn't fill the window" while looking at THAT window is the pinned viewport, not the app (resolved 2026-07-02).
@@ -498,6 +508,39 @@ All 7 findings fixed:
 
 ---
 
+### EPIC — SD-65 · THE SCRIPTED HOUR PLAYS AGAIN (the stale aim · the wrong tender · a dead selection)
+
+> Decision: `docs/decisions.md` SD-65. Finishes SD-64's RC-09/RC-10 and fixes three shipped-code
+> defects found on the way. Playtest: **13 scenes, 0 failures** (from 10).
+
+- [x] **RH-01** `tools/ring-fill.mjs` — the shared act-2 fill — *M* · read the ring's EXACT altitude,
+      derive count + pitch from the pad's own readout, search the sub-longitude against that readout,
+      and COMMIT WHILE THE CLOCK IS HELD. Used by `hour` and `trace`; no geometry constant in it.
+      · Verify: `{402: 9, 535: 1}`, REGION-1 100 % held, act-2 gate fires in both scenes.
+- [x] **RH-02** `__netState().sats` carries `altKm` unrounded — *S* · a rounded altitude is a
+      different PERIOD, and the scene that reads one back buys a drifting orbit. `aKm` stays for the
+      observation digest. Additive; the only other reader is `agent-eval/observe.mjs`.
+- [x] **RH-03** The pad's facts describe the SELECTED tender — *S* · `r1PadFact()` and the
+      availability fact each re-derived "the target" inline as "the first offered Earth contract",
+      so clicking a tender to design against it left the pad answering about a different one. Both now
+      go through `r1TargetContract()`. The availability fact was worse: it paired `combDuty` (computed
+      against the target) with another contract's SLA bar. · Verify: played — REGION-1 gives "one bird
+      lights it 100% … asks 99%", REGION-2 gives the latency line.
+- [x] **RH-04** A selection cannot outlive its contract — *S* · `r1SelectedContract()` dropped a
+      completed contract but left `r1TargetContractId` set, so the board kept drawing that row's ◉
+      "TARGET — the globe and the pad are pointed here" while every consumer fell back to another
+      tender. The id is cleared when it goes stale. · Verify: probed mid-hour at
+      `{r1TargetContractId: "REGION-1", selected: null, target: "REGION-2"}` before the fix.
+- [x] **RH-05** The act-2 question is asked while act 2 is live — *S* · "can one bird do it?" ran
+      AFTER the gate, by which time REGION-1's 480 s term has completed and it is not a selectable
+      target at all. Moved to the top of act 2 with REGION-1 still OFFERED — where the player is
+      actually deciding. · Verify: "one bird lights it 0% of the time — the tender asks 99%".
+- [x] **RH-06** Both scenes sign REGION-1 AFTER the ring is whole — *S* · availability is a ROLLING
+      window, so a contract accepted over an empty sky keeps remembering it; canon.ts moved its own
+      accept for this reason and the scenes had not followed.
+
+---
+
 ### EPIC — SD-64 · POST-MERGE RECONCILE (the act index · the stale dev server · the harness that could not fail)
 
 > Decision: `docs/decisions.md` SD-64. The reconcile pass over the nine increments that landed on
@@ -570,7 +613,7 @@ All 7 findings fixed:
       1080-tall window); the click hit nothing and `realClick`'s `false` was ignored. It now scrolls
       into view first — what a hand does — and returns `{ ok, reason }` the scene asserts. · Verify:
       audio 5 ok/3 failed → **11 ok/0 failed**, 86 s → 26 s. The audio engine was never broken.
-- [~] **RC-09** The scripted hour cannot clear act 2 — HALF DONE, residual is PHASE — *M* ·
+- [x] **RC-09** The scripted hour cannot clear act 2 — **DONE (SD-65)** — *M* ·
       `hour.mjs` launched the act-2 fill as `{altKm: 310, count: 4, spreadDeg: 90}` — the PRE-SD-56
       numbers. Measured at the gate the fleet was `{310: 4, 402: 7, 535: 1}`: the assist flew a 402 km
       ring (9 asked, 7 surviving the seeded no-seps) while the fill put 4 birds at 310 km, sharing
@@ -580,17 +623,43 @@ All 7 findings fixed:
       forever": the sim canon was re-choreographed for the re-scale, the playtest hour was not.
       **DONE:** the fill altitude is DERIVED from the ring actually flying, plus a standing assertion
       that the act-2 fleet is ONE ring plus the GEO park ⇒ `{402: 11, 535: 1}`, availability
-      **90.6 % → 96.9 %**. **REMAINING:** 96.9 % still misses 99 %, and the gap is PHASE — canon aims
-      its fill at `LEO_SWEEP.subLonRad + FILL_OFFSET_RAD − FILL_PHASE_COMP_RAD`, undoing BOTH the
-      body's spin and the ring's own mean motion over the launch gap, while the scene still aims at a
-      fixed +45°.
-- [ ] **RC-10** Expose the ring's hole so a script (and a player) can aim at it — *M* · the finish
-      for RC-09, and deliberately NOT guessed: SD-56 says the co-phasing sum is "the sum no player
-      should ever be asked to do in their head — the reason the pad has to SHOW the ring and let you
-      drop a replacement into the gap." `pad-ring.ts:widestGap` already computes that hole, and
-      nothing exposes it to a script (no `__ringProbe`, and `__netState().sats` carries only
-      `{id, aKm}` — no phase). What the intended player path is for closing a ring hole is a DESIGN
-      call, so it is filed rather than invented. Dep: RC-09.
+      **90.6 % → 96.9 %**. **FINISHED IN SD-65:** the phase residual was not arithmetic at all — an aim chosen
+      under pause is only valid for the epoch it is committed at (`resolveOrbit` sets
+      `m0Rad = subLonRad + ω·t`), and the scene handed time back BEFORE committing. At 1000× that is
+      ~1.6 orbits, so the aim was stale before it was bought: REGION-1 sat at 68.8–87.5 % across 731
+      ring orbits with the phase ring reporting a closed hole. Committing under pause takes it to
+      **100 % held**, the gate fires, and the scene runs in 33 s instead of timing out at 258 s.
+      Two more measured pieces: `__netState` only exposed a ROUNDED altitude, and a rounded altitude
+      is a different period (0.203°/orbit drift, a 40° slot lost in 36,439 sim-s), so the probe now
+      carries `altKm` unrounded; and `subLonDeg` CLAMPS to ±180, so the old 0..360 sweep saturated at
+      180 and re-tested one point four times over. · Verify: `hour` **15 ok / 0 failed**.
+- [x] **RC-10** Aim at the ring's hole the way the pad asks you to — **DONE (SD-65)** — *M* · no new
+      probe was needed after all: the phase-ring readout already SAYS it, in words the player reads —
+      `"<N> flying · widest gap <G>° · +<count> would leave <L>°"`. So the scene slides the
+      sub-longitude and keeps whichever value leaves the smallest hole, exactly as a player watches
+      that number shrink, and derives the COUNT and PITCH from the same line (a ring of N even slots
+      has a 360/N pitch; lose `m` adjacent members and the hole reads (m+1)·pitch, so "7 flying,
+      widest gap 120°" pins N=9 and a 40° pitch). The old `spreadDeg: 90` was 360/4 from when
+      `ACT2_ZERO_GAP_N` was 4 — it scattered four birds a quarter-ring apart so only ONE could fall
+      in the hole. The whole move lives once in `tools/ring-fill.mjs`, shared by `hour` and `trace`;
+      no number in it is written down. · Verify: "the aim CLOSES the hole" + `{402: 9, 535: 1}`.
+- [ ] **RC-12** The pad's consequence preview is only truthful at 1× — *M* · a sub-longitude names a
+      phase AT THE TICK IT IS COMMITTED (`resolveOrbit`: `m0Rad = subLonRad + ω·t`), so the phase ring
+      previews one placement and, if time is running, you buy another. At 1000× the few hundred ms
+      between choosing and committing is ~1.6 orbits, which is enough to turn "would leave 40°" into a
+      mis-phased ring (SD-65 measured 731 orbits of it). The launch planner's whole premise is
+      "truthful, predictable consequences before commit" (§3 / M1-PLN-1), so this is a real gap, not a
+      harness quirk — a player designing a replacement at speed is shown a lie. Options, none chosen:
+      hold the clock while the pad is open on a draft; state the commit tick the preview assumes; or
+      re-aim the committed launch to the previewed PHASE rather than the previewed sub-longitude
+      (the last is probably right — the player chose a slot on the ring, not a number). Found by
+      SD-65; deliberately not designed here.
+- [ ] **RC-13** *(P2)* The pad's altitude field cannot say "the same ring as those" — *S* · matching an
+      existing ring's PERIOD needs its exact semi-major axis; the field takes full precision
+      (`ScrubNumber` rounds only the display) but nothing on screen ever tells the player the exact
+      number, and the rounded one they can read is a different orbit (0.203°/orbit drift at act-2
+      scale). The harness reads it from `__netState().altKm`; a player cannot. A "match the selected
+      ring" affordance on the pad is the obvious answer, which makes it a design call. Found by SD-65.
 - [ ] **RC-11** *(P2)* `.mission-pad` is 1043 px of content in a 562 px panel viewport at
       1920×1080 — *S* · so the launch commit row reads below the fold on the commonest desktop
       height. The panel DOES scroll (`.telem.mission-top` is `overflow-y: auto`), so this is friction

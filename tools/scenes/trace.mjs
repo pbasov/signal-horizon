@@ -98,6 +98,8 @@ async function summonTrace(ctx) {
   });
 }
 
+import { fillRingHole, exactRingAltKm } from "../ring-fill.mjs";
+
 export default {
   name: "trace",
   async run(ctx) {
@@ -199,12 +201,25 @@ export default {
       }
     }
     await untilCursor(ctx, 1, 90000);
-    await sign(ctx, "REGION-1");
-    await ctx.key("c"); // the act-2 constellation batch
+    // REGION-1 IS SIGNED LAST, once the ring is whole (SD-64). It used to be signed here, before a
+    // single member flew, and availability is a ROLLING WINDOW — a contract accepted over an empty
+    // sky keeps remembering that empty sky, so REGION-1 could not climb to its 99 % bar and the
+    // act-2 gate never fired. Without act 2 there is no act 3, which is why this screen's own board
+    // read "0 flows" and half its assertions were vacuous. canon.ts puts its accept after the fill
+    // for exactly this reason.
+    await ctx.key("c"); // the act-2 constellation batch (N measured live by suggestPhasing)
     await simSleep(ctx, 290, 120000);
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
-    await launchDraft(ctx, { altKm: 310, incDeg: 90, subLonDeg: 45, count: 4, spreadDeg: 90 });
+    // Every number in the fill is read off the ring that is actually flying — tools/ring-fill.mjs.
+    await fillRingHole(ctx, { incDeg: 90, launch: (p) => launchDraft(ctx, p) });
     await ctx.settle(2000);
+    await sign(ctx, "REGION-1");
+    await ctx.settle(400);
+    ctx.ok(
+      "REGION-1 signs once the ring is whole",
+      (await ctx.eval(() => window.__netState?.()?.contracts.find((c) => c.id === "REGION-1")?.state)) === "active",
+      "active",
+    );
     await untilCursor(ctx, 2, 150000);
     await slow(ctx);
     await summonTrace(ctx);
@@ -214,7 +229,11 @@ export default {
 
     // Act 3a: the corridor + backhaul share a pipe — the whole reason this screen exists.
     await simSleep(ctx, 661, 150000);
-    await launchDraft(ctx, { altKm: 310, incDeg: 0, subLonDeg: 1.5, count: 3, spreadDeg: 120, fit: true });
+    // The corridor LEOs are the SAME LEO family as the ring (canon flies them at
+    // `LEO_SWEEP.semiMajorM`), so they take the ring's exact altitude too — 310 km was the
+    // pre-SD-56 number and put them in a different orbit entirely (SD-64).
+    const corridorAltKm = await exactRingAltKm(ctx);
+    await launchDraft(ctx, { altKm: corridorAltKm, incDeg: 0, subLonDeg: 1.5, count: 3, spreadDeg: 120, fit: true });
     await simSleep(ctx, 686, 120000);
     await ctx.eval(async () => {
       const btns = [...document.querySelectorAll("[data-net=beam]")];
@@ -435,12 +454,36 @@ export default {
       const closed = await ctx.eval(() => document.querySelectorAll("[data-net=repoint-pick]").length);
       ctx.ok("the picker is closed until asked for", closed === 0, `${closed} options showing`);
 
+      // REPOINT A STEERABLE BEAM, chosen deterministically (SD-64).
+      //
+      // This used to click `querySelector("[data-net=repoint]")` — the FIRST repoint button on the
+      // board. Which pipe is first depends on the live worst-first ordering, so the scene sometimes
+      // grabbed the act-1 GEO's parked BROADCAST floodlight, whose picker has nothing to commit: the
+      // click was a no-op, the picker stayed open with 4 options, and no beam action reached the WIRE.
+      // That is the run-to-run variance filed as "TRACE scene instability" — not flakiness in the
+      // panel, but a scene picking a different satellite each run. A floodlight is not a spot beam;
+      // prefer a pipe whose antenna can actually be aimed.
       const opened = await ctx.eval(() => {
-        const b = document.querySelector("[data-net=repoint]");
-        if (!b) return null;
+        const btns = [...document.querySelectorAll("[data-net=repoint]")];
+        if (btns.length === 0) return null;
+        const steerable = btns.filter((b) => {
+          const row = b.closest("[data-net=trace-pipe]");
+          return !/BROADCAST/.test(row?.textContent ?? "");
+        });
+        const b = steerable[0] ?? btns[0];
         b.click();
-        return { sat: b.getAttribute("data-sat"), slot: b.getAttribute("data-slot") };
+        return {
+          sat: b.getAttribute("data-sat"),
+          slot: b.getAttribute("data-slot"),
+          steerable: steerable.length > 0,
+          of: btns.length,
+        };
       });
+      ctx.ok(
+        "a steerable beam is on the board to repoint (not just the parked floodlight)",
+        opened !== null && opened.steerable === true,
+        opened === null ? "no repoint button at all" : `${opened.sat}:${opened.slot} of ${opened.of} pipes`,
+      );
       await ctx.settle(350);
       const picker = await ctx.eval(() =>
         [...document.querySelectorAll("[data-net=repoint-pick]")].map((b) => ({
@@ -477,13 +520,24 @@ export default {
           b?.click();
         }, target?.region ?? "");
         await ctx.settle(400);
-        const after = await ctx.eval(() => ({
-          lines: [...document.querySelectorAll(".log-line .msg")].length,
-          open: document.querySelectorAll("[data-net=repoint-pick]").length,
-          last: [...document.querySelectorAll(".log-line .msg")].slice(-1)[0]?.textContent ?? "",
-        }));
+        const after = await ctx.eval((n) => {
+          const msgs = [...document.querySelectorAll(".log-line .msg")].map((e) => e.textContent ?? "");
+          return {
+            lines: msgs.length,
+            open: document.querySelectorAll("[data-net=repoint-pick]").length,
+            // THE LINES ADDED SINCE THE COMMIT, not just the last one. The sim keeps talking while
+            // the scene reads: a "first signal" line lands in the same instant and outraces the beam
+            // line to the tail, which is the other half of the filed TRACE instability. The claim is
+            // that committing a target SAYS SO on the wire — not that nothing else spoke afterwards.
+            fresh: msgs.slice(n),
+          };
+        }, before);
         ctx.ok("committing a target closes the picker", after.open === 0, `${after.open} options still showing`);
-        ctx.ok("the commit lands one beam action on the WIRE", after.lines > before && /beam/.test(after.last), after.last);
+        ctx.ok(
+          "the commit lands one beam action on the WIRE",
+          after.lines > before && after.fresh.some((l) => /beam/.test(l)),
+          after.fresh.join(" | ") || "(nothing new on the wire)",
+        );
       }
     }
 

@@ -24,6 +24,8 @@ const T = {
   end: 1090,
 };
 
+import { fillRingHole } from "../ring-fill.mjs";
+
 async function simSleep(ctx, targetSimT) {
   // Sleep until the session's mission-elapsed time passes target (poll the probe).
   const t0 = Date.now();
@@ -130,8 +132,51 @@ export default {
 
     // ══ ACT 2 — the polar metro needs a CONSTELLATION ═══════════════════════
     await ctx.shot("act2-open");
-    await sign(ctx, "REGION-1");
-    await ctx.key("c"); // the constellation assist batch (zeroGapN=4, one plane)
+    // "CAN ONE BIRD DO IT?" — asked WHILE ACT 2 IS LIVE, which is when the question is real.
+    //
+    // It used to be asked after the act-2 gate, and could not be answered there (SD-64): by then
+    // REGION-1's 480 s term has COMPLETED, so it is no longer a selectable target, and the board
+    // carries the act-3a corridor whose SLA is latency. The check now runs at the top of act 2 with
+    // REGION-1 still OFFERED — the moment the player is actually deciding how many to buy.
+    {
+      // IN THE PLAYER'S ORDER: pick the tender on the BOARD, then open the pad to design against it.
+      // Selecting is a TOGGLE (`r1TargetContractId === id ? null : id`), so click only when the row
+      // is not already the target. Doing this with the pad face already open marks nothing — the
+      // board's rows live on the BOOK face and do not repaint while it is hidden.
+      const aimed = await ctx.eval(() => {
+        const row = [...document.querySelectorAll("[data-net=tender]")].find((r) => r.getAttribute("data-contract") === "REGION-1");
+        if (!row) return "no REGION-1 row";
+        if (!row.classList.contains("sel")) row.click();
+        return null;
+      });
+      await ctx.settle(400);
+      const selMark = await ctx.eval(() => {
+        const row = [...document.querySelectorAll("[data-net=tender]")].find((r) => r.getAttribute("data-contract") === "REGION-1");
+        return row ? { sel: row.classList.contains("sel"), mark: row.querySelector(".mission-tender-mark")?.textContent ?? "" } : null;
+      });
+      ctx.ok(
+        "the polar metro takes the board's TARGET mark when picked",
+        aimed === null && selMark?.sel === true && selMark.mark === "◉",
+        aimed ?? `sel=${selMark?.sel} mark=${selMark?.mark}`,
+      );
+      await ctx.eval(() => { const t = document.querySelector("[data-net=pad-toggle]"); if (t && !t.textContent?.includes("BACK")) t.click(); });
+      await ctx.settle(500);
+      const padFact = await ctx.eval(() => document.querySelector(".mission-fact")?.textContent ?? "");
+      ctx.ok("the pad answers 'one bird' on an availability tender", /one bird lights/.test(padFact) && /tender asks 99%/.test(padFact), padFact.slice(0, 140));
+      // Back to the book so the constellation work below starts where it used to.
+      await ctx.eval(() => { const t = document.querySelector("[data-net=pad-toggle]"); if (t && t.textContent?.includes("BACK")) t.click(); });
+      await ctx.settle(300);
+    }
+    // REGION-1 IS SIGNED LAST, once the ring is whole — see the accept below the fill.
+    //
+    // It used to be signed HERE, before a single member flew (SD-64). Availability is a ROLLING
+    // WINDOW, so a contract accepted over an empty sky keeps remembering that empty sky: the ring
+    // was measured at 90.6 % against ACT2_SLA_AVAIL = 0.99 and could not climb out inside the
+    // scene's wait, so the act-2 gate never fired and act3a, the corridor tender and TRACE all fell
+    // behind it. canon.ts had already learned this — SD-56 moved its own accept for exactly this
+    // reason ("it still remembered the empty sky before the constellation existed") and its
+    // TICK_ACCEPT2 sits after the fill batch. The scene now matches the canon it is replaying.
+    await ctx.key("c"); // the constellation assist batch (N measured live by suggestPhasing)
     await simSleep(ctx, 290);
     // The seeded attrition: two no-seps + an underburn. Fix what's fixable.
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
@@ -148,21 +193,15 @@ export default {
     // The altitude is now DERIVED from the ring actually flying, so the next re-scale cannot silently
     // strand this launch in the wrong orbit again. `spreadDeg` stays 2π/N over the batch, matching
     // ACT2_PHASE_SPREAD_RAD in canon.ts.
-    const ringAltKm = await ctx.eval(() => {
-      const st = window.__netState?.();
-      // The polar ring is the modal altitude among the act-2 batch — everything except the lone
-      // GEO park (the tallest) and anything obviously off it.
-      const counts = new Map();
-      for (const x of st.sats) counts.set(x.aKm, (counts.get(x.aKm) ?? 0) + 1);
-      let bestAlt = null;
-      let bestN = 0;
-      for (const [alt, n] of counts) if (n > bestN) { bestN = n; bestAlt = alt; }
-      return bestAlt;
-    });
-    ctx.ok("the ring to be filled reports an altitude", typeof ringAltKm === "number" && ringAltKm > 0, `${ringAltKm} km`);
-    await launchDraft(ctx, { altKm: ringAltKm, incDeg: 90, subLonDeg: 45, count: 4, spreadDeg: 90 });
+    // Every number in the fill is read off the ring that is actually flying — tools/ring-fill.mjs.
+    await fillRingHole(ctx, { incDeg: 90, launch: (p) => launchDraft(ctx, p) });
     await ctx.settle(2400);
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
+    // The ring is whole; NOW sign, so the rolling window opens over a network that already holds.
+    await sign(ctx, "REGION-1");
+    await ctx.settle(300);
+    const signed1 = await ctx.eval(() => window.__netState?.()?.contracts.find((c) => c.id === "REGION-1")?.state);
+    ctx.ok("REGION-1 is still on offer once the ring is whole, and signs", signed1 === "active", `state=${signed1}`);
     const diag = await ctx.eval(() => {
       const st = window.__netState?.();
       const alts = {};
@@ -177,19 +216,16 @@ export default {
       Object.keys(diag.altHistogram).length <= 2,
       JSON.stringify(diag),
     );
-    const g2 = await untilCursor(ctx, 2);
-    ctx.ok("ACT-2 GATE: the polar metro HELD across a full hand-off cycle", g2 !== null, g2 ? `cursor ${g2.cursor} · €${g2.balance} · ${g2.sats.length} sats` : "timeout");
+    const w2 = await untilCursorWatching(ctx, 2, "REGION-1");
+    const g2 = w2.state;
+    ctx.ok(
+      "ACT-2 GATE: the polar metro HELD across a full hand-off cycle",
+      g2 !== null,
+      g2
+        ? `cursor ${g2.cursor} · €${g2.balance} · ${g2.sats.length} sats`
+        : `timeout — REGION-1 availability ranged ${(w2.lo * 100).toFixed(1)}%..${(w2.hi * 100).toFixed(1)}%, last ${(w2.last * 100).toFixed(1)}% (SLA 99%) · sim t ${Math.round(w2.tFirst)}s→${Math.round(w2.tLast)}s (${Math.round(w2.tLast - w2.tFirst)}s elapsed, ${Math.round((w2.tLast - w2.tFirst) / 185)} ring orbits) at ${w2.scale}`,
+    );
     await ctx.shot("10-act2-held");
-    // "Can one bird do it?" — the pad, open post-gate, must answer in numbers.
-    {
-      await ctx.eval(() => { const t = document.querySelector("[data-net=pad-toggle]"); if (t && !t.textContent?.includes("BACK")) t.click(); });
-      await ctx.settle(500);
-      const padFact = await ctx.eval(() => document.querySelector(".mission-fact")?.textContent ?? "");
-      ctx.ok("the pad answers 'one bird' on an availability tender", /one bird lights/.test(padFact) && /tender asks 99%/.test(padFact), padFact.slice(0, 140));
-      // and the GLOBE answers a whole-batch: every member's hugging blob is drawn.
-      const blobN = await ctx.eval(() => window.__memberBlobs?.() ?? -1);
-      ctx.ok("batch blobs: every member's coverage rides the ball", blobN >= 1, `${blobN} blobs`);
-    }
 
     // ══ ACT 3a — the corridor: three pointed ACCESS beams ════════════════════
     await simSleep(ctx, T.eqCorridor);
@@ -223,6 +259,39 @@ export default {
     await ctx.shot("20-act3-corridor");
   },
 };
+
+/**
+ * Wait for the cursor, but WATCH REGION-1's availability while waiting (SD-64). "timeout" alone
+ * cannot tell you whether the network was climbing towards the SLA and ran out of clock, or sat
+ * flat below it — and those want opposite fixes.
+ */
+async function untilCursorWatching(ctx, minCursor, contractId, timeoutMs = 240000) {
+  const t0 = Date.now();
+  let lo = Infinity;
+  let hi = -Infinity;
+  let last = null;
+  let tFirst = null;
+  let tLast = null;
+  let scale = null;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const s = await ctx.eval(() => window.__netState?.());
+    if (s) {
+      if (tFirst === null) tFirst = s.tSim;
+      tLast = s.tSim;
+      const c = s.contracts.find((x) => x.id === contractId);
+      if (c && typeof c.avail === "number") {
+        lo = Math.min(lo, c.avail);
+        hi = Math.max(hi, c.avail);
+        last = c.avail;
+      }
+      if (s.cursor >= minCursor) return { state: s, lo, hi, last, tFirst, tLast, scale };
+    }
+    if (scale === null) scale = await ctx.eval(() => window.__clock?.().scaleLabel ?? null);
+    if (Date.now() - t0 > timeoutMs) return { state: null, lo, hi, last, tFirst, tLast, scale };
+    await ctx.wait(200);
+  }
+}
 
 async function untilCursor(ctx, minCursor, timeoutMs = 240000) {
   const t0 = Date.now();

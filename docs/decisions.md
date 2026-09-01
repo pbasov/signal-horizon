@@ -1969,3 +1969,100 @@ and trace remainders, with act1, audio and frontier taken to green.
 because every earlier index is unchanged — it is safe only for readers that never name the LAST
 index. Both card decks and one `while` loop named it. Where copy is keyed by position, the position
 has to be derived or pinned; a literal index in player-facing code is a latent mis-briefing.
+
+---
+
+### SD-65 — THE SCRIPTED HOUR CAN BE PLAYED AGAIN: a stale aim, a rounded altitude, and a pad answering about the wrong tender (2026-09-01)
+
+**Status:** ACCEPTED. Finishes SD-64's RC-09/RC-10, and fixes three shipped-code defects found on the
+way there.
+
+**Context.** SD-64 left the playtest RED on two scenes with one shared cause: the act-2 gate never
+fired, so act 3 never opened, the corridor tender never signed, and the whole TRACE board read
+"0 flows" with half its assertions vacuous. SD-64 had taken the ring from `{310: 4, 402: 7, 535: 1}`
+to `{402: 11, 535: 1}` and REGION-1 from 90.6 % to 96.9 % — still short of `ACT2_SLA_AVAIL = 0.99` —
+and filed the residual as "phase, not altitude". That was right, and the reason turned out to be
+worth the dig.
+
+**THE FINDING THAT MATTERED: an aim chosen under pause is only valid for the epoch it was chosen at.**
+`resolveOrbit` sets `m0Rad = subLonRad + ω·t` — the epoch-correct sub-longitude mapping. So a
+sub-longitude names a phase *at the tick it is committed*. The scene paused the clock, read the pad's
+phase ring, slid the sub-longitude until the readout said the hole closed, then **handed time back
+and only then committed**. These scenes play at 1000×, where the few hundred milliseconds between
+choosing and committing is ~1.6 orbits: the aim was stale before it was bought. Measured, the ring
+came out mis-phased however carefully it had been placed — REGION-1 pinned at 68.8–87.5 % across
+**731 ring orbits** (135,154 sim-seconds) with the phase ring cheerfully reporting a closed hole.
+Committing the same aim *while the clock is still held* takes REGION-1 to **100 % held**, the act-2
+gate fires, and the hour runs in **33 s instead of timing out at 258 s**.
+
+This is also a real observation about the game, not only the harness: the pad's consequence preview
+is truthful at 1× and progressively less truthful the faster time runs, because the previewed phase
+is not the phase you buy. The launch planner's whole premise is "truthful, predictable consequences
+before commit" (§3, M1-PLN-1), so that gap is filed as an owed piece of work rather than papered over
+— see the backlog.
+
+**Three more things had to be true, and each was measured rather than reasoned.**
+
+1. **A ROUNDED ALTITUDE IS A DIFFERENT ORBIT.** The act-2 ring flies at 401.7361 km, and
+   `__netState` only ever exposed `aKm` — rounded. Read back `402`, type it in, and you buy a period
+   of 185.104 s against the ring's 185 s: 0.203° of phase drift per orbit, a full 40° slot lost in
+   36,439 sim-seconds. The probe now carries `altKm` unrounded beside the rounded `aKm`. The pad
+   itself was never the problem — `ScrubNumber.commit()` stores and forwards full precision and only
+   `paint()` rounds the *display* to one decimal, so typing the exact value works.
+2. **THE PITCH AND THE COUNT ARE READABLE, SO THEY SHOULD BE READ.** A ring of N even slots has a
+   360/N pitch; lose `m` ADJACENT members and the pad reports one hole of (m+1)·pitch. "7 flying ·
+   widest gap 120°" therefore pins the geometry completely: the only integer m reproducing 120° from
+   7 survivors is 2, giving N=9 and a 40° pitch. The old `spreadDeg: 90` was 360/4 from when
+   `ACT2_ZERO_GAP_N` was 4; left as a literal it scattered four birds a quarter-ring apart so only
+   ONE could fall inside the hole, and the best placement merely halved 120° to 60°.
+3. **`subLonDeg` CLAMPS TO ±180.** A sweep over 0..360 saturates at 180 and silently re-tests one
+   point four times over — measured on the draft's own ring markers, which stop moving past 180.
+
+The whole move now lives once, in `tools/ring-fill.mjs`, shared by both scenes: read the exact ring
+altitude, derive count and pitch from the pad's readout, search the sub-longitude against that
+readout, and commit under pause. No number in it is written down, so the next re-scale cannot strand
+it the way the last one did.
+
+**THREE SHIPPED-CODE DEFECTS, all in what the pad tells the player.**
+
+**(a) The pad's rules fact ignored the player's selection.** `r1PadFact()` re-derived "the target"
+inline as "the first offered Earth contract", so clicking the polar metro to design against it — the
+row's own tooltip promises exactly that — left the pad answering about the corridor metro's latency
+SLA. This is precisely the bug `r1TargetContract()`'s docstring says it exists to prevent
+(*"before this they each re-derived it inline, which is how the pad ended up analysing REGION-0 while
+the player was reading the corridor metro's terms"*); two facts were simply missed when that fix
+landed. Both now go through `r1TargetContract()`. The availability fact was the worse of the two: it
+paired `combDuty` — computed against the *target* — with some other contract's SLA bar, stating one
+region's hold-rate against another region's promise.
+
+**(b) A selection outlived the contract it pointed at.** `r1SelectedContract()` dropped any contract
+that was no longer offered-or-active but left `r1TargetContractId` pointing at it. The two then
+disagreed in the worst possible way: the board went on drawing that row's ◉ and its "TARGET — the
+globe and the pad are pointed here" tooltip while every consumer of `r1TargetContract()` silently
+fell back to a different tender. Caught mid-hour with the probe reading
+`{r1TargetContractId: "REGION-1", selected: null, target: "REGION-2"}` — the row said REGION-1, the
+pad was answering about the corridor. The id is now cleared when it goes stale.
+
+**(c) TRACE's filed instability was a scene picking a different satellite each run.** The scene
+clicked `querySelector("[data-net=repoint]")` — the FIRST repoint button on the board — and which
+pipe is first depends on the live worst-first ordering. Sometimes it grabbed the act-1 GEO's parked
+BROADCAST floodlight, whose picker has nothing to commit: the click was a no-op, the picker stayed
+open with 4 options, and no beam action reached the WIRE. It now prefers a pipe whose antenna can
+actually be aimed. The other half was real too, exactly as the backlog guessed: the wire assertion
+read only the LAST log line, which a concurrent "first signal" line outraces; it now searches the
+lines added since the commit. Three consecutive runs are byte-identical green.
+
+**Consequences.** `hour` 4 failed/258 s → **15 ok, 0 failed, 33 s**. `trace` 6 failed/170 s →
+**51 ok, 0 failed, 37 s**, stable across repeats. The full playtest goes from 10 failures to **0**.
+No sim behaviour changed: `NET_CANON_GOLDEN` is untouched and the replay goldens are untouched — the
+three app changes are a dev probe gaining a field, and two render-only reads of "which tender is the
+target". The act-2 question ("can one bird do it?") also moved to where it can be answered — the top
+of act 2, with REGION-1 still OFFERED — because after the gate its 480 s term has completed and it is
+no longer a selectable target at all.
+
+**What this says about the harness.** Both scenes had encoded a *snapshot* of the geometry (310 km,
+count 4, spread 90°) rather than a way of finding it. SD-56 re-choreographed the canon for the
+re-scale and the scenes were left behind, silently, because a scene that cannot reach act 2 still
+reports its act-1 assertions as green. The fix is not new constants; it is that a scene should read
+what the game tells the player and act on that. That also makes the scene a much better witness: it
+now fails loudly when the pad stops naming a hole, rather than quietly buying the wrong orbit.

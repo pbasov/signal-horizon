@@ -2302,8 +2302,18 @@ const NET_MARS_BREADCRUMB_FLASH_S = 5.0;
 function r1SelectedContract(): ReturnType<NetSession["contractById"]> {
   if (r1TargetContractId === null) return null;
   const c = netSession.contractById(r1TargetContractId);
-  if (c === null) return null;
-  if (c.state !== "offered" && c.state !== "active") return null;
+  // A SELECTION MUST NOT OUTLIVE THE CONTRACT IT POINTS AT (SD-64). This used to return null and
+  // leave `r1TargetContractId` pointing at a dead contract, and the two disagreed in the worst
+  // possible way: the board went on drawing that row's ◉ marker and its "TARGET — the globe and the
+  // pad are pointed here" tooltip, while every consumer of {@link r1TargetContract} silently fell
+  // back to some OTHER tender. Measured mid-hour: the row said REGION-1 was the target and the pad
+  // was answering about the corridor metro's latency SLA. Clearing the id here keeps the marker and
+  // the analysis telling the same story — the exact failure r1TargetContract's docstring exists to
+  // prevent, arriving as a stale selection instead of an inline re-derivation.
+  if (c === null || (c.state !== "offered" && c.state !== "active")) {
+    r1TargetContractId = null;
+    return null;
+  }
   return c;
 }
 
@@ -4130,8 +4140,11 @@ function missionTopState(): MissionTopState {
     padFact: r1PadFact() ?? (() => {
       // The "can one bird do it" answer: only when the target carries an availability bar.
       // duty = the draft's hold-rate over the region from the comb (facts, never verdicts).
-      const tc = netSession.contracts.find((x) => x.region.bodyId === "earth" && x.activeAxes.has("availability") && (x.state === "offered" || x.state === "active"));
-      if (!tc || r1Mode !== "pad" || combDuty === null) return null;
+      // THE TARGET, not "any availability contract" (SD-64) — the comb that produces `combDuty` is
+      // computed against `r1TargetContract()`, so pairing that duty with some OTHER contract's bar
+      // stated a hold-rate for one region against the SLA of another.
+      const tc = r1TargetContract();
+      if (!tc || !tc.activeAxes.has("availability") || r1Mode !== "pad" || combDuty === null) return null;
       return PAD_AVAIL_FACT(`${Math.round(combDuty * 100)}%`, `${Math.round(tc.slaAvail * 100)}%`);
     })(),
     // R3 — the scenario's stuck-assist now has a MISSION surface (book face, under the objective).
@@ -4151,10 +4164,12 @@ function missionTopState(): MissionTopState {
  * player must know to judge the design — e.g. a floodlight can never carry a low-latency
  * SLA. Computed against the TARGET tender; null when nothing needs saying. */
 function r1PadFact(): string | null {
-  const c =
-    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
-    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
-    null;
+  // THE SELECTED tender, via the one function that owns that question (SD-64). This used to
+  // re-derive "the target" inline as "the first offered Earth contract", ignoring the player's
+  // click entirely — which is precisely the bug {@link r1TargetContract}'s own docstring says it
+  // exists to prevent. Clicking the polar metro to design against it (the row's tooltip promises
+  // exactly that) left the pad answering about the corridor metro instead.
+  const c = r1TargetContract();
   if (c === null) return null;
   const hasPointed = r1Cards.some((id) => id.startsWith("ACCESS") || id === "GATEWAY");
   const hasBroadcast = r1Cards.includes("BROADCAST");
@@ -4253,7 +4268,19 @@ function ledgerFleetState(): LedgerFleetState {
   netMode
     ? {
         cursor: netSession.cursor,
-        sats: netSession.sats.map((x) => ({ id: x.id, aKm: Math.round((x.orbit.aM - A1_BODY_RADIUS_M) / 1000) })),
+        // `aKm` is the ROUNDED, human-readable altitude (what the observation digest prints).
+        // `altKm` is the SAME number unrounded, and it exists because a rounded one is a DIFFERENT
+        // ORBIT (SD-64): the act-2 ring flies at 401.7361 km, and a scene that reads back `402` and
+        // types it into the pad buys a period of 185.104 s against the ring's 185 s — 0.2° of phase
+        // drift per orbit, so the "replacement" walks out of the slot it was placed in and the ring
+        // decays (measured: REGION-1 availability falling 87.5% -> 68.8% with the ring geometrically
+        // complete). The pad's own field keeps full precision (ScrubNumber rounds the DISPLAY only),
+        // so exposing the exact value is all that was needed to make a hand-placed member stay put.
+        sats: netSession.sats.map((x) => ({
+          id: x.id,
+          aKm: Math.round((x.orbit.aM - A1_BODY_RADIUS_M) / 1000),
+          altKm: (x.orbit.aM - A1_BODY_RADIUS_M) / 1000,
+        })),
         balance: Math.round(netSession.balance),
         contracts: netSession.contracts.map((c) => ({ id: c.id, state: c.state, avail: c.lastAvailability, servedFrac: c.lastServedFraction })),
         // Mission-ELAPSED sim-seconds (the scene scheduler keys off THIS, not wall time —
