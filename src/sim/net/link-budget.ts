@@ -191,3 +191,45 @@ export function segmentOccludedByBody(from: Vec3, to: Vec3): boolean {
   // grazing surface tangent — the horizon — is not spuriously called occlusion).
   return closest2 < R * R - 1e-3;
 }
+
+/**
+ * M1-SAT-3 — the SAT↔SAT edge predicate (the CROSSLINK relay substrate the §7 routing
+ * solver consumes). Identical physics to {@link evaluateLink} MINUS the elevation gate:
+ * there is no local horizon in orbit, so an inter-sat edge closes iff the inverse-square
+ * budget closes AND the toy body does not occlude the segment. Both points are
+ * earth-relative. This is the "sat→sat edge reuses the SAME predicate without a special
+ * case" this module's header promised.
+ *
+ * `elevationRad` reports π/2 (the gate is not applicable) so one {@link LinkBudget} shape
+ * covers every edge class in the graph.
+ *
+ * PURE. @see docs/signal-horizon-m1.md Part I §1.2 (CROSSLINK), §7.1 (the graph edges).
+ */
+export function evaluateInterSatLink(
+  from: Vec3,
+  to: Vec3,
+  eirp: number,
+  rangeRefM: number,
+): LinkBudget {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  const distanceM = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (distanceM <= 0) {
+    return {
+      distanceM: 0,
+      elevationRad: Math.PI / 2,
+      received: Infinity,
+      latencyS: 0,
+      closes: false,
+      cause: "occluded",
+    };
+  }
+  const ratio = rangeRefM / distanceM;
+  const received = eirp * ratio * ratio;
+  const latencyS = distanceM / C_LIGHT;
+  let cause: LinkCause = "ok";
+  if (received < 1) cause = "out_of_budget";
+  else if (segmentOccludedByBody(from, to)) cause = "occluded";
+  return { distanceM, elevationRad: Math.PI / 2, received, latencyS, closes: cause === "ok", cause };
+}

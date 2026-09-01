@@ -11,10 +11,12 @@
  *   - ACCESS-S / ACCESS-L — symmetric SPOT BEAMS: must be POINTED (beam-assigned) at
  *     exactly one region to serve it (m1-redesign.md §2.3). Small = cheap and thin;
  *     large = headroom.
- *   - GATEWAY — the fat symmetric pipe; also a pointable spot beam in M1 (its trunk
- *     landing role matures with crosslink relaying, R3).
- *   - CROSSLINK — the S-slot relay substrate. PRESENT-BUT-INERT in R0/R1 routing (the
- *     M1-SLV relay epic consumes it); the builder shows it, the router ignores it.
+ *   - GATEWAY — the fat symmetric pipe; a pointable spot beam AND, since M1-SLV-1, the
+ *     only antenna that can LAND trunk traffic arriving over the relay spine. That
+ *     landing role is what finally separates it from "a fat ACCESS".
+ *   - CROSSLINK — the S-slot relay terminal. LIVE since M1-SAT-3: two sats that both fly
+ *     one and can see each other form a routing-graph edge (graph.ts). It never serves a
+ *     region; it is what lets a path have a middle.
  *
  * PURE: no three, no DOM, no wall-clock, no RNG. Reuses {@link SatOrbit} unforked.
  *
@@ -124,7 +126,8 @@ const CONE_30_DEG = 30 * (Math.PI / 180);
 /** The M1 card catalog. Capacities are on the contract offeredLoad scale (an Act-1
  * contract offers ~1.0 at baseline, swinging ±45% diurnally; escalation grows the
  * baseline toward 1.4). BROADCAST is down-only (serves latency-tolerant demand with no
- * pointing); ACCESS/GATEWAY are pointed spot beams; CROSSLINK is inert relay substrate. */
+ * pointing); ACCESS/GATEWAY are pointed spot beams; CROSSLINK is the relay terminal that
+ * makes a sat an edge of the routing graph rather than a leaf. */
 export const ANTENNA_CARDS: readonly AntennaCard[] = [
   {
     id: "BROADCAST",

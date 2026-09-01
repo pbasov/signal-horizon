@@ -4,7 +4,9 @@
  * exactly one region to serve it (the `net_assign_beam` action); a BROADCAST antenna
  * floodlights its footprint — it serves any LATENCY-TOLERANT contract in view with no
  * pointing (its down-only asymmetry identity, spec §1.2). CROSSLINK is S-slot relay
- * substrate — never a serving pipe (inert until the M1-SLV relay epic).
+ * substrate — never a SERVING pipe, but since M1-SAT-3 it is a live graph EDGE: it
+ * carries traffic between sats so a region can be served from one place and landed in
+ * another (see graph.ts).
  *
  * A PIPE is one antenna on one sat, keyed `${satId}:${slotIdx}` (slotIdx = the index
  * into the sat's loadout). Load aggregation, fair-share, and the congestion term are all
@@ -45,10 +47,43 @@ export function isPointable(a: AntennaSpec): boolean {
   return a.type === "ACCESS" || a.type === "GATEWAY";
 }
 
-/** Whether this antenna type can serve a region AT ALL (CROSSLINK cannot — S-slot relay
- * substrate, inert in M1 routing). */
+/** Whether this antenna type can serve a region AT ALL (CROSSLINK cannot — an S-slot
+ * relay terminal faces other sats, never the surface; it is an EDGE, not a pipe). */
 export function isServingType(a: AntennaSpec): boolean {
   return a.type === "BROADCAST" || a.type === "ACCESS" || a.type === "GATEWAY";
+}
+
+/** Whether this antenna type is an inter-sat RELAY link (the M1-SAT-3 graph edge). */
+export function isCrosslinkType(a: AntennaSpec): boolean {
+  return a.type === "CROSSLINK";
+}
+
+/** Every CROSSLINK (slotIdx, antenna) on a sat — the sat-facing relay terminals it can
+ * form graph edges with. Empty for a sat that flies no S-slot card. */
+export function crosslinkPipes(sat: NetSat): { slotIdx: number; antenna: AntennaSpec }[] {
+  const out: { slotIdx: number; antenna: AntennaSpec }[] = [];
+  for (let i = 0; i < sat.loadout.length; i++) {
+    if (isCrosslinkType(sat.loadout[i])) out.push({ slotIdx: i, antenna: sat.loadout[i] });
+  }
+  return out;
+}
+
+/**
+ * Every GATEWAY (slotIdx, antenna) on a sat — the TRUNK-LANDING pipes a relayed path may
+ * descend through to reach the ground net.
+ *
+ * A landing pipe needs NO beam assignment: it is not serving a region, it is landing
+ * trunk traffic that arrived over the relay spine. This is what finally distinguishes
+ * GATEWAY from "a fat ACCESS" — the role its name always claimed (sat.ts: "its trunk
+ * landing role matures with crosslink relaying"). BROADCAST is deliberately excluded: a
+ * down-only floodlight is not a trunk landing.
+ */
+export function landingPipes(sat: NetSat): { slotIdx: number; antenna: AntennaSpec }[] {
+  const out: { slotIdx: number; antenna: AntennaSpec }[] = [];
+  for (let i = 0; i < sat.loadout.length; i++) {
+    if (sat.loadout[i].type === "GATEWAY") out.push({ slotIdx: i, antenna: sat.loadout[i] });
+  }
+  return out;
 }
 
 /**

@@ -147,10 +147,17 @@ the pull is specified, not assumed:
 ### 4.0 What it is NOT `▸ LOCKED`
 
 It is **not a FIB.** No destination prefix, no next-hop, no admin metric, no interface, no AS path.
-M1 §7.1 rejects daemon fidelity as "fidelity the player can't perceive", and the M1 path is always
-exactly three nodes (`router.ts:294, :319, :331`) with `CROSSLINK` structurally unable to route
-(`beams.ts:50-52`). The transferable-knowledge payoff (§3a) here is **QoS-class allocation over
-shared, capacity-limited links** — real traffic engineering — not a router dump.
+M1 §7.1 rejects daemon fidelity as "fidelity the player can't perceive". The transferable-knowledge
+payoff (§3a) here is **QoS-class allocation over shared, capacity-limited links** — real traffic
+engineering — not a router dump.
+
+> **AMENDED (SD-56, 2026-09-01).** This section previously also rested on "the M1 path is always
+> exactly three nodes … with `CROSSLINK` structurally unable to route". That was a statement about
+> the Act-1 bent-pipe STUB, not about the design: SD-39 always locked a multi-hop graph solver, and
+> M1-SLV-1 has now built it. A path is `region → serving sat → [relay hops] → landing sat → ground`
+> and is three nodes only when the fleet flies no CROSSLINK. Nothing on this screen breaks — the
+> `via A · TYPE → B` grammar was chosen to grow (see 11.6) — but the claim above was false and is
+> withdrawn rather than reworded.
 
 ### 4.1 Two levels, and why
 
@@ -1150,12 +1157,12 @@ commit.
 
 | # | fenced | authority |
 |---|---|---|
-| 11.1 | **Laser terminals / Level-2 topology construction.** No optical-terminal inventory, no acquisition/tracking geometry, no construction UI, no cycle-robustness read. `CROSSLINK` is inert relay substrate and never appears as a pipe row; `LASER` stays greyed in the builder. | GDD §4.3a Scope honesty → **M4** |
+| 11.1 | **Laser terminals / Level-2 topology construction.** No optical-terminal inventory, no acquisition/tracking geometry, no construction UI, no cycle-robustness read; `LASER` stays greyed in the builder. **Amended (SD-56):** `CROSSLINK` is no longer inert — it is a live routing-graph edge — but it is still AUTO-MESHED, so there is no construction verb and it still never appears as a pipe row. | GDD §4.3a Scope honesty → **M4** |
 | 11.2 | **BGP / peering / inter-operator anything.** No AS numbers, no peer or transit columns, no trust scores, no rival-operator hops, no "never route over Competitor X". One autonomous system: your own fleet. | M1 §7.6, §8; `backlog.md:172` → **M2+** |
 | 11.3 | **`w_stab` / the instability term.** No instability value, no remaining-in-view-time, no third STABILITY stop on the prefer control. The term multiplies out to exactly 0 and is pinned so. | M1 §7.5 LOCKED; `router.ts:204`; `traffic-class.test.ts` |
 | 11.4 | **Predictive routing.** No forecast column, no "next loss: 14:32, in 6m", no "route around it ahead of time". The stamped cause + time is here; the prediction is the post-gate a-ha. | M1 §7.5 → **M2+** |
 | 11.5 | **Per-link cost overrides / the power-user terminal tier.** No `set latency-weight 100 on contract-7`, no text config, no per-link admin metric. M1 §7.5 requires "at least floor + basic ceiling"; the terminal tier is optional and is not built here. | M1 §7.3, §7.5 |
-| 11.6 | **A hop-count column, a next-hop column, or anything FIB-shaped.** `path` is always exactly 3 nodes in M1. The `via A · TYPE → B` grammar is chosen precisely because it grows unchanged at M4 — the six-hop form is `via NET-SAT-2 · ACCESS-L ↗ CORE-1 → CORE-4 → CORE-9 ↘ NET-SAT-8 · GATEWAY → GROUND-0`, same line, same reading order, more segments. It is not built now. | M1 §7.1; `beams.ts:50-52` |
+| 11.6 | **A hop-count column, a next-hop column, or anything FIB-shaped.** Still fenced. **But the premise changed (SD-56):** `path` is no longer always 3 nodes — a relayed route reads `via NET-SAT-2 · ACCESS-L ↗ NET-SAT-5 ↘ NET-SAT-8 · GATEWAY → GROUND-0`, which is exactly the growth the `via A · TYPE → B` grammar was chosen for. The PATH cell renders the real chain; what stays fenced is a hop-count/next-hop COLUMN. | M1 §7.1; SD-56 |
 | 11.7 | **An achievable-optimum column.** "You got 73 %, the ceiling was 91 %" needs a solver mature enough to prove best-achievable. Log truthfully now; fabricate nothing. | GDD §4.12 Scope honesty → **M2+** |
 | 11.8 | **A cost column.** The blend only engages when prefer is non-default **or** the load map is non-empty (`router.ts:153-158`); otherwise the router picks **max signal margin**. A "cost" number would be fabricated in Acts 1–2, and `NET_BANDWIDTH_CLASS_W_BW = 4.0e-4` would make it meaningless anyway. The screen prints the **terms** (latency, load/capacity), which are physics and always true. | `router.ts` |
 | 11.9 | **A ranked candidate list with costs.** `bridgeForPoint` returns only the winner; every rival's cost and margin is discarded. Candidate *arcs* (geometry that closes) ship; candidate *rankings* (a solver-internal number that would also be a pre-commit hint) do not. | `router.ts:199-216`; LAW 1 |

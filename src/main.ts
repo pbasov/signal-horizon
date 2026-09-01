@@ -2008,16 +2008,21 @@ function netServedLinksSlice(
     if (c.region.bodyId !== "earth") continue; // Act-4 Mars leg is the crawler's job, not a toy beam.
     const solve = netSession.lastSolveFor(c.id);
     if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
-    const path = solve.path; // [regionId, satId, groundId] (the router's own node-id path).
+    // [regionId, ...satChain, groundId] — the router's own node-id path. The chain is ONE
+    // sat for a direct bridge and every relay hop for a spine route (M1-SLV-1), so the arc
+    // must walk it rather than assume a single sat: drawing region→servingSat→ground over a
+    // relayed path would render a link that does not exist (LAW 1 — instruments never lie).
+    const path = solve.path;
     const satId = path[1];
     const sat = netSession.sats.find((s) => s.id === satId);
     if (sat === undefined) continue;
     const ground = grounds.find((g) => g.id === path[path.length - 1]);
-    // Resolve the path node ids to world points: region surface → sat orbit → ground surface.
-    const points: Vec3[] = [
-      add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
-      add(satPositionRelative(eph, sat, t)),
-    ];
+    // Resolve the path node ids to world points: region surface → each sat → ground surface.
+    const points: Vec3[] = [add(surfacePointRelative(c.region.latRad, c.region.lonRad, t))];
+    for (let h = 1; h < path.length - 1; h++) {
+      const hop = netSession.sats.find((s) => s.id === path[h]);
+      if (hop !== undefined) points.push(add(satPositionRelative(eph, hop, t)));
+    }
     if (ground !== undefined) points.push(add(surfacePointRelative(ground.latRad, ground.lonRad, t)));
     // §4.3 utilisation of the serving PIPE (its own capacity, R0) — green headroom → red over-cap.
     // SD-53 (P0): both reads come off the per-frame memo, and the capacity is DERATED by any
