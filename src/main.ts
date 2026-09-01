@@ -52,6 +52,7 @@ import {
   netCircularize as netCircularizeAction,
   netSetPrefer as netSetPreferAction,
   netPlaceCache as netPlaceCacheAction,
+  actionToDict,
   type SimAction,
 } from "./sim/action";
 import { applySessionAction } from "./sim/m1/apply-action";
@@ -3838,6 +3839,23 @@ function ledgerFleetState(): LedgerFleetState {
           Math.min(...netSession.contracts.map((c) => c.offeredAtS).concat([netSession.snapshot().lastStepS])),
       }
     : null;
+// SD-55 (AE-02) — THE ACTION LOG, readable. `applyAndRecordNetAction` has always written every
+// committed action into the save's ordered log; nothing could READ it from the page, so the
+// agent-eval harness had no substrate for its deterministic metrics (docs/agent-eval-metrics.md).
+// This returns the wire form — {kind, at_tick, payload} — which is exactly what a replay consumes,
+// so a metric computed from it is computed from the same truth the golden replays are. Read-only:
+// it copies, it never mutates the log, and it is not a sim/action path.
+(window as unknown as Record<string, unknown>).__actionLog = () => save.actions.map(actionToDict);
+// SD-55 (AE-02) — CLOCK STATE, for the harness's PDQ loop (pause → observe → think → act →
+// fast-forward the chosen dwell by PLAYING at scale, never by seeking: every tick still runs, so
+// the run stays an honest trajectory the action log can replay).
+(window as unknown as Record<string, unknown>).__clock = () => ({
+  paused: clock.paused,
+  scale: clock.scale,
+  scaleLabel: clock.scaleLabel,
+  tick: clock.tick,
+  seconds: clock.seconds,
+});
 // SD-53 — THE ROUTING SCREEN's probe. It exposes the ORDERING and the OBSERVED PERIODICITY
 // numbers, because those are exactly what the behavioural falsifier is about: could a tester have
 // named the rhythm of a link loss before any forecast exists? A probe that only returned counts

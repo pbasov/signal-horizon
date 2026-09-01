@@ -20,6 +20,7 @@
  */
 
 import { chromium } from "playwright-core";
+import { makeCtx } from "./ctx.mjs";
 import { mkdirSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -58,68 +59,7 @@ for (const f of files) {
   });
   page.on("pageerror", (e) => sceneErrors.push(`pageerror: ${e.message}`));
 
-  const ctx = {
-    page,
-    base: BASE,
-    results,
-    ok(label, cond, detail = "") {
-      results.push({ label, pass: !!cond, detail: String(detail) });
-    },
-    async shot(tag) {
-      const out = join(SHOTS, `${scene.name}-${tag}.png`);
-      await page.screenshot({ path: out });
-      return out;
-    },
-    eval: (fn, ...evalArgs) => page.evaluate(fn, ...evalArgs),
-    key: (k) => page.evaluate((kk) => window.dispatchEvent(new KeyboardEvent("keydown", { key: kk, bubbles: true })), k),
-    /** TRUSTED input (autoplay-safe): real device-level key/mouse via CDP. */
-    async pressKey(k) {
-      await page.keyboard.press(k);
-    },
-    async realClick(sel) {
-      const box = await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      }, sel);
-      if (!box) return false;
-      await page.mouse.click(box.x, box.y);
-      return true;
-    },
-    async click(sel) {
-      const found = await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        if (!el) return false;
-        el.click();
-        return true;
-      }, sel);
-      return found;
-    },
-    async clickText(text) {
-      return page.evaluate((t) => {
-        const b = [...document.querySelectorAll("button, .tab")].find((x) => (x.textContent ?? "").includes(t));
-        if (!b) return false;
-        b.click();
-        return true;
-      }, text);
-    },
-    setParam(name, v) {
-      return page.evaluate(
-        ([n, val]) => {
-          const inp = document.querySelector(`[data-net=param-${n}]`);
-          if (!inp) return false;
-          inp.value = String(val);
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        },
-        [name, v],
-      );
-    },
-    wait: (ms) => page.waitForTimeout(ms),
-    settle: (ms = 350) => page.waitForTimeout(ms),
-    probe: (name, ...args) => page.evaluate(([n, a]) => window[`__${n}`]?.(...a), [name, args]),
-  };
+  const ctx = makeCtx({ page, base: BASE, shotsDir: SHOTS, tag: scene.name, results });
 
   const t = Date.now();
   try {

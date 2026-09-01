@@ -19,7 +19,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // src/ is the sim + shell. tools/ carries the harness's pure logic (the agent-eval metric
+    // extractor, SD-55 AE-04) — pure functions over an action log, tested like any sim module.
+    include: ["src/**/*.test.ts", "tools/**/*.test.mjs"],
     // The replay/golden suites (net-replay, events) simulate whole sessions tick-by-tick; under
     // full-suite CPU contention they legitimately need tens of seconds. The default 5 s was a
     // recurring flake (three false-reds in one day) — 60 s keeps real hangs visible.
