@@ -165,6 +165,31 @@ body {
   border-bottom: 1px solid var(--line-dim);
   margin-bottom: 2px;
 }
+/* A rail entry is a ROW: [ summon into the focused tile ][ ⛶ raise on top ]. The ⛶ is
+   width-0 in the collapsed 34px strip and appears with the labels on hover-expand, so the
+   rail at rest is exactly as narrow as before. */
+.window-rail .rail-row { display: flex; gap: 2px; align-items: stretch; }
+.window-rail .rail-row .rail-btn { flex: 1 1 auto; min-width: 0; }
+.window-rail .rail-pop {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--grey);
+  background: var(--bg);
+  border: 1px solid var(--line-dim);
+  border-left: 0;
+  padding: 0;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.window-rail:hover .rail-pop { width: 18px; opacity: 1; border-left: 1px solid var(--line-dim); }
+.window-rail .rail-pop:hover { color: var(--fg); border-color: var(--line); }
+/* UP: this is the panel currently raised over the wall (one at a time, so this is unique). */
+.window-rail .rail-pop.up { color: var(--bg); background: var(--cyan); border-color: var(--cyan); }
+
 .window-rail .rail-btn {
   font: inherit;
   font-size: 10px;
@@ -239,6 +264,125 @@ body {
 .panel-body {
   position: relative;
   flex: 1 1 auto;
+  overflow: hidden;
+  background-color: var(--bg);
+  background-image: var(--dither-sparse);
+  background-repeat: repeat;
+}
+
+/* ---- the panel POP-OUT button (titlebar ⛶ → raise this panel on top) ---------- */
+/* 15c dropped the static ⛶ ✕ glyphs as affordance lies. ⛶ is back as a REAL control: it
+   raises the panel over the wall (src/wm/modal.ts). Dim at rest, cyan on hover, and lit
+   while this panel is the one raised. */
+.panel-titlebar .panel-pop {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+  color: var(--grey);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 1px 3px;
+  cursor: pointer;
+}
+.panel-titlebar .panel-pop:hover { color: var(--cyan); border-color: var(--line-dim); }
+
+/* The stub a tile shows while it has lent its content to the overlay — never a black hole.
+   A LABEL, not a control: the overlay sits over the wall, so nothing here is clickable. */
+.panel-popped {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 12px;
+  font-size: var(--ts-cap);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  background-image: var(--dither-dense);
+  background-repeat: repeat;
+}
+
+/* ---- THE OVERLAY LAYER — a panel raised ON TOP of the tiling wall ------------- */
+/* The wall keeps its shape underneath and the clock keeps running (never a modal gate on
+   the sim, same contract as the briefing cards). Chrome is the SAME 1-bit panel chrome the
+   tiles use — hard edges, dithered titlebar, no radius, no shadow — so a raised panel reads
+   as the same object, just bigger. z sits over the rail (45) and under the boot seq (80). */
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 65;
+  background: rgba(11, 11, 18, 0.62);
+}
+.modal-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cyan);
+  background: var(--bg);
+  overflow: hidden;
+}
+.modal-titlebar {
+  height: var(--titlebar-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--cyan);
+  background-color: var(--bg-2);
+  background-image: var(--dither-dense);
+  background-repeat: repeat;
+  user-select: none;
+}
+.modal-titlebar .dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  background: var(--cyan);
+}
+.modal-titlebar .title {
+  color: var(--cyan);
+  font-size: var(--ts-ui);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.modal-titlebar .sub {
+  color: var(--fg-dim);
+  font-size: var(--ts-cap);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.modal-titlebar .grow { flex: 1 1 auto; }
+.modal-titlebar .modal-esc {
+  flex: 0 0 auto;
+  color: var(--grey);
+  font-size: var(--ts-cap);
+  letter-spacing: 0.14em;
+  border: 1px solid var(--line-dim);
+  padding: 1px 4px;
+}
+.modal-close {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--bg); background: var(--cyan); border-color: var(--cyan); }
+.modal-body {
+  position: relative;
+  flex: 1 1 auto;
+  /* hidden, exactly like .panel-body: panel roots are `position:absolute; inset:0` with their
+     OWN scroller, so an outer scroller here would just double up. */
   overflow: hidden;
   background-color: var(--bg);
   background-image: var(--dither-sparse);
@@ -1429,6 +1573,19 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 .pad-scrub.inert .pad-scrub-value { color: var(--grey); cursor: help; }
 
 .pad-instrument { padding-bottom: 2px; }
+/* THE INSTRUMENT PAIRS. Stacked one-per-row by default (a narrow pad); side by side once the
+   pad owns the whole column (`.roomy`, set from MissionTop.onResize). The instruments are
+   height-pinned viewBox drawings, so a half-width cell centres the SAME picture at the SAME
+   type size — this buys ~300px of column back and is what lets the open pad fit with no
+   scrolling at all. */
+.mission-pad .pad-pair { display: flex; flex-direction: column; }
+.mission-pad.roomy .pad-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 4px;
+  align-items: start;
+}
+.mission-pad.roomy .pad-pair > .group { margin-bottom: 4px; }
 /* FIXED HEIGHT, not `height:auto`. With a viewBox and a percentage width the drawing scales
    to the column, which blows the 9px readouts up to headline size in a wide panel. Pinning
    the height makes the uniform scale height-limited, so the type stays the size it was

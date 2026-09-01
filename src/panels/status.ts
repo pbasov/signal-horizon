@@ -123,7 +123,12 @@ export class StatusStrip {
       appendKeys(keys, "[", "]");
       keys.append(" phase ");
       appendKeys(keys, "R");
-      keys.append(" cam");
+      keys.append(" cam ");
+      // The overlay keys — raise a big read ON TOP of the wall (Esc returns it).
+      appendKeys(keys, "T");
+      keys.append(" trace ");
+      appendKeys(keys, "G");
+      keys.append(" record");
       // X-04 — the vault keys.
       appendKeys(keys, "V");
       keys.append(" vault ");

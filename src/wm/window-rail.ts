@@ -73,6 +73,7 @@ export const NET_RAIL_PANELS: RailPanel[] = [
 export class WindowRail {
   readonly element: HTMLElement;
   private buttons = new Map<string, HTMLButtonElement>();
+  private popButtons = new Map<string, HTMLButtonElement>();
 
   /**
    * @param shell    the WM shell the rail summons into
@@ -94,6 +95,13 @@ export class WindowRail {
     this.element.appendChild(cap);
 
     for (const p of this.panels) {
+      // A rail entry is a ROW of two real verbs, not one: TILE it (the original summon) or
+      // RAISE it on top (the overlay — the answer to "tiling is cumbersome sometimes" for a
+      // panel you want to read once and put down without rebuilding your workspace). The ⛶
+      // only shows when the rail is hover-expanded, so the collapsed 34px strip is unchanged.
+      const row = document.createElement("div");
+      row.className = "rail-row";
+
       const btn = document.createElement("button");
       btn.className = "rail-btn";
       btn.type = "button";
@@ -105,8 +113,22 @@ export class WindowRail {
         const changed = this.shell.summonPanel(p.host);
         this.onSummon?.(p.host, changed);
       });
-      this.element.appendChild(btn);
+
+      const pop = document.createElement("button");
+      pop.className = "rail-pop";
+      pop.type = "button";
+      pop.title = `raise ${p.label} on top of the wall (Esc closes)`;
+      pop.dataset.host = p.host;
+      pop.textContent = "⛶";
+      pop.addEventListener("click", () => {
+        const raised = this.shell.toggleModal(p.host);
+        if (raised) this.onSummon?.(p.host, true);
+      });
+
+      row.append(btn, pop);
+      this.element.appendChild(row);
       this.buttons.set(p.host, btn);
+      this.popButtons.set(p.host, pop);
     }
 
     // Event-driven repaint: whenever the shell's visible-panel set (or focus) changes.
@@ -126,13 +148,23 @@ export class WindowRail {
     this.summon("parse");
   }
 
-  /** Repaint active/focus state from the shell's current visible set (event-driven). */
+  /** Programmatic RAISE (keyboard parity): put a panel on top of the wall. */
+  raise(host: string): void {
+    const raised = this.shell.toggleModal(host);
+    if (raised) this.onSummon?.(host, true);
+  }
+
+  /** Repaint active/focus state from the shell's current shown set (event-driven). A RAISED
+   * panel reads `on` too — it is on screen, just not in the wall — plus `up` on its ⛶ so the
+   * rail says which panel is the one floating over everything. */
   refresh(): void {
     const visible = new Set(this.shell.visibleHosts());
     const focused = this.shell.focusedHost;
+    const raised = this.shell.modalHost;
     for (const [host, btn] of this.buttons) {
-      btn.classList.toggle("on", visible.has(host));
+      btn.classList.toggle("on", visible.has(host) || host === raised);
       btn.classList.toggle("focus", host === focused && visible.has(host));
     }
+    for (const [host, pop] of this.popButtons) pop.classList.toggle("up", host === raised);
   }
 }
