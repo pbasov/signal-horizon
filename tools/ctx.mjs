@@ -66,6 +66,30 @@ export function makeCtx({ page, base, shotsDir, tag, results = [] }) {
         return true;
       }, text);
     },
+    /**
+     * Click by VISIBLE LABEL (SD-55 / AE-03 — additive; the scenes' `clickText` is untouched).
+     * `clickText` matches raw textContent, which runs the rail buttons together as "▸TRACE";
+     * the agent addresses controls by what it read on screen ("▸ TRACE"), so this matches against
+     * innerText collapsed to one line, and only among elements it can actually see.
+     */
+    clickLabel(label) {
+      return page.evaluate((want) => {
+        const norm = (s) => (s ?? "").replace(/\s+/g, " ").trim();
+        const target = norm(want);
+        const vis = (el) =>
+          typeof el.checkVisibility === "function"
+            ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+            : !!(el.offsetParent || el.getClientRects().length);
+        const cands = [...document.querySelectorAll("button, .tab, [data-contract], [role=button]")].filter(vis);
+        const hit =
+          cands.find((el) => norm(el.innerText) === target) ??
+          cands.find((el) => norm(el.innerText).startsWith(target)) ??
+          cands.find((el) => norm(el.innerText).includes(target));
+        if (!hit) return false;
+        hit.click();
+        return true;
+      }, label);
+    },
     setParam(name, v) {
       return page.evaluate(
         ([n, val]) => {

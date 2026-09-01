@@ -15,3 +15,6 @@ dist/
 # Playwright playtest screenshots (session artifacts)
 *.png
 !docs/**/*.png
+
+# agent-eval run bundles (artifacts, not source)
+tools/agent-eval/runs/
