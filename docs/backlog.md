@@ -737,6 +737,22 @@ All 7 findings fixed:
       `ACT2_ZERO_GAP_N` was 4 — it scattered four birds a quarter-ring apart so only ONE could fall
       in the hole. The whole move lives once in `tools/ring-fill.mjs`, shared by `hour` and `trace`;
       no number in it is written down. · Verify: "the aim CLOSES the hole" + `{402: 9, 535: 1}`.
+- [ ] **RC-14** Offer windows are measured in SIM time while the player controls the CLOCK — *M* ·
+      **found by playing the opener cold (2026-09-02), and it cost me two tenders while I was looking
+      at something else.** The first tender's window is **895 sim-seconds**. Against the speed ladder
+      that is: 1× → 895 s (~15 min, generous) · 10× → 90 s · 100× → 8.95 s · **1000× → 0.90 s**. So at
+      the top of the ladder the opening offer closes in under a second of WALL time.
+      · The bite is that the game PUSHES you up the ladder: a launch takes ~18 sim-s to deploy and a
+      term runs 480 sim-s, so at 1× you are watching paint dry and the speed keys are the obvious
+      answer. Crank to 1000× to watch your first satellite reach orbit and the act-2 tender can lapse
+      before you have finished reading its terms. Measured in a live cold play: REGION-1 and the
+      REGION-0+R1 renewal both went `failed`, unattended, while I explored the pad.
+      · The readouts are honest throughout ("window closes in 8m 20s", counting down), so this is not
+      a lying-instrument bug — it is a BALANCE question about whether an opportunity window should be
+      denominated in sim-time when the player owns the time control. Options, none chosen and none
+      built: hold the clock (or clamp its rate) while an unsigned offer is live; denominate windows in
+      wall time; scale the window with the compression; or make lapsing loud rather than silent.
+      **A design call, filed not invented (AGENTS §1).**
 - [ ] **RC-12** The pad's consequence preview is only truthful at 1× — *M* · a sub-longitude names a
       phase AT THE TICK IT IS COMMITTED (`resolveOrbit`: `m0Rad = subLonRad + ω·t`), so the phase ring
       previews one placement and, if time is running, you buy another. At 1000× the few hundred ms
