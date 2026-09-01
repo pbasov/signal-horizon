@@ -1245,7 +1245,7 @@ gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts`
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
 
-### SD-58 — THE CAMPAIGN SURVIVES THE TAB: resume-on-boot, a save-on-exit checkpoint, and a real migration ladder (X-04b, 2026-09-01)
+### SD-61 — THE CAMPAIGN SURVIVES THE TAB: resume-on-boot, a save-on-exit checkpoint, and a real migration ladder (X-04b, 2026-09-01)
 
 **Status: ACCEPTED.**
 
