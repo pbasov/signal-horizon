@@ -22,6 +22,7 @@ The product you sell is *knowledge moved across distance*; the speed of light is
 
 ## Reference
 
+- [signal-horizon-setting.md](signal-horizon-setting.md) — **The Setting** v0.1 DRAFT. Scenery only: why anyone is at the Moon and Mars, and why information is precious. Zero authority over mechanics — delete it and every rule still stands. *Proposed, awaiting a ruling on its §10.*
 - [mockups/](mockups/) — Ops Console visual targets.
 - [screenshots/](screenshots/) — Spike verification captures (Chromium headful).
 
