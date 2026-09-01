@@ -6,6 +6,7 @@ import satSrc from "./sat.ts?raw";
 import endpointSrc from "./endpoint.ts?raw";
 import linkBudgetSrc from "./link-budget.ts?raw";
 import routerSrc from "./router.ts?raw";
+import graphSrc from "./graph.ts?raw";
 import availabilitySrc from "./availability.ts?raw";
 import phasingSrc from "./phasing.ts?raw";
 import contractSrc from "./contract.ts?raw";
@@ -32,6 +33,7 @@ const SOURCES: Array<[string, string]> = [
   ["endpoint.ts", endpointSrc],
   ["link-budget.ts", linkBudgetSrc],
   ["router.ts", routerSrc],
+  ["graph.ts", graphSrc],
   ["availability.ts", availabilitySrc],
   ["phasing.ts", phasingSrc],
   ["contract.ts", contractSrc],

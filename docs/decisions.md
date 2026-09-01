@@ -937,7 +937,6 @@ so the recorded `SimAction` log — already written by `applyAndRecordNetAction`
 unreachable from the page — becomes the metric substrate. `tools/ctx.mjs` is extracted from
 `playtest.mjs` unchanged in behaviour. Vitest's include widens to cover `tools/**/*.test.mjs` so the
 pure metric extractor is tested like any sim module.
-
 **Addendum (2026-09-01) — what the first two live runs found, and where it landed.**
 
 The harness works: run 2 opened the pad cold, read the parked draft's 0 % coverage, dragged sub-lon
@@ -1127,3 +1126,121 @@ exists in the interface. **Decision (user): move on rather than pad the clock.**
 on-ramp; M1's gate criterion should stop claiming the hour, and the treadmill is what the player
 moves on TO. Not rebuilt here; recorded so the gate is not run against a number the build never
 had.
+
+### SD-57 — THE ROUTING GRAPH IS BUILT: CROSSLINK edges + the multi-hop solver (M1-SAT-3 + M1-SLV-1, 2026-09-01)
+
+**Status: ACCEPTED (built; landed after the SD-56 coverage re-scale and reconciled with it —
+see the reconciliation note at the end; 18 new tests in `net/graph.test.ts`; BOTH replay goldens byte-for-byte
+UNTOUCHED; `net/` stays pure).** User-directed after an audit of why the game has no routing.
+
+**The finding that prompted it.** The user's complaint — "we still not have any fun routing things
+we have been talking about in gdd" — was investigated against the record and is exactly right, but
+the cause was NOT a design decision. Nothing was ever decided against a routing mechanic:
+
+- **SD-39 (ACCEPTED) locked the opposite**: "a deterministic shortest-path-over-time-varying-graph
+  solver (Dijkstra/A* over the current line-of-sight adjacency)" plus three control tiers whose
+  ceiling is "sliders + visual constructor (the Cisco Packet Tracer layer, **the reference for the
+  fun**)" (M1 §7.3, LOCKED). §7.2's own worked examples assume multi-hop ("latency floor is 340 ms
+  via 4 LEO hops").
+- **It was never built.** `M1-SLV-1` (solver core) and `M1-SAT-3` (the sat↔sat edges it consumes)
+  are both still open in the backlog. Acts 2–3 are each stamped `↯ needs the §7 solver epic` and
+  shipped anyway on the Act-1 bent-pipe stub — which SD-39 had explicitly labelled a temporary seam
+  ("its `a1/reachability.ts` stub is exactly the seam the §7 solver subsumes later").
+- **Then the stub was mistaken for the design.** `m1-redesign.md` §2.3 asserted "CROSSLINK
+  auto-meshes (the router's job, **as today**)" — it was nobody's job — and banked that as a saving
+  in Risk 3. R0 landed the card catalog with `CROSSLINK 1.6u (inert relay substrate)` as a
+  parenthetical. SD-53 then documented the result as canon: "the M1 path is always exactly three
+  nodes with `CROSSLINK` structurally unable to route".
+
+No single decision removed routing. Six individually-defensible deferrals were never summed. The
+one piece of genuinely circular reasoning is GDD §4.3a's scope-honesty note, which holds Level-2
+topology construction back "until the core proves fun" — while the core it waits on IS the routing
+game, measured at a gate running a build with no graph in it. Recorded here; the GDD edit is the
+user's call.
+
+**What is built.**
+- **`net/link-budget.ts` — `evaluateInterSatLink`.** The sat↔sat predicate: the same inverse-square
+  budget and body-occlusion test as `evaluateLink`, MINUS the elevation gate (there is no local
+  horizon in orbit). The module header had promised this reuse since Act 1.
+- **`net/graph.ts` (NEW) — the edge set and the relay closure.** Two sats are adjacent iff both fly
+  a CROSSLINK and the budget closes BOTH ways with no occlusion; edges are undirected and id-sorted.
+  `relayClosure` is an all-pairs Floyd–Warshall (S³ over a handful of sats) in two regimes matching
+  the router's own: `"cost"` = additive `w_lat·latency + w_bw·congestion` minimised, `"margin"` =
+  bottleneck received maximised. Relaxation runs in sorted-id order; a candidate replaces the
+  incumbent only on STRICT improvement or an exact tie broken by fewer hops then lexicographically
+  smaller chain. No epsilons — determinism is what the golden requires.
+- **`net/router.ts` — the path search.** `Bridge` gains `satPath` (serving sat → landing sat,
+  inclusive) and `landingPipe`. `SolveResult.path` is now `[region, ...satChain, ground]`.
+  **PASS 1 is the pre-existing direct search, byte-identical including its iteration order** so
+  `worstCause` still reports exactly the geometric cause it always did. **PASS 2 is purely
+  additive**: for each eligible serving pipe, cross the spine to any reachable sat and descend
+  through a GATEWAY. It never writes `worstCause` — a relay that fails to close must not rewrite
+  the cause shown for the direct leg.
+- **GATEWAY finally means something.** Only a GATEWAY can LAND trunk traffic arriving over the
+  spine, and a landing pipe needs no beam assignment (it is not serving a region). That is the
+  "trunk landing role matures with crosslink relaying" `sat.ts` has promised since R0, and it is
+  what separates GATEWAY from "a fat ACCESS".
+- **`src/main.ts` — the arc walks the chain.** `netServedLinksSlice` hardcoded
+  region→servingSat→ground; over a relayed path that would have drawn a link that does not exist.
+  It now resolves every intermediate hop. LAW 1 applies to the orrery, not just to copy.
+
+**Three calls worth their own line.**
+1. **Golden-neutral by construction, and verified.** The canonical replay flies `standardLoadout`
+   (BROADCAST only), so no scenario sat carries a CROSSLINK; `buildRelayClosure` returns `undefined`
+   for such a fleet and the direct-only path runs. Both replay goldens are UNCHANGED
+   (`4638365066733440034n` net, plus the M1-cache and M2-build goldens) and the full suite is green
+   at 918 (78 files). A test pins the neutrality directly: the direct bridge is `toEqual`-identical with and
+   without the relay argument, across three sim-times.
+2. **AUTO-MESH for now, with the pairing seam built in.** `interSatEdges` takes an optional
+   `allowedPairs` filter; absent means auto-mesh (SD-39's model), supplied means only
+   player-committed pairs are edges. This is the ONE hook a hand-paired crosslink verb needs —
+   nothing else in the solver differs between the two designs, which is why the choice does not have
+   to be made to land the substrate. **It is still open**, and it matters more than it looks: at the
+   toy scale (body radius 300 km, GEO a ≈ 835 km, budget reference 50,000 km) the inverse-square term
+   essentially never binds between two sats, so geometry alone yields a near-full mesh and the
+   §4.3a "four terminals, six things to reach" tension does not appear. Under hand-pairing the
+   scarcity comes from the committed pairing rather than from the geometry, which at this scale is
+   the only place it can come from.
+3. **Per-hop load accounting is NOT in this slice.** `loadByPipe` is still keyed on the SERVING pipe
+   only, so the bandwidth axis is denominated there and relay/gateway hops carry no load. The
+   closure already reads congestion for the crosslink pipes, so the term is wired and inert rather
+   than absent. m1-redesign §2.4's "usable throughput is the min along its path" needs the session's
+   `loadByPipeFromState` to attribute a contract's load to every pipe on its chain — a real change
+   to a folded field, and therefore its own increment with its own re-pin.
+
+**RECONCILED WITH SD-56 (the coverage re-scale), same day.** The two landed in parallel and
+overlap in `router.ts` and `link-budget.ts`. Four reconciliations, none cosmetic:
+
+1. **PASS 2 is cone-gated exactly like PASS 1** — `beamAimFor` on the user side, feeder
+   ungated. Relaying extends where traffic can be LANDED; it must never widen the spot the
+   serving antenna paints. Pinned: with the beam aimed 60° off the region, a perfect spine
+   cannot rescue it and the reported cause is `outside_beam`.
+2. **My "PASS 1 is byte-identical including iteration order" rationale is withdrawn.**
+   SD-56's `CAUSE_DEPTH` / `noteCause` makes the reported cause a MAX over the candidate
+   set — order-independent by construction, and strictly better than the property I was
+   preserving by hand.
+3. **CROSSLINK takes no cone gate, and both sides now say why:** a relay terminal is steered
+   at its peer, so the peer is on boresight by construction. That is why `CONE_CROSSLINK`
+   stays inert even though the edge is now live.
+4. **A test that would have passed vacuously was fixed.** The spine fixture used ACCESS-L
+   (24°), but from the parked GEO the visible limb subtends only asin(300/835) ≈ 21°, so
+   that cone can never gate anything there. It now uses ACCESS-S (10°). Worth knowing when
+   tuning: **ACCESS-L is the one card the cone does not constrain from GEO.**
+
+Verified after the merge: 942 vitest green (80 files) with SD-56's re-pinned golden
+`16791777382910013853n` INTACT — the canonical hour reproduces SD-56's own numbers exactly
+(ends +€4,376, floor €3,488), so the routing graph remains neutral to it.
+
+**One pre-existing defect found and NOT fixed here.** The full `npm run playtest` is RED on
+`origin/main` at 158acd7 (121 assertions, 3 failed, all in the TRACE scene) and RED with the
+identical three failures after this merge; the scene passes GREEN 44/0 when run alone on
+both, and flips between failure sets across runs. This branch's own pre-merge tip was GREEN
+121/0 twice, so the instability arrived with SD-56, not with the routing graph. Left alone
+deliberately — loosening a flaky assertion while landing an unrelated change is how a real
+regression gets hidden. Filed in the backlog.
+
+**Consequences.** `docs/routing-screen.md` §4.0 and fences 11.1/11.6 are AMENDED, not reworded: the
+"always exactly three nodes" claim was false and is withdrawn with its reason. `net/purity.test.ts`
+gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
+corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
+constructor) remains unbuilt and is now the largest open piece of the §7 epic.
