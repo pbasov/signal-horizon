@@ -371,40 +371,54 @@ All 7 findings fixed:
 - [x] **AE-01** Pre-registration — *S* · the four docs above, committed **before** the first run so no
       metric can be defined after seeing a result. Amendments need a dated entry + a decisions note.
       · Verify: SD-55 recorded; every metric in §2 has an extraction rule and a rationale.
-- [ ] **AE-02** The substrate: `__actionLog()` probe + `tools/ctx.mjs` — *S* · dev-only probe exposing
+- [x] **AE-02** The substrate: `__actionLog()` probe + `tools/ctx.mjs` — *S* · dev-only probe exposing
       the recorded `SimAction` log (`applyAndRecordNetAction` already writes it; nothing could read
       it), plus the `ctx` helper factory extracted from `playtest.mjs` **unchanged in behaviour** so
       scripted scenes and the agent share one action vocabulary. Widen vitest's include to
       `tools/**/*.test.mjs`. · Verify: full `node tools/playtest.mjs` green after the extraction;
       `__actionLog()` returns the launch/accept payloads a scene just committed.
-- [ ] **AE-03** The design-free observation builder — *M* · visible-DOM text (visibility-filtered:
+- [x] **AE-03** The design-free observation builder — *M* · visible-DOM text (visibility-filtered:
       the pad's DOM exists while the book face shows, and an agent must not read hidden UI) +
       affordance list (`[data-net=…]` keys, labels, enabled state) + the player-visible probe facts.
       Persona capability restriction applied **here** (withheld panels never rendered, their summon
       verbs absent). Emits `observations.jsonl` — the only file the judge will ever be given.
       · Verify: a boot observation contains the tender, the wallet and the pad-closed state, and
       contains **no** hidden-panel text; `novice-floor` observations contain no TRACE/parse text.
-- [ ] **AE-04** The deterministic metrics extractor + Wilson intervals — *M* · pure functions over
+- [x] **AE-04** The deterministic metrics extractor + Wilson intervals — *M* · pure functions over
       `actions.jsonl` + `probes.jsonl` implementing M1–M13, the fourteen-surface mapping (with
       `unavailable` as a third state), and Wilson 95% (never Wald). Vitest-tested like a sim module.
       · Verify: hand-built fixtures pin each metric; Wilson at 5/5 gives lower bound ≈0.57.
-- [ ] **AE-05** The brain seat — *M* · tool-less `claude -p` subprocess, `--session-id`/`--resume`
+- [x] **AE-05** The brain seat — *M* · tool-less `claude -p` subprocess, `--session-id`/`--resume`
       for memory + cache warmth, strict-JSON action extraction with a schema-repair retry, per-turn
       usage/cost/latency recorded from the CLI's own JSON. · Verify: a two-turn scripted exchange
       proves memory carries; recorded cost matches the CLI's `total_cost_usd`.
-- [ ] **AE-06** The driver — *L* · the PDQ loop (pause → observe → think → act → fast-forward the
+- [x] **AE-06** The driver — *L* · the PDQ loop (pause → observe → think → act → fast-forward the
       chosen dwell), budgets (turns/wall/USD), stall escalation through *distinct* strategies, clean
       landings with a named termination reason, and the full artifact bundle. · Verify: a real run
       reaches a served contract or terminates with a reason; bundle validates against the schema.
-- [ ] **AE-07** The five personas — *S* · optimizer / satisficer / literalist / impatient /
+- [x] **AE-07** The five personas — *S* · optimizer / satisficer / literalist / impatient /
       novice-floor as prompt files, hashed into `prompt_version`. · Verify: the `literalist` run's
       transcript shows it acting only on on-screen imperatives (and M4 catches any it found).
-- [ ] **AE-08** Baselines in the scoreboard — *S* · random floor from the `fuzz` scene, scripted
+- [x] **AE-08** Baselines in the scoreboard — *S* · random floor from the `fuzz` scene, scripted
       ceiling from the authored scenes, human ceiling printed `not measured` until the gate hour runs;
       normalised score beside the raw value. · Verify: the report prints all three on every row.
-- [ ] **AE-09** `report.md` renderer — *S* · metrics table with baselines + intervals, the
+- [x] **AE-09** `report.md` renderer — *S* · metrics table with baselines + intervals, the
       turn-by-turn intent trail, the findings list, and the standing caveats (PDQ artifact, n=5 limits,
       leads-not-verdicts). · Verify: a report from a real run reads without the reader needing the code.
+  > **SHIPPED with findings (2026-09-01).** Two live runs found four defects in the HARNESS before it
+  > found anything in the game, which is the right order: (1) the "blind by construction" claim was
+  > false — `--tools ""` stops the seat reading files, but Claude Code tells it the cwd and project
+  > context, so the first run's debrief named this harness's own files; the seat now runs in an empty
+  > temp dir (reproduced both ways). (2) PDQ leaked into the fiction: the game's own "time PAUSE"
+  > readout, caused by the harness, read as a broken game and the agent spent 17 of 22 turns hunting
+  > for a play button — the observation now states every turn that the seat holds the clock and `wait`
+  > releases it. (3) M10 read a hand-aimed launch as un-aimed: with the clock stopped every turn
+  > shares one tick, so the commit turn is now matched by its LAUNCH click. (4) A concurrent
+  > session's worktree made vite force-reload the shared dev server mid-run and the app re-booted at
+  > turn 10 — each run now serves the tree it measures on its own port, and a tick or action-log
+  > count going backwards terminates the run as `reboot` (unscorable) instead of being scored.
+  > Baselines pinned: random floor and scripted ceiling both measured through the same loop.
+
 - [ ] **AE-10** Replay mode — *S* · feed recorded brain responses back so a failed run is
       re-inspectable for free; the sim's LIVE==REPLAY discipline extended to the agent.
       · Verify: replaying a bundle reproduces its `metrics.json` byte-identically.

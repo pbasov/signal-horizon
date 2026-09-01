@@ -1,0 +1,80 @@
+{
+  "label": "random",
+  "key": {
+    "build_hash": "fc5ef6da",
+    "git_sha": "9492f79e",
+    "seed": "scenario-fixed/run-900",
+    "model_id": "random-policy",
+    "model_version": "n/a",
+    "params_hash": "3087f869b3c9",
+    "prompt_version": "4cd91bbb65a8",
+    "persona": "optimizer",
+    "clock_mode": "PDQ"
+  },
+  "termination": {
+    "reason": "budget",
+    "gate": "turns",
+    "stalls": 0
+  },
+  "metrics": {
+    "m1_committed_actions_act1": 0,
+    "m2_decision_surfaces": {
+      "touched": [
+        "tempo"
+      ],
+      "count": 1,
+      "of": 15,
+      "unavailable": [
+        "overclock"
+      ],
+      "untouched": [
+        "accept-timing",
+        "bus-tier",
+        "antenna-cards",
+        "batch-size",
+        "altitude",
+        "inclination",
+        "sub-lon",
+        "raan",
+        "phase",
+        "beam-assignment",
+        "re-beaming",
+        "prefer-weights",
+        "circularize"
+      ]
+    },
+    "m3_strategy_fork": {
+      "consolidate": false,
+      "split": false,
+      "launches": 0
+    },
+    "m4_instruction_string_absent": true,
+    "m4_leaks": [],
+    "m5_responded_to_own_success_strain": false,
+    "m6_completed_without_softlock": true,
+    "m7_novice_floor_reachable": null,
+    "m8_invalid_action_rate": 0,
+    "m8c_protocol_noise": {
+      "shape_rejects": 0,
+      "shape_repairs": 0,
+      "rate": 0
+    },
+    "m8b_no_op_action_rate": 0.20833333333333334,
+    "m9_time_to_first_served_s": null,
+    "m9b_turns_to_first_served": null,
+    "m10_hand_aimed_before_commit": null,
+    "m11_acts_reached": 0,
+    "m12_economy": {
+      "final_eur": 75000,
+      "min_eur": 75000,
+      "breach_seconds_total": 0,
+      "ended_net_positive": true
+    },
+    "m13_errors": 0,
+    "committed_actions_total": 0,
+    "tempo": {
+      "keys": 0,
+      "distinctDwells": 6
+    }
+  }
+}
