@@ -48,7 +48,7 @@
 
 **Project & repo**
 - [x] **P0-01** Repo + module folders — done (`src/sim/ src/orrery/ src/wm/ src/panels/ data/`)
-- [x] **P0-02** CI — GitHub Actions (`.github/workflows/ci.yml`): vitest + `tsc --noEmit` + `npm run build` + headless Playwright screenshot via `tools/shoot.mjs` (CI-bundled Chromium through `CHROMIUM_BIN`, `HEADLESS=1`), artifact-uploaded. Node 26 (D1).
+- [x] **P0-02** CI — GitHub Actions (`.github/workflows/ci.yml`): vitest + `tsc --noEmit` + `npm run build` + headless Playwright screenshot via `tools/shoot.mjs` (CI-bundled Chromium through `CHROMIUM_BIN`, `HEADLESS=1`), artifact-uploaded. Node 26 (D1). **2026-09-01 repair:** CI had been red since May 30 — the M2f relay-failure test stepped a fixed 400,000 s window (24M ticks, 33 s wall) and blew its 30 s budget on slower CI runners. Fixed: early-exit at the first qualifying event (same pattern as the sibling shock test) + explicit budgets.
 
 **Deterministic core backbone**
 - [x] **P0-03** Authoritative sim-clock + fixed-step tick — *M* · Integer fixed-step clock implemented in `src/sim/clock.ts`. Tick accumulator, `scheduleWall()`/`nextTick()` drain pattern, `DT = 1/60` s. Death-spiral clamp. `setTick()` for save/load. 12 Vitest tests green.
@@ -306,6 +306,7 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 - [ ] **X-04** Save/load robustness — JSON-serialisable from pure `src/sim/`; versioned saves + migration hook; fast snapshot load.
 - [x] **X-05** Audio system — Web Audio API; one-way event-bus → cues. **First cue landed (M1-11/E5):** `src/audio/cue.ts` lazy gesture-unlock + `CueBus` (sim stays Web-Audio-free). Health-sonification M2+.
 - [ ] **X-06** Content pipeline — `data/` JSON from M0-04; migrate each mock's constants as its real system lands; CI schema validation.
+- [ ] **X-07** Test-suite wall-clock margin — full suite ≈ 7.6 min local; the whales are the replay goldens (`net-replay` worst 27.8 s against the 60 s global `testTimeout` in `vite.config.ts` — thin on a slow CI runner). If CI flakes on timeouts again: budget the goldens explicitly (120 s) first; the honest speed fix is sim-step perf, not smaller windows.
 
 ---
 

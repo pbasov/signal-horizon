@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { loadEphemeris } from "../system-data";
 import { BuildSession } from "./session";
 import { EventGenerator } from "./event-generator";
-import { M2EventLog } from "./events";
+import { M2EventLog, type M2Event } from "./events";
 import { SimRng } from "../rng";
 
 /**
@@ -43,7 +43,14 @@ describe("m2f — the emergent-event generator (rivals + shocks)", () => {
   });
 
   it("a session surfaces world events in its M2 event stream within a sitting", () => {
-    const s = runTo(60000); // ~16 sim-hours — several event intervals
+    // Early-exit: the assertions pin stream SHAPE (monotonic seq + finite timestamps), which the
+    // first two events prove. Stepping the full 16-hour window burns ~5 s of wall-clock for no
+    // extra coverage and sits on the default 5 s test timeout — red on any slower CI runner.
+    const eph = loadEphemeris();
+    const s = new BuildSession();
+    for (let tick = 0; s.events.appended < 2 && tick * DT <= 60000; tick++) {
+      s.step(eph, tick * DT, DT);
+    }
     const events = s.events.readAll();
     expect(events.length).toBeGreaterThan(0);
     // Every event carries a sim timestamp + a monotonic seq (stable render keys).
@@ -51,7 +58,7 @@ describe("m2f — the emergent-event generator (rivals + shocks)", () => {
       expect(events[i].seq).toBe(i);
       expect(Number.isFinite(events[i].tSim)).toBe(true);
     }
-  });
+  }, 30000);
 
   it("a DEMAND_SHOCK bumps its region's demand, then DECAYS back to baseline (it EXPIRES)", () => {
     const eph = loadEphemeris();
@@ -98,15 +105,28 @@ describe("m2f — the emergent-event generator (rivals + shocks)", () => {
   }, 30000);
 
   it("a rival RELAY_FAILURE spawns a lucrative contract offer (their customers come knocking)", () => {
-    // Run long enough that a relay_failure occurs; assert a spawned `r{N}` offer appears on the board.
-    const s = runTo(400000);
-    const relayFailures = s.events
-      .readAll()
-      .filter((e): e is Extract<typeof e, { kind: "rival_action" }> => e.kind === "rival_action")
-      .filter((e) => e.kind2 === "relay_failure" && e.spawnedContractId !== null);
+    // Step until the FIRST relay_failure fires, then assert its spawned `r{N}` offer is on the
+    // board. Early-exit: the first one lands deterministically ~39 sim-hours in (default seed),
+    // so the old fixed 400,000 s window stepped 24M ticks and blew the 30 s wall-clock budget.
+    const eph = loadEphemeris();
+    const s = new BuildSession();
+    let relayFailure: Extract<M2Event, { kind: "rival_action" }> | undefined;
+    let drainFrom = 0;
+    for (let tick = 0; relayFailure === undefined && tick * DT <= 400000; tick++) {
+      s.step(eph, tick * DT, DT);
+      const appended = s.events.appended;
+      if (appended > drainFrom) {
+        for (const e of s.events.readSince(drainFrom)) {
+          if (e.kind === "rival_action" && e.kind2 === "relay_failure" && e.spawnedContractId !== null) {
+            relayFailure = e;
+          }
+        }
+        drainFrom = appended;
+      }
+    }
     // It is statistically near-certain over this window; if one fired, the contract exists.
-    if (relayFailures.length > 0) {
-      const id = relayFailures[0].spawnedContractId!;
+    if (relayFailure !== undefined) {
+      const id = relayFailure.spawnedContractId!;
       const spawned = s.contracts.find((c) => c.id === id);
       expect(spawned).toBeDefined();
       expect(spawned!.id.startsWith("r")).toBe(true);
@@ -116,7 +136,7 @@ describe("m2f — the emergent-event generator (rivals + shocks)", () => {
       const anyRival = s.events.readAll().some((e) => e.kind === "rival_action");
       expect(anyRival).toBe(true);
     }
-  }, 30000);
+  }, 60000);
 
   it("the event stream + effects reproduce on replay (deterministic) and survive snapshot/restore", () => {
     const a = runTo(80000);
@@ -128,7 +148,7 @@ describe("m2f — the emergent-event generator (rivals + shocks)", () => {
     const restored = new BuildSession();
     restored.restore(a.snapshot());
     expect(restored.snapshot()).toEqual(a.snapshot());
-  }, 30000);
+  }, 60000); // two full runTo(80000) passes ≈ 15 s local; a slow CI runner needs ~2× that.
 
   it("the M2EventLog stamps monotonic seqs and drains the tail incrementally", () => {
     const log = new M2EventLog();
