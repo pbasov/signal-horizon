@@ -2283,3 +2283,19 @@ own open flake, SD-67). No sim code touched; no golden moves.
 **What playing cold is for.** This was already in the backlog, with the right measurements, filed at
 the wrong severity — and no amount of re-reading the entry would have corrected it. Booting the game
 and reaching for the first button did.
+
+**And the same cold play validated the rest of the opener, which is worth recording as a positive.**
+Played by hand end to end: the boot draft reads *"never serves the target"* (the DEAD PRE-AIM, which
+is the act's first real decision), aiming it home flips the chip to *"serving NOW"*, ARM→LAUNCH charges
+€12,247, NET-SAT-0 deploys at 535 km, REGION-0 completes with `servedFrac: 1`, the wallet recovers to
+€71,919 and the act-1 gate fires. Signing it while still dark instead produces the honest opposite — a
+breach, a failed contract, and the stuck-assist saying exactly why: *"equatorial metro sits dark — the
+draft's footprint does not reach it. A parked GEO above the region holds the light all day; a LEO only
+visits."* The loop teaches.
+
+One correction fell out of it: `onboarding.ts` carried a comment reading *"The planner is pre-aimed,
+so the very first move is just LAUNCH"* — the exact opposite of the design. The dead pre-aim is
+load-bearing (*"the Act-1 hand-aim criterion is structural now"*) and exists because the condemned
+build's first sin was a pre-aimed default that meant "the game solved itself". A stale comment
+asserting the opposite is how that gets helpfully "fixed" back in, so it was corrected in place rather
+than deleted.

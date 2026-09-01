@@ -51,7 +51,17 @@ const ONBOARDING_CARDS: Record<OnboardingConcept, OnboardingCard> = {
     id: "act1",
     // EASIER COLD OPEN — not a 3-step lecture on top of the planner. ONE welcoming, non-imperative
     // line that ORIENTS the player to the persistent surfaces (the OBJECTIVE goal + the globe) that
-    // now carry the step-by-step. The planner is pre-aimed, so the very first move is just LAUNCH.
+    // now carry the step-by-step.
+    //
+    // This comment used to end "The planner is pre-aimed, so the very first move is just LAUNCH."
+    // That is the OPPOSITE of the design (corrected 2026-09-02, found by playing the opener cold).
+    // The boot draft is a DEAD PRE-AIM parked 90° W: the comb reads 0 %, the region sits visibly
+    // outside the ring, and the chip says "never serves the target" until the player aims it by hand.
+    // That is deliberate and load-bearing — decisions.md records it as "the Act-1 hand-aim criterion
+    // is structural now", and it exists precisely because the condemned build's first sin was
+    // "Act 1's default launch was pre-aimed at the target (press L, click ACCEPT — 90 seconds, no
+    // slider touched) … the game solved itself". A stale comment claiming the opposite is how that
+    // gets "fixed" back in by someone acting in good faith, so it is corrected rather than deleted.
     title: "WELCOME, OPERATOR",
     lines: [
       "Your job: keep regions connected — and get paid for it.",
