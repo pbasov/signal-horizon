@@ -35,15 +35,19 @@ const DEG_RAD = Math.PI / 180;
  * in A1 (the §5 WHOLE-DISC must-fix). */
 export const NET_ACT1_REGION_RADIUS_RAD = 10 * DEG_RAD;
 
-/** Minimum elevation angle (radians) for a usable net link — the horizon mask.
- * Defaults to field.ts's real operational floor (5°); a single net/ constant so a
- * future derivation can re-tune it without forking field.ts.
+/**
+ * Minimum elevation angle (radians) for a usable net link — the horizon mask.
  *
- * NOTE (coverage re-scale, owed): 5° is very permissive on a 300 km toy body and is one
- * of the two reasons coverage reads over-generous. Raising it is part of the coverage
- * re-scale, which is deliberately NOT bundled here — it moves the act-2 constellation
- * size and invalidates the canonical-hour choreography. See docs/decisions.md. */
-export const NET_MIN_ELEVATION_RAD = MIN_ELEVATION_RAD;
+ * THE COVERAGE RE-SCALE: raised 5° → 10°. 5° is permissive anywhere and absurd on a 300 km
+ * toy body, where it closed links on satellites grazing the limb and helped every orbit paint
+ * a near-hemisphere. 10° is still generous by real ground-station standards and it costs the
+ * rim of every footprint — which is exactly where the old geometry was least honest.
+ *
+ * field.ts keeps its own 5° for the M2 coverage grid, which is why this constant is a
+ * net/-local fork rather than a re-export. TUNABLE.
+ */
+export const NET_MIN_ELEVATION_RAD = 10 * DEG_RAD;
+void MIN_ELEVATION_RAD; // field.ts's 5° stays the M2 grid's floor — deliberately not shared.
 
 /** The body a net endpoint rides. Acts 1–3 are all `"earth"` (the toy frame); Act 4 (the
  * Mars teaser) adds `"mars"` — the ONE region that lives on another body, served over the

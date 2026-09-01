@@ -67,6 +67,8 @@ import {
   TICK_ACCEPT,
   TICK_ACCEPT2,
   ACT2_PHASE_SPREAD_RAD,
+  ACT2_BATCH_COUNT,
+  CORRIDOR_SAT_IDS,
   TICK_RELIEF,
   TICK_MARS_RELAY,
   TICK_PLACE_CACHE,
@@ -218,7 +220,13 @@ const replay = (sg: ReturnType<typeof saveGame>): ReplayResult => replayCanon(sg
 // renewals INHERIT the diurnal phase (the squeeze stays phase-anchored); the canon gains the
 // REGION-0+R1 accept (the witness rides the renewal generation). Gates fire at the SAME ticks.
 // Canon is extracted to sim/net/canon.ts; canon-balance.test.ts pins the wallet trajectory.
-const NET_REPLAY_GOLDEN = 12755391225096450261n;
+/** Empirically pinned on NET_RNG_SEED: the surplus the act-2 gate records for the canonical
+ * arc and for a deliberate over-build, and the roster the canonical arc lands at act 4. */
+const CANON_WASTE = 1;
+const OVER_BUILD_WASTE = 4;
+const CANON_ACT4_ROSTER = 15;
+
+const NET_REPLAY_GOLDEN = 16791777382910013853n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {
@@ -359,15 +367,18 @@ describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO +
     expect(s.cursor).toBe(1); // still on act2 — the hand-off cycle has not yet been fully held.
   }, 30000); // one full replay (to find the gate tick) + a partial re-run — generous headroom.
 
-  it("OVER-BUILD still completes act2 AND the surplus is logged: a count=6 batch fires the gate and folds wasteLoggedSats = (GEO + 6 LEOs) − zeroGapN", () => {
-    const over = replay(actLog(6));
+  it("OVER-BUILD still completes act2 AND the surplus is logged: a bigger batch fires the gate and folds wasteLoggedSats = live sats − zeroGapN", () => {
+    // An over-build is a batch LARGER than the measured zero-gap minimum. (It used to be
+    // spelled `6`, which stopped being an over-build when the coverage re-scale moved the
+    // minimum to 9 — it became an under-build that cannot hold the region at all.)
+    const over = replay(actLog(ACT2_BATCH_COUNT + 3));
     expect(over.session.cursor).toBe(2); // act2 still completes (coverage-held is the predicate).
-    // R0 (SD-45): waste = live sats at the gate − zeroGapN, WITH the seeded launch attrition
-    // and the canonical fill batch in play (empirically pinned on NET_RNG_SEED).
-    expect(over.session.snapshot().wasteLoggedSats).toBe(5);
+    // waste = live sats at the gate − zeroGapN, WITH the seeded launch attrition and the
+    // canonical fill batch in play (empirically pinned on NET_RNG_SEED).
+    expect(over.session.snapshot().wasteLoggedSats).toBe(OVER_BUILD_WASTE);
     const pinned = replay(act2Log());
-    expect(pinned.session.snapshot().wasteLoggedSats).toBe(3);
-  }, 30000); // two full replays (count=6 over-build + the pinned N=4) — generous headroom.
+    expect(pinned.session.snapshot().wasteLoggedSats).toBe(CANON_WASTE);
+  }, 30000); // two full replays (the over-build + the pinned canon) — generous headroom.
 
   it("the act1 GATE does NOT fire before the contract is served+paid (state-gated, not clock-timed)", () => {
     // Step a fresh session WITHOUT launching/accepting: the scenario emits the contract but it
@@ -1063,17 +1074,19 @@ describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-p
   });
 
   it("the CANONICAL log's roster at act4: attrition happened, the responses answered it, the relay flies", () => {
-    // R0 (SD-45): the canonical arc TAKES seeded attrition (2 polar no-seps + underburns) and
-    // answers it (circularize + a fill batch) — the roster at act4 is the surviving fleet:
-    // 1 GEO + 2 first-batch polars + 4 fill polars + 3 corridor ACCESS LEOs + 1 relief LEO
-    // + 1 Mars relay = 12, and the cursor reached + stopped on act4.
+    // The canonical arc TAKES seeded attrition (polar no-seps + an underburn) and ANSWERS it
+    // (a circularise burn + a fill pair aimed at the holes) — the roster at act4 is the
+    // surviving fleet: 1 GEO + the polar ring + 3 corridor ACCESS LEOs + 1 relief LEO + 1 Mars
+    // relay, with the cursor reached + stopped on act4.
     const r = replayTo(act4Log(), MAX_TICK_ACT4);
-    expect(r.session.sats.length).toBe(12);
+    expect(r.session.sats.length).toBe(CANON_ACT4_ROSTER);
     expect(r.session.cursor).toBe(4);
     expect(r.session.sats.some((sat) => sat.id.startsWith("MARS-RELAY"))).toBe(true);
-    // The pointing state survived the arc: all three corridor beams still point at REGION-2.
-    expect(r.session.beams.get("NET-SAT-9:0")).toBe(ACT3A_CONTRACT_ID);
-    expect(r.session.beams.get("NET-SAT-10:0")).toBe(ACT3A_CONTRACT_ID);
-    expect(r.session.beams.get("NET-SAT-11:0")).toBe(ACT3A_CONTRACT_ID);
+    // The pointing state survived the arc: every corridor beam still points at REGION-2.
+    // Derived from the launch order, never hard-coded — a stale id here would silently point
+    // the beam at somebody else's satellite and the contract would go dark.
+    for (const id of CORRIDOR_SAT_IDS) {
+      expect(r.session.beams.get(`${id}:0`)).toBe(ACT3A_CONTRACT_ID);
+    }
   }, 60000);
 });

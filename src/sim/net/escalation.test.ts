@@ -20,6 +20,24 @@ import {
   ACT3A_BACKHAUL_CONTRACT_ID,
 } from "./scenario";
 import { resolveOrbit } from "./world";
+import {
+  TICK_BATCH,
+  TICK_CIRC2,
+  TICK_ACCEPT2,
+  TICK_FILL,
+  FILL_SUBLON_RAD,
+  FILL_COUNT,
+  ACT2_BATCH_COUNT,
+  ACT2_PHASE_SPREAD_RAD,
+  CORRIDOR_SAT_IDS,
+  RELIEF_SAT_ID,
+  TICK_EQ_CORRIDOR,
+  TICK_BEAMS,
+  TICK_ACCEPT_R2,
+  TICK_RELIEF,
+  TICK_CIRC_RELIEF,
+  TICK_PREFER,
+} from "./canon";
 import { NET_ACT1_GROUND, NET_ACT1_REGION } from "./endpoint";
 import { offerNetContract } from "./contract";
 import {
@@ -117,42 +135,35 @@ function eqLeoLaunch(subLonDeg: number, tick: number): SimAction {
 // (bandwidth-binding) at t ≈ 924 s; the relief (a parallel BROADCAST LEO + prefer-bw on REGION-0)
 // splits the pipe durably and the re-tame gate fires at t ≈ 938 s.
 const TICK_ACCEPT_R0 = 1440;
-const TICK_BATCH = 1441;
-const TICK_ACCEPT2 = 3032;
-const TICK_FILL = 20642;
-const FILL_SUBLON_RAD =
-  LEO_SWEEP.subLonRad + Math.PI / 4 - ((2 * Math.PI) / 240) * (TICK_FILL - TICK_BATCH) * DT;
-const TICK_EQ_CORRIDOR = 39662;
-const TICK_BEAMS = 41163;
-const TICK_ACCEPT_R2 = 41223;
-const TICK_RELIEF = 55463;
-const TICK_CIRC_RELIEF = 56303;
-const TICK_PREFER = 56784;
+// The arc's shape is CANON's — imported, never re-typed. This test used to keep its own copy
+// of every tick, phase offset and satellite id; when the act-2 choreography moved they drifted
+// apart silently and the beams here ended up pointed at somebody else's satellites.
 
 /** The act1 → act2 → act3a arc through the re-tame (the SAME log the net-replay golden pins). */
 function act3aLog(m: Map<number, SimAction[]>): void {
   // Act 1: GEO over REGION-0 (accept after the ~18 s deploy pipeline).
   add(m, 600, netLaunch({ presetId: GEO_PARK.id, semiMajorM: GEO_PARK.semiMajorM, incRad: GEO_PARK.incRad, subLonRad: GEO_PARK.subLonRad, count: 1 }, 600));
   add(m, TICK_ACCEPT_R0, netAccept(ACT1_CONTRACT_ID, TICK_ACCEPT_R0));
-  // Act 2: polar N=4 (seeded attrition: 2 no-seps + 1 underburn) + circularize + the fill batch.
-  add(m, TICK_BATCH, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_BATCH));
-  add(m, TICK_ACCEPT2, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
-  add(m, TICK_ACCEPT2, netCircularize("NET-SAT-4", TICK_ACCEPT2));
+  // Act 2: the zero-gap polar batch (seeded attrition: 2 no-seps + 1 underburn), the
+  // circularise burn that makes the underburned bird a ring member again, then the fill pair.
+  add(m, TICK_BATCH, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: LEO_SWEEP.subLonRad, count: ACT2_BATCH_COUNT, phaseSpreadRad: ACT2_PHASE_SPREAD_RAD }, TICK_BATCH));
+  add(m, TICK_CIRC2, netCircularize("NET-SAT-4", TICK_CIRC2));
   // R3: with the 480 s term, REGION-0's first generation completes mid-arc — sign the renewal
   // (phase-inherited, baseline carried) so the escalation squeeze keeps its fuel. Matches canon.
   add(m, 31200, netAccept("REGION-0+R1", 31200));
-  add(m, TICK_FILL, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: FILL_SUBLON_RAD, count: 4, phaseSpreadRad: (2 * Math.PI) / 4 }, TICK_FILL));
+  add(m, TICK_FILL, netLaunch({ presetId: LEO_SWEEP.id, semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: FILL_SUBLON_RAD, count: FILL_COUNT, phaseSpreadRad: ACT2_PHASE_SPREAD_RAD }, TICK_FILL));
+  add(m, TICK_ACCEPT2, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
   // Act 3a: the corridor constellation (3 pointed ACCESS LEOs) + accept corridor + backhaul.
   add(m, TICK_EQ_CORRIDOR, netLaunch({ presetId: "EQ_LEO", semiMajorM: LEO_SWEEP.semiMajorM, incRad: 0, subLonRad: 1.5 * DEG, count: 3, phaseSpreadRad: (2 * Math.PI) / 3, loadout: ["ACCESS_S"] }, TICK_EQ_CORRIDOR));
-  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-9", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-10", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  add(m, TICK_BEAMS, netAssignBeam("NET-SAT-11", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  for (const id of CORRIDOR_SAT_IDS) {
+    add(m, TICK_BEAMS, netAssignBeam(id, 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  }
   add(m, TICK_ACCEPT_R2, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
   add(m, TICK_ACCEPT_R2, netAccept(ACT3A_BACKHAUL_CONTRACT_ID, TICK_ACCEPT_R2));
   // The relief: the parallel BROADCAST LEO (underburns on this seed — circularize), then the
   // prefer-bw override on REGION-0 so the shared-pipe pair splits durably.
   add(m, TICK_RELIEF, eqLeoLaunch(-1.5, TICK_RELIEF));
-  add(m, TICK_CIRC_RELIEF, netCircularize("NET-SAT-12", TICK_CIRC_RELIEF));
+  add(m, TICK_CIRC_RELIEF, netCircularize(RELIEF_SAT_ID, TICK_CIRC_RELIEF));
   add(m, TICK_PREFER, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_PREFER));
 }
 

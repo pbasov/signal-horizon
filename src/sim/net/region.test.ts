@@ -41,9 +41,11 @@ describe("endpoint: structs + net/ constants (re-centered equatorial)", () => {
     expect(NET_SPACE_SAMPLES).toBe(400);
   });
 
-  it("the elevation floor defaults to field.ts MIN_ELEVATION_RAD (5°)", () => {
-    expect(NET_MIN_ELEVATION_RAD).toBe(MIN_ELEVATION_RAD);
-    expect(NET_MIN_ELEVATION_RAD).toBeCloseTo(5 * DEG, 15);
+  it("the elevation floor is the net-local 10° horizon mask (NOT field.ts's 5°)", () => {
+    // The coverage re-scale forked this from the M2 grid's floor: 5° is permissive anywhere
+    // and absurd on a 300 km toy body, where it closed links on birds grazing the limb.
+    expect(NET_MIN_ELEVATION_RAD).toBeCloseTo(10 * DEG, 15);
+    expect(NET_MIN_ELEVATION_RAD).toBeGreaterThan(MIN_ELEVATION_RAD);
   });
 
   it("the region is the EQUATORIAL metro disc (lat 0°, lon 0°, rad 10°)", () => {

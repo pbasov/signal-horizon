@@ -52,8 +52,15 @@ export const A1_BODY_RADIUS_M = 300_000;
 /** GEO-class orbital period (seconds) — also the body's rotation period (the "day"). */
 export const A1_GEO_PERIOD_S = 240;
 
-/** LEO-class orbital period (seconds). Shorter ⇒ n_LEO ≠ ω ⇒ it sweeps + sets. */
-export const A1_LEO_PERIOD_S = 150;
+/** LEO-class orbital period (seconds). Shorter ⇒ n_LEO ≠ ω ⇒ it sweeps + sets.
+ *
+ * THE COVERAGE RE-SCALE: 150 s → 185 s (≈310 km → ≈400 km altitude). Once a beam cone is
+ * real physics, spot size scales hard with altitude, and at 310 km even a wide beam painted
+ * so little ground that holding a region continuously wanted more satellites than the act
+ * can pay for. 400 km keeps the Act-2 LATENCY wall intact — the two-hop path is ~2.7 ms
+ * against the 3 ms SLA while the parked GEO sits above it at ~3.6 ms — and brings the
+ * measured zero-gap constellation back into a buildable range. TUNABLE. */
+export const A1_LEO_PERIOD_S = 185;
 
 /** GEO-class semi-major axis (metres) from the unforked μ: a = cbrt(μ·(T/2π)²). */
 export const A1_GEO_SEMI_MAJOR_M = Math.cbrt(EARTH_MU * (A1_GEO_PERIOD_S / TAU) ** 2);
@@ -209,8 +216,13 @@ export function launchVehicleCost(bus: BusTier, semiMajorM: number): number {
 
 /** The batch manifest discount (FL-11, SD-48): members 2+ of one launch pay
  * `1 − NET_BATCH_MEMBER_DISCOUNT` × hardware — batching rewards consolidation (one vehicle
- * already amortized). TUNABLE. */
-export const NET_BATCH_MEMBER_DISCOUNT = 0.15;
+ * already amortized).
+ *
+ * RAISED 15% → 45% with the coverage re-scale. Real beam cones made CONSTELLATIONS the
+ * answer to holding a region rather than a nicety, and a constellation is a manifest of
+ * identical mass-produced units — pricing the tenth one like a bespoke first one made the
+ * only viable play unaffordable. This is the economy catching up with the geometry. TUNABLE. */
+export const NET_BATCH_MEMBER_DISCOUNT = 0.45;
 
 /** The full committed cost (€) of a launch: one vehicle + `count` × (bus + antenna
  * cards), members 2+ at the manifest discount. The SAME function the builder previews and

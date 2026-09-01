@@ -47,8 +47,10 @@ const TAU = Math.PI * 2;
 // GROUND-1 (the equatorial ground is ~70° away — wider than a LEO can bridge).
 const grounds = [NET_ACT1_GROUND, NET_ACT2_GROUND];
 
-// The Act-2 region is HIGH LATITUDE (lat 70°, beyond the GEO's ~64° edge): a single inclined LEO
-// sawtooths; an N=4 polar constellation is the measured zero-gap minimum (via the high-lat ground).
+// The Act-2 region is HIGH LATITUDE (lat 70°, beyond the parked GEO's reach): a single inclined
+// LEO sawtooths; an N=9 polar constellation is the measured zero-gap minimum (via the high-lat
+// ground). The minimum ROSE from 4 when antenna cones became real physics — a beam now paints a
+// spot instead of a hemisphere, so holding a region continuously takes a genuine constellation.
 // NOTE: this N is measured against the BROADCAST floodlight the batch flies. A constellation of
 // POINTED beams needs more members — a spot beam paints far less ground than a floodlight — which
 // is the coverage re-scale's business, not this file's.
@@ -94,15 +96,15 @@ function worstPhaseAvail(sats: NetSat[], t = 0): number {
 }
 
 describe("B2 suggestPhasing — empirically derives the zero-gap N + a viable-but-imperfect assist", () => {
-  it("derives zeroGapN === 4 for LEO_SWEEP / REGION-1 (the EMPIRICAL pin — fails loudly if the physics shifts)", () => {
+  it("derives zeroGapN === 9 for LEO_SWEEP / REGION-1 (the EMPIRICAL pin — fails loudly if the physics shifts)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
-    expect(s.zeroGapN).toBe(4);
+    expect(s.zeroGapN).toBe(9);
   });
 
-  it("suggests count === 3 (= zeroGapN − shortfall), always ≥ a real constellation (≥ 2)", () => {
+  it("suggests count === 8 (= zeroGapN − shortfall), always ≥ a real constellation (≥ 2)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
     expect(s.count).toBe(s.zeroGapN - NET_PHASING_ASSIST_SHORTFALL);
-    expect(s.count).toBe(3);
+    expect(s.count).toBe(8);
     expect(s.count).toBeGreaterThanOrEqual(NET_PHASING_MIN_CONSTELLATION);
     expect(s.basePresetId).toBe("LEO_SWEEP");
   });
@@ -172,7 +174,7 @@ describe("B2 phasingLadder — the coverage-vs-capex curve the player dials the 
 
   it("the FIRST holding rung is exactly zeroGapN (the ladder + suggestPhasing agree on the knee)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
-    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 8);
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 11);
     const firstHold = ladder.find((r) => r.holds);
     expect(firstHold?.n).toBe(s.zeroGapN);
     // Below the knee every rung is a real gap; at/above the knee every rung holds (monotone bar-cross).

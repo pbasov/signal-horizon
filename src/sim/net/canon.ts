@@ -30,7 +30,7 @@ import {
 import { loadEphemeris } from "../system-data";
 import { NetSession, NET_RNG_SEED } from "./session";
 import { applyNetAction } from "./apply-action";
-import { GEO_PARK, LEO_SWEEP, MARS_RELAY } from "./world";
+import { GEO_PARK, LEO_SWEEP, MARS_RELAY, A1_GEO_PERIOD_S, A1_LEO_PERIOD_S } from "./world";
 
 import {
   ACT1_CONTRACT_ID,
@@ -60,22 +60,47 @@ export const TICK_ACCEPT = 1440; // t = 24 sim-seconds.
 
 /** ACT 2: LAUNCH the zero-gap LEO_SWEEP constellation as ONE BATCH right as act2 opens. */
 export const TICK_BATCH = 1441;
-/** ACT 2: ACCEPT REGION-1 + CIRCULARIZE the underburned NET-SAT-4. */
-export const TICK_ACCEPT2 = 3032;
-/** ACT 2: the FILL batch — more polar sats INTERLEAVED between the first batch's slots to
- * close the attrition holes. The interleave offset is HALF a slot (π/N, not a fixed π/4): it
- * has to follow the constellation's actual spacing, and the spacing changed with the beam
- * geometry. A fixed offset lands the fill sats on top of the survivors instead of between
- * them, which is why the arc read 87% held — close, and never closing. */
-export const TICK_FILL = 20642;
-export const FILL_COUNT = 4;
-export const FILL_SUBLON_RAD =
-  LEO_SWEEP.subLonRad +
-  Math.PI / ACT2_ZERO_GAP_N -
-  (TAU2 / 240) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
+/** ACT 2: CIRCULARIZE the underburned NET-SAT-4 (the seeded launch failure). Until this burn
+ * it flies a lower, FASTER orbit — so it is not a ring member at all, it drifts through the
+ * ring leaving a moving hole. Circularise before measuring anything. */
+export const TICK_CIRC2 = 3600; // t = 60 s.
+/** ACT 2: ACCEPT REGION-1 — deliberately LATE. Availability is a ROLLING window
+ * ({@link NET_AVAIL_WINDOW_S}) so it still remembers the sky before the constellation
+ * existed; signing the moment the last sat separates books a breach for a network that is
+ * already holding. Sign once the window has filled. */
+export const TICK_ACCEPT2 = 18000; // t = 300 s.
+/** ACT 2: the FILL batch — the replacement sats for the members the launch pipeline lost,
+ * aimed at the HOLES they left rather than at a fixed offset. */
+export const TICK_FILL = 5400; // t = 90 s.
+export const FILL_COUNT = 2;
+
+/**
+ * CO-PHASING A LATER LAUNCH WITH AN EXISTING RING.
+ *
+ * Sub-longitude is not a phase. A launch resolves `m0 = subLon + ω·t_launch` at its own
+ * epoch, and from then on the satellite runs at its own mean motion `n`. So to put a
+ * replacement at a wanted offset from a ring that launched earlier you have to undo BOTH
+ * clocks — the body's spin ω AND the ring's travel n — over the gap between the launches:
+ *
+ *     subLon_fill = subLon_ring + offset − (ω − n)·Δt
+ *
+ * The old formula undid ω alone. Under the previous wide floodlights that error was
+ * invisible (a footprint that big covers a mis-phased slot anyway); with real beam cones it
+ * put every "fill" satellite in the wrong place, and the ring read 87% held forever.
+ *
+ * This is also exactly the sum no player should ever be asked to do in their head — the
+ * reason the pad has to SHOW the ring and let you drop a replacement into the gap.
+ */
+export const FILL_PHASE_COMP_RAD =
+  (TAU2 / A1_GEO_PERIOD_S - TAU2 / A1_LEO_PERIOD_S) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
+
+/** One slot along the ring — where the lost members were. */
+export const FILL_OFFSET_RAD = TAU2 / ACT2_ZERO_GAP_N;
+
+export const FILL_SUBLON_RAD = LEO_SWEEP.subLonRad + FILL_OFFSET_RAD - FILL_PHASE_COMP_RAD;
 
 /** What the canonical player buys for act 2 — the measured zero-gap minimum. The arc's
- * attrition hole is closed by the FILL batch below, not by over-buying up front. */
+ * attrition hole is closed by the FILL batch, not by over-buying up front. */
 export const ACT2_BATCH_COUNT = ACT2_ZERO_GAP_N;
 
 /** The even in-plane mean-anomaly spread for the zero-gap batch (= 2π / N). */
@@ -117,8 +142,7 @@ export function actLog(batchCount = ACT2_BATCH_COUNT): SaveGame {
       TICK_BATCH,
     ),
   );
-  addAction(sg, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
-  addAction(sg, netCircularize("NET-SAT-4", TICK_ACCEPT2));
+  addAction(sg, netCircularize("NET-SAT-4", TICK_CIRC2));
   // R3 balance (term 480s ⇒ renewals actually CYCLE inside the hour): sign REGION-0's
   // renewal once it lands — the sustaining loop IS the economy lesson, and its grown baseline
   // keeps the act3a shared-pipe squeeze fueled.
@@ -132,11 +156,14 @@ export function actLog(batchCount = ACT2_BATCH_COUNT): SaveGame {
         incRad: LEO_SWEEP.incRad,
         subLonRad: FILL_SUBLON_RAD,
         count: FILL_COUNT,
-        phaseSpreadRad: TAU2 / FILL_COUNT,
+        phaseSpreadRad: ACT2_PHASE_SPREAD_RAD,
       },
       TICK_FILL,
     ),
   );
+  // SIGN REGION-1 last — after the ring is whole AND the rolling availability window has
+  // filled with a network that is already holding it (see TICK_ACCEPT2).
+  addAction(sg, netAccept(ACT2_CONTRACT_ID, TICK_ACCEPT2));
   return sg;
 }
 
@@ -154,6 +181,16 @@ export const TICK_ACCEPT_R2 = 41223;
 export const TICK_RELIEF = 55463;
 export const TICK_CIRC_RELIEF = 56303;
 export const TICK_PREFER = 56784;
+
+/**
+ * The act-2 arc lands: 1 GEO (NET-SAT-0), then the zero-gap batch, then the fill pair. Ids are
+ * consumed by EVERY member the pipeline attempts — including the ones it loses — so the count
+ * that matters is the number REQUESTED, not the number that arrived.
+ */
+export const CORRIDOR_FIRST_SAT_INDEX = 1 + ACT2_BATCH_COUNT + FILL_COUNT;
+export const CORRIDOR_SAT_IDS = [0, 1, 2].map((i) => `NET-SAT-${CORRIDOR_FIRST_SAT_INDEX + i}`);
+/** The act-3 relief bird, launched after the corridor. */
+export const RELIEF_SAT_ID = `NET-SAT-${CORRIDOR_FIRST_SAT_INDEX + 3}`;
 
 /** The recorded ACT-1 → ACT-2 → ACT-3a action sequence. */
 export function act3aLog(): SaveGame {
@@ -173,9 +210,15 @@ export function act3aLog(): SaveGame {
       TICK_EQ_CORRIDOR,
     ),
   );
-  addAction(sg, netAssignBeam("NET-SAT-9", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  addAction(sg, netAssignBeam("NET-SAT-10", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
-  addAction(sg, netAssignBeam("NET-SAT-11", 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  // The corridor's OWN sats — the three ACCESS birds launched immediately above. Satellite
+  // ids are handed out in launch order, so these move whenever an earlier act launches a
+  // different number of vehicles; pointing a beam at a stale id silently aims it at somebody
+  // else's satellite and the contract never gets served. `canonCorridorSatIds` derives them
+  // from the launch order instead of hard-coding, and canon-balance asserts they really are
+  // the equatorial ACCESS birds.
+  for (const id of CORRIDOR_SAT_IDS) {
+    addAction(sg, netAssignBeam(id, 0, ACT3A_CONTRACT_ID, TICK_BEAMS));
+  }
   addAction(sg, netAccept(ACT3A_CONTRACT_ID, TICK_ACCEPT_R2));
   addAction(sg, netAccept(ACT3A_BACKHAUL_CONTRACT_ID, TICK_ACCEPT_R2));
   addAction(
@@ -185,7 +228,7 @@ export function act3aLog(): SaveGame {
       TICK_RELIEF,
     ),
   );
-  addAction(sg, netCircularize("NET-SAT-12", TICK_CIRC_RELIEF));
+  addAction(sg, netCircularize(RELIEF_SAT_ID, TICK_CIRC_RELIEF));
   addAction(sg, netSetPrefer(ACT1_CONTRACT_ID, 1, 50, 0, TICK_PREFER));
   return sg;
 }

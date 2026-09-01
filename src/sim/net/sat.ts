@@ -137,7 +137,7 @@ const DEG = Math.PI / 180;
  * dumbest: down-only, latency-incapable, shared capacity — cheap ground per euro, but you
  * cannot aim it and everyone under it shares one pipe. TUNABLE.
  */
-const CONE_BROADCAST = 30 * DEG;
+const CONE_BROADCAST = 18 * DEG;
 const CONE_ACCESS_S = 10 * DEG;
 const CONE_ACCESS_L = 24 * DEG;
 const CONE_GATEWAY = 14 * DEG;

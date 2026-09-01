@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { standardLoadout, resolveLoadout, antennaCardById, suggestLoadout, validateLoadout } from "./sat";
-import { horizonReachRad, coneReachRad, footprintRadiusRad, previewLaunch, draftToSat, timeToServiceS, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
+import { horizonReachRad, coneReachRad, footprintRadiusRad, previewLaunch, draftToSat, timeToServiceS, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M, A1_LEO_PERIOD_S } from "./world";
 import { NET_ACT1_REGION, NET_ACT1_GROUND } from "./endpoint";
 import { Ephemeris } from "../ephemeris";
 import { solve } from "./router";
@@ -22,7 +22,7 @@ const leoAlt = LEO_SWEEP.semiMajorM - A1_BODY_RADIUS_M;
 const BROADCAST = standardLoadout(NET_REF_LINK_DISTANCE_M);
 const ACCESS_S = resolveLoadout(["ACCESS_S"], NET_REF_LINK_DISTANCE_M);
 const CONE_ACCESS_S = antennaCardById("ACCESS_S")!.coneHalfAngleRad;
-const CONE_30 = antennaCardById("BROADCAST")!.coneHalfAngleRad;
+const CONE_BROADCAST = antennaCardById("BROADCAST")!.coneHalfAngleRad;
 
 describe("FL-05 — horizonReachRad / footprintRadiusRad", () => {
   it("the horizon cap grows monotonically with altitude (GEO reaches more sky than LEO)", () => {
@@ -40,8 +40,10 @@ describe("FL-05 — horizonReachRad / footprintRadiusRad", () => {
     // A cone half-angle is an angle at the SATELLITE; a footprint is a central angle at the
     // BODY. The two are different numbers, and conflating them is what made a "spot beam"
     // paint a third of the planet. coneReachRad does the projection; the horizon still caps.
+    // Even the floodlight is cone-limited now — that is the whole point of the re-scale.
     const wide = footprintRadiusRad(BROADCAST, geoAlt);
-    expect(wide).toBeCloseTo(horizonReachRad(geoAlt), 12); // a 30° flood reaches past the limb.
+    expect(wide).toBeCloseTo(coneReachRad(CONE_BROADCAST, geoAlt), 12);
+    expect(wide).toBeLessThan(horizonReachRad(geoAlt));
 
     // A narrow spot beam is cone-limited well inside the horizon, and its footprint is the
     // PROJECTED angle — strictly larger than the raw cone, and nothing like the horizon cap.
@@ -67,7 +69,9 @@ describe("FL-05 — horizonReachRad / footprintRadiusRad", () => {
       expect(r).toBeGreaterThan(prev);
       prev = r;
     }
-    expect(coneReachRad(CONE_30, geoAlt)).toBe(Math.PI / 2); // over-reaches ⇒ horizon binds.
+    // A cone wide enough to over-reach the limb reports the 90° saturation the caller mins
+    // against the horizon (never a NaN out of asin's domain).
+    expect(coneReachRad(50 * (Math.PI / 180), geoAlt)).toBe(Math.PI / 2);
     expect(coneReachRad(0, geoAlt)).toBe(0);
   });
 
@@ -153,11 +157,18 @@ describe("FL-12 — timeToServiceS", () => {
     expect(timeToServiceS(eph, draft, centre, grounds, 0, 600)).toBe(Infinity);
   });
 
-  it("a LEO sweep serves within at most one period (motion is the answer)", () => {
-    const period = 150; // A1_LEO_PERIOD_S
-    const draft = { semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: Math.PI / 3, loadout: BROADCAST, count: 1 };
-    const tts = timeToServiceS(eph, draft, centre, grounds, 0, 2 * period, 2);
-    expect(tts).toBeGreaterThanOrEqual(0);
-    expect(tts).toBeLessThanOrEqual(2 * period);
+  it("a LEO aimed AT the region serves within one orbit; one aimed away does not (the wall)", () => {
+    // Aimed at it: the pass arrives and the beam paints the region — motion is the answer.
+    const onTarget = { semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: 0, loadout: BROADCAST, count: 1 };
+    const hit = timeToServiceS(eph, onTarget, centre, grounds, 0, A1_LEO_PERIOD_S, 1);
+    expect(hit).toBeGreaterThanOrEqual(0);
+    expect(hit).toBeLessThanOrEqual(A1_LEO_PERIOD_S);
+
+    // Aimed a third of the way around the world, it simply never paints this region on this
+    // orbit. Before the re-scale a single beam covered so much sky that almost any aim
+    // "worked" eventually; now WHERE you put it is the decision, which is the wall act 2 is
+    // built on — and the reason a lone bird cannot hold a region at all.
+    const offTarget = { semiMajorM: LEO_SWEEP.semiMajorM, incRad: LEO_SWEEP.incRad, subLonRad: Math.PI / 3, loadout: BROADCAST, count: 1 };
+    expect(timeToServiceS(eph, offTarget, centre, grounds, 0, A1_LEO_PERIOD_S, 2)).toBe(Infinity);
   });
 });

@@ -147,7 +147,7 @@ describe("router winnable: a single LEO SETS — unserved + horizon re-solve + l
     expect(setTime).toBeGreaterThan(0); // it does set within one pass.
   });
 
-  it("solve() at a set time is UNSERVED with a set_below_horizon loss stamp", () => {
+  it("solve() when the beam leaves is UNSERVED with a geometric loss stamp", () => {
     const sat = leoSat(0);
     // Find the first set time.
     let setTime = -1;
@@ -166,13 +166,17 @@ describe("router winnable: a single LEO SETS — unserved + horizon re-solve + l
     expect(res.bindingConstraint).toBe("connectivity");
     expect(res.losses.length).toBe(1);
     const stamp = res.losses[0];
-    expect(stamp.cause).toBe("set_below_horizon"); // the geometric cause.
+    // The GEOMETRIC cause. With real beam cones the link now fails at the edge of the
+    // FOOTPRINT — which a moving satellite reaches before it reaches the horizon — so the
+    // honest stamp here is "outside_beam"; "set_below_horizon" remains the cause once it
+    // actually drops under the mask. Either is a truthful geometric explanation.
+    expect(["outside_beam", "set_below_horizon"]).toContain(stamp.cause);
     expect(stamp.atS).toBe(setTime); // stamped with the time.
     expect(stamp.aId).toBe(NET_ACT1_REGION.id);
     expect(stamp.bId).toBe(NET_ACT1_GROUND.id);
   });
 
-  it("the LEO RE-SOLVES served→UNSERVED via the horizon event (the re-solve split)", () => {
+  it("the LEO RE-SOLVES served→UNSERVED via the geometry event (the re-solve split)", () => {
     const sat = leoSat(0);
     // Drive the per-tick re-solve split across the pass. The full search re-runs only on
     // the launch (first tick) and on the horizon set event; in between it cheaply re-evals.
@@ -193,7 +197,11 @@ describe("router winnable: a single LEO SETS — unserved + horizon re-solve + l
         // On the set tick the full search re-ran (solvedAtS advanced to this tick) and
         // stamped the geometric loss.
         if (state.solvedAtS === t) resolveTickRanFullSearchAtSet = true;
-        expect(state.result.losses.some((l) => l.cause === "set_below_horizon")).toBe(true);
+        expect(
+          state.result.losses.some(
+            (l) => l.cause === "outside_beam" || l.cause === "set_below_horizon",
+          ),
+        ).toBe(true);
         break;
       }
       prevServed = state.result.served;

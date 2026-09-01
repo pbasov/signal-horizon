@@ -33,7 +33,7 @@ import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
  *
  * The ONE concept: a single LEO cannot HOLD a region because it MOVES — it is up only a slice
  * of each pass — so its rolling availability sawtooths and the contract breaches on the SHARED
- * grace. A phased CONSTELLATION hands off (one rises as another sets); only at N=4 does the
+ * grace. A phased CONSTELLATION hands off (one rises as another sets); only at N=9 does the
  * high-lat REGION hold continuous SERVED (rolling-avail = 1.0) and complete. These tests PIN
  * that empirical N (the doc's measured table) and prove the loop runs on the SHARED m2 state
  * machine — no second breach convention, no struct reshape.
@@ -47,7 +47,9 @@ const TAU = Math.PI * 2;
 const grounds = [NET_ACT1_GROUND, NET_ACT2_GROUND];
 
 // The Act-2 region is HIGH LATITUDE (lat 70°, beyond the GEO's ~64° footprint edge): a single
-// inclined LEO sawtooths; the polar (inc 90°) constellation's zero-gap minimum is N=4.
+// inclined LEO sawtooths; the polar (inc 90°) constellation's zero-gap minimum is N=9 — it rose
+// from 4 with the coverage re-scale, when a beam stopped flooding a hemisphere and started
+// painting a spot.
 const REGION: Region = {
   id: "REGION-1",
   label: "polar metro",
@@ -61,7 +63,7 @@ const centre = { latRad: REGION.latRad, lonRad: REGION.lonRad };
 /** The measured zero-gap constellation minimum for REGION-1 from the polar LEO family — the
  * same empirical pin phasing.test.ts derives from `suggestPhasing`. Named once here so the
  * hand-off assertions move together when the physics is re-tuned. */
-const ZERO_GAP_N = 4;
+const ZERO_GAP_N = 9;
 
 /** A train of `count` LEO_SWEEP sats evenly phased in mean anomaly (m0 += 2π·i/count). */
 function leoTrain(count: number, t0 = 0): NetSat[] {
@@ -112,7 +114,7 @@ describe("B1 windowAvailability — the rolling hand-off held-fraction", () => {
     expect(maxRoll).toBeLessThan(0.99);
   });
 
-  it("a phased N=4 holds rolling availability = 1.0 at EVERY phase, including a t < window boundary", () => {
+  it("a phased N=9 holds rolling availability = 1.0 at EVERY phase, including a t < window boundary", () => {
     const sats = leoTrain(ZERO_GAP_N);
     const c = availContract();
     // Several phases across a period, including a trailing-window boundary t < W (negative
@@ -138,7 +140,7 @@ describe("B1 windowAvailability — the rolling hand-off held-fraction", () => {
   });
 });
 
-describe("B1 the SHARED grace enforces availability — empirical N pinned (N=4 is the floor)", () => {
+describe("B1 the SHARED grace enforces availability — empirical N pinned (N=9 is the floor)", () => {
   // Drive the design's exact served-fraction fork into the REAL shared stepActiveContract.
   // A long run at a coarse dt: feed 0 while (instant gap OR rolling-avail < slaAvail), else 1.0.
   function driveContract(sats: NetSat[], steps: number, dt: number): Contract {
@@ -172,7 +174,7 @@ describe("B1 the SHARED grace enforces availability — empirical N pinned (N=4 
     expect(c3.state).toBe("failed");
   });
 
-  it("N=4 NEVER breaches and accrues term — the measured zero-gap minimum", () => {
+  it("N=9 NEVER breaches and accrues term — the measured zero-gap minimum", () => {
     const c = driveContract(leoTrain(ZERO_GAP_N), STEPS, DT);
     expect(c.state).not.toBe("failed");
     expect(c.breachSecondsAccum).toBe(0); // held continuously across every hand-off
@@ -198,7 +200,7 @@ describe("B1 the strongest-margin hand-off router (signature stable, order-indep
     expect(checked).toBeGreaterThan(0);
   });
 
-  it("served NEVER flips across a hand-off for N=4 (one rises as another sets)", () => {
+  it("served NEVER flips across a hand-off for N=9 (one rises as another sets)", () => {
     const sats = leoTrain(ZERO_GAP_N);
     const dt = A1_LEO_PERIOD_S / 400;
     for (let i = 0; i < 400 * 4; i++) {
