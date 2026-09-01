@@ -1244,3 +1244,97 @@ regression gets hidden. Filed in the backlog.
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
+---
+
+### SD-58 — THE BOARD IS A MAP (2026-09-01)
+
+Reported: *"in M2 missions coastal backhaul in corridor metro are never shown in the orrery? I also
+want to be able to click on a mission and focus on the area it asks to cover + arm it in the Pad
+coverage analysis."*
+
+#### 1. One region drawn, four regions owed
+
+`NetRenderState.region` was singular — the teaching cursor's contract, `REGION-1` if live else
+`REGION-0`. Everything else on the board got a served-path beam if it happened to be carrying and
+nothing at all otherwise. So from act 3a onward the corridor metro and the coastal backhaul were
+signed, billed and breached while being, on the globe, nowhere.
+
+`otherRegions` carries the rest of the standing market (offered + active, filtered to the body being
+drawn, so the Mars tender is not painted onto Earth), rendered from a pooled set of surface discs at
+render orders below the primary's, each labelled. The label's glyph is the redundant colour-off
+channel: **▣ carrying · ▨ signed and dark · ▢ offered**. A region now has a name on the ball.
+
+#### 2. Clicking a tender is the gesture that connects the three surfaces
+
+One click TARGETS a tender and commits nothing:
+
+- the camera swings onto its region and **holds** it (`Orrery.followRegion` + `src/orrery/aim.ts`) —
+  a one-shot snap would slide off within seconds, because the toy globe turns once every 240 s. Any
+  camera drag drops the follow: the player's hands always win.
+- it becomes the globe's **primary** region, so the draft's coverage-gap overlay measures the thing
+  you are looking at.
+- the pad's **coverage analysis** — comb, compare table, FIT assist — designs against it.
+
+That last one had three separate inline copies of "the first offered Earth demand, else the first
+active one", which is how the pad ended up analysing REGION-0 while the player read the corridor
+metro's terms. They collapse into one `r1TargetContract()`.
+
+The selection is render-only — never folded, never logged. The globe's default stays the teaching
+cursor (not the pad's fallback) so an unclicked act 2 keeps drawing REGION-1's hand-off sawtooth,
+which is that act's entire lesson.
+
+#### 3. Three tenders, one dot — measured, then moved
+
+Asked immediately: *"are we serving the same place with 3 different missions? that's kinda dumb
+no?"* Correct, and worse than it looked. Every region disc had a **10° angular radius**; the
+equatorial centres were 0°, 3°E and 6°W. Three discs whose centres all fell inside one another —
+one 26°-wide smear carrying three separately-priced contracts with three different SLAs.
+
+The tight spacing bought nothing. Both mechanics need **co-visibility from one satellite**, not
+co-location, and the measured bands are an order of magnitude wider (probed against the real
+router/link budget, not estimated):
+
+| requirement | measured band | was |
+| --- | --- | --- |
+| corridor metro's 3 ms latency SLA on the equatorial ACCESS ring | 2.68 ms at 0° sep, still **2.99 ms at 50°** | pinned at 3°E |
+| coastal backhaul inside the parked GEO's broadcast pipe | GEO bridges **100% of the day out to 40°W**, 0% at 45°W | pinned at 6°W |
+
+**Decision (user): spread them out.** Corridor → **20°E**, backhaul → **35°W** (5° of margin before
+the reach cliff), disc radius **10° → 6°** so the nearest pair clears with 8° of open ocean between
+their rims. A test now guards the property directly: any two equatorial region rims must clear.
+
+The radius is **sim-inert** — the router bridges the region CENTRE, never samples the disc — and that
+was verified rather than assumed: 6° with the original longitudes reproduces the old hash bit-for-bit.
+The hash moves on the two longitudes alone.
+
+#### 4. The act-4 canon beats follow the act-3b gate
+
+The re-placement slid the act-3b gate by **one tick** (58104 → 58105). The canon's Mars beats were
+hardcoded literals, so the relay then launched one tick BEFORE act 4 emitted — into a beat that did
+not exist — which pushed the gate out a further 2,060 ticks, stranded `MARS-1` unaccepted and cost
+the arc €650. Retimed +1 tick, preserving the canon's real invariant: **relay at the gate tick,
+accept +1200, breadcrumb +2400**. That invariant is now written down where the literals live.
+
+#### 5. "ENDS SOLVENT and CLIMBING" was measuring sawtooth phase, not amortization
+
+The economy pin compared the wallet at t=1090 against t=1008 and t=988. But the act-3a corridor is
+*deliberately* squeezed, so the post-relay wallet sawtooths — ~200 s period, a few thousand euro of
+swing — **identically under the old and the new geometry** (verified by extending both runs to
+t=1400). The old pin passed only because t=1090 happened to sit on a rising edge; moving the
+corridor flipped it to a falling edge and failed an assertion nothing had regressed in.
+
+Replaced with a window that spans the sawtooth: after the last big commit the wallet holds well
+above the low-water mark that commit left, and ends above it. **Both bounds hold under the old
+geometry too** (mean−trough 828, final−trough 888), so this is a stricter reading of the same
+property, not a relaxed one — and the arc is richer at every comparable instant after the move
+(trough €3,488 → €4,100, mean €4,316 → €5,018, final €4,376 → €4,858).
+
+ONE golden re-pin → `10981192184426294200n`.
+
+#### 6. The debug screenshot seed now shows the whole board
+
+`?netact=3` seeded two regions, which could not demonstrate the bug it needed to demonstrate. It now
+also puts the corridor metro and coastal backhaul on the board, OFFERED — unsigned, because signing
+a latency SLA with no beam pointed at it would seed a fake breach. Same discipline as the rest of
+that function: a render seed on the live session, never a sim/action/replay path, so the goldens stay
+provably untouched.

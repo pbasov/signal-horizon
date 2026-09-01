@@ -1066,9 +1066,15 @@ body {
 .mission-arm.active { color: var(--amber); outline: 1px solid var(--amber); }
 .mission-launch { opacity: 0.5; }
 .mission-launch.ready { opacity: 1; color: var(--cyan); outline: 1px solid var(--cyan); }
-.mission-tender { border-top: 1px dashed var(--line-dim); padding: 5px 0; }
+.mission-tender { border-top: 1px dashed var(--line-dim); padding: 5px 0 5px 4px; cursor: pointer; border-left: 2px solid transparent; }
+.mission-tender:hover { background: var(--bg-2); }
+/* TARGETED — the globe and the pad are pointed at this tender. The left rule + the row tint are
+   the colour channel; the ◉ marker in the head is the redundant shape (§8 CVD). */
+.mission-tender.sel { border-left-color: var(--cyan); background: var(--bg-2); }
 .mission-tender-head { display: flex; justify-content: space-between; gap: 8px; }
-.mission-tender-label { font-weight: 700; }
+.mission-tender-mark { color: var(--fg-dim); margin-right: 4px; }
+.mission-tender.sel .mission-tender-mark { color: var(--cyan); }
+.mission-tender-label { font-weight: 700; flex: 1; }
 .mission-tender-state.offered { color: var(--amber); }
 .mission-tender-state.active { color: var(--cyan); }
 .mission-tender-state.active.dark { color: var(--orange-red); }

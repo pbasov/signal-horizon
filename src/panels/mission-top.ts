@@ -81,6 +81,12 @@ export interface MissionTopState {
   /** WHO THIS LAUNCH IS FOR — pinned across the top of the pad the whole time you aim.
    * Opening the pad used to REPLACE the tender board, so the thing you were aiming at was
    * the one thing you could not see. Null when no demand is on the board yet. */
+  /**
+   * THE BOARD SELECTION — the tender the player clicked, or null for "the board picked". The row
+   * marks itself TARGET and the pad's coverage analysis is measured against it, so the panel says
+   * out loud which demand every number on the pad face refers to.
+   */
+  targetTenderId: string | null;
   padTarget: {
     label: string;
     state: string;
@@ -103,6 +109,12 @@ export interface MissionTopState {
 export interface MissionTopActions {
   onMode(mode: "book" | "pad"): void;
   onAccept(contractId: string): void;
+  /**
+   * TARGET this tender: swing the orrery camera onto the region it asks you to cover and hand the
+   * pad's coverage analysis the same tender. The one gesture that connects "a row on the board"
+   * to "a place on the ball" to "the design I am about to launch at it".
+   */
+  onSelectTender(contractId: string): void;
   /** §7.3 — route bias for an ACTIVE tender: pos 0 = shortest path, 0.5 = spread around
    * congestion. The first thing the player tunes. */
   onRoute(contractId: string, pos: number): void;
@@ -200,7 +212,10 @@ export class MissionTop implements PanelHandle {
   private readonly vShortfall: HTMLElement;
   private readonly tendersHost: HTMLElement;
   private tenderSig = "";
-  private tenderEls = new Map<string, { state: HTMLElement; served: HTMLElement; facts: HTMLElement; bet: HTMLElement }>();
+  private tenderEls = new Map<
+    string,
+    { row: HTMLElement; mark: HTMLElement; state: HTMLElement; served: HTMLElement; facts: HTMLElement; bet: HTMLElement }
+  >();
 
   // PAD face
   private readonly padFace: HTMLElement;
@@ -562,7 +577,16 @@ export class MissionTop implements PanelHandle {
       }
       for (const t of liveRows) {
         const row = el("div", "mission-tender");
+        // THE ROW IS THE GESTURE: clicking a tender aims the globe at the region it asks you to
+        // cover and points the pad's coverage analysis at it. Nothing is committed and nothing is
+        // spent — it only decides what you are LOOKING at and designing against.
+        row.setAttribute("data-net", "tender");
+        row.setAttribute("data-contract", t.id);
+        row.title = "Click to look at this region on the globe and design against it on the pad.";
+        row.addEventListener("click", () => this.actions.onSelectTender(t.id));
         const head = el("div", "mission-tender-head");
+        const mark = el("span", "mission-tender-mark", "");
+        head.appendChild(mark);
         head.appendChild(el("span", "mission-tender-label", t.label));
         const state = el("span", "mission-tender-state", t.state.toUpperCase());
         head.appendChild(state);
@@ -613,12 +637,19 @@ export class MissionTop implements PanelHandle {
           row.appendChild(routeRow);
         }
         this.tendersHost.appendChild(row);
-        this.tenderEls.set(t.id, { state, served, facts, bet });
+        this.tenderEls.set(t.id, { row, mark, state, served, facts, bet });
       }
     }
     for (const t of s.tenders) {
       const els = this.tenderEls.get(t.id);
       if (!els) continue;
+      // The TARGET marker rides the live refresh, not the signature rebuild: the selection moves
+      // on a click, which changes no tender's state or terms. ◉ is the redundant shape channel —
+      // the row's highlight is never the only thing saying which one is targeted (§8 CVD).
+      const targeted = t.id === s.targetTenderId;
+      els.row.classList.toggle("sel", targeted);
+      els.mark.textContent = targeted ? "◉" : "○";
+      els.mark.title = targeted ? "TARGET — the globe and the pad are pointed here." : "";
       els.state.textContent = t.state.toUpperCase();
       els.state.className = `mission-tender-state ${t.state}${t.state === "active" && !t.served ? " dark" : ""}`;
       els.served.textContent =
@@ -664,6 +695,10 @@ export class MissionTop implements PanelHandle {
       this.vTargetBet.textContent = "";
     } else {
       this.vTargetHead.textContent = `SERVING · ${s.padTarget.label.toUpperCase()}  ·  ${s.padTarget.state.toUpperCase()}`;
+      this.vTargetHead.title =
+        s.targetTenderId === null
+          ? "The board's own pick. Click a tender on the BOOK face to design against that one instead."
+          : "Targeted from the board. Click another tender on the BOOK face to move the pad here.";
       this.vTargetTerms.textContent = s.padTarget.terms;
       this.vTargetBet.textContent = TENDER_BET(
         `€${Math.round(s.padTarget.payPerHr).toLocaleString("en-US")}/hr`,

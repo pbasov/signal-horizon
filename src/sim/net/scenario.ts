@@ -166,17 +166,27 @@ export const NET_ACT2_REGION: Region = {
  * corridor (onboarding line 99). The replay action log accepts THIS id (accept + net_set_prefer). */
 export const ACT3A_CONTRACT_ID = "REGION-2";
 
-/** Longitude (radians) of the Act-3a corridor region — a few degrees E of the equatorial REGION-0
- * (lon 0), inside the same equatorial corridor so the SAME equatorial sats bridge BOTH (the shared
- * link the §4.3 oversubscription rides). 3° E. */
-export const NET_ACT3A_CORRIDOR_LON_RAD = 3 * (Math.PI / 180);
+/**
+ * Longitude (radians) of the Act-3a corridor region — E of the equatorial REGION-0 (lon 0), inside
+ * the same equatorial corridor so the SAME equatorial sats bridge BOTH (the shared link the §4.3
+ * oversubscription rides). 20° E.
+ *
+ * Was 3° E. With a 6° disc radius that put the corridor metro INSIDE the equatorial metro — two
+ * separately-priced tenders, two separate SLAs, one patch of ground. "Shares the corridor" is a
+ * CO-VISIBILITY requirement (one satellite must see both), not a co-location one, and the measured
+ * band is far wider than 3°: on the 3-sat equatorial ACCESS ring this region's best one-way latency
+ * is 2.73 ms against its 3.0 ms bar (2.68 ms at the old 3°), and the ring still reaches it 73% of
+ * a four-orbit span (88% at 3°). So the corridor stays winnable with the same constellation, and
+ * the two metros are now 20° apart — visibly, aimably distinct places on the ball.
+ */
+export const NET_ACT3A_CORRIDOR_LON_RAD = 20 * (Math.PI / 180);
 
 /** The Act-3a corridor's LOW one-way latency SLA (seconds): tighter than the parked GEO path
  * (~3.57 ms) but looser than a short equatorial LEO hop (~2.07 ms) — so the latency-tolerant GEO
  * CANNOT meet it (the GEO ceiling, felt) and a shorter LEO route DOES (§4.4). 3 ms. */
 export const NET_ACT3A_LOW_LATENCY_S = 0.003;
 
-/** REGION-2 — the Act-3a EQUATORIAL CORRIDOR metro (lat 0, lon 3° E), sharing REGION-0's
+/** REGION-2 — the Act-3a EQUATORIAL CORRIDOR metro (lat 0, lon 20° E), sharing REGION-0's
  * equatorial corridor so the SAME equatorial sats bridge both — the shared link the §4.3
  * oversubscription rides. Same disc shape as REGION-0; a distinct id/label + a nearby longitude.
  * Its LATENCY axis is active (low slaLatencyS): the GEO ceiling is felt (GEO can't meet it), a
@@ -199,9 +209,18 @@ export const NET_ACT3A_CORRIDOR_REGION: Region = {
  * are genuinely non-coincident and the fair-share squeeze opens ASYMMETRIC windows. */
 export const ACT3A_BACKHAUL_CONTRACT_ID = "BACKHAUL-3";
 
-/** Longitude of the backhaul region — west of REGION-0, inside the parked GEO's footprint,
- * reachable from GROUND-0. 6° W. */
-export const NET_ACT3A_BACKHAUL_LON_RAD = -6 * (Math.PI / 180);
+/**
+ * Longitude of the backhaul region — west of REGION-0, inside the parked GEO's footprint,
+ * reachable from GROUND-0. 35° W.
+ *
+ * Was 6° W, which with a 6° disc radius overlapped REGION-0 outright. The backhaul carries NO
+ * latency axis — its only geometric requirement is to sit inside the parked GEO's floodlight so it
+ * shares that BROADCAST pipe, and the measured edge of that reach is between 40° and 45° W (the
+ * GEO bridges a point at 40° W 100% of the day and 0% at 45° W). 35° W keeps the full-day reach
+ * with 5° of margin before the cliff, and puts a genuinely different coast under the same pipe —
+ * which is the whole fiction: two tolerant contracts on ONE floodlight, in two different places.
+ */
+export const NET_ACT3A_BACKHAUL_LON_RAD = -35 * (Math.PI / 180);
 
 /** The backhaul's starting offered load — small, so the shared GEO pipe starts comfortable
  * and the squeeze is ESCALATION-DRIVEN (both baselines grow toward the ceiling; only then do
@@ -212,7 +231,7 @@ export const NET_ACT3A_BACKHAUL_LOAD = 0.4;
  * 0.6 floor is the one the squeeze bites). TUNABLE. */
 export const NET_ACT3A_BACKHAUL_SLA_BW = 0.3;
 
-/** REGION-3 — the COASTAL BACKHAUL region (lat 0, lon 6° W): a latency-tolerant bulk demand
+/** REGION-3 — the COASTAL BACKHAUL region (lat 0, lon 35° W): a latency-tolerant bulk demand
  * INSIDE the parked GEO's footprint, sharing its BROADCAST pipe with REGION-0. The §4.3
  * oversubscription tension under the pipe model: two tolerant contracts on ONE floodlight
  * pipe, peaks non-coincident — share cleverly until growth makes the windows bite. */

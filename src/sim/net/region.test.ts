@@ -10,6 +10,7 @@ import {
   type RegionPoint,
 } from "./endpoint";
 import { MIN_ELEVATION_RAD } from "../coverage/field";
+import { NET_ACT3A_CORRIDOR_REGION, NET_ACT3A_BACKHAUL_REGION } from "./scenario";
 
 const DEG = Math.PI / 180;
 
@@ -48,12 +49,31 @@ describe("endpoint: structs + net/ constants (re-centered equatorial)", () => {
     expect(NET_MIN_ELEVATION_RAD).toBeGreaterThan(MIN_ELEVATION_RAD);
   });
 
-  it("the region is the EQUATORIAL metro disc (lat 0°, lon 0°, rad 10°)", () => {
+  it("the region is the EQUATORIAL metro disc (lat 0°, lon 0°, rad 6°)", () => {
     expect(NET_ACT1_REGION.latRad).toBe(0);
     expect(NET_ACT1_REGION.lonRad).toBe(0);
     expect(NET_ACT1_REGION.radiusRad).toBe(NET_ACT1_REGION_RADIUS_RAD);
-    expect(NET_ACT1_REGION.radiusRad).toBeCloseTo(10 * DEG, 15);
+    // 6°, not the old 10°: once the globe draws EVERY live tender, 10° discs merged the
+    // equatorial board into one smear. See the constant's own note.
+    expect(NET_ACT1_REGION.radiusRad).toBeCloseTo(6 * DEG, 15);
     expect(NET_ACT1_REGION.bodyId).toBe("earth");
+  });
+
+  it("the equatorial tenders are separate PLACES, not one overlapping smear", () => {
+    // The regression this guards: three separately-priced equatorial tenders whose 10° discs
+    // all contained each other's centres. Any two region rims must clear each other.
+    const rad = NET_ACT1_REGION_RADIUS_RAD;
+    const lons = [
+      { id: "REGION-0", lonRad: NET_ACT1_REGION.lonRad },
+      { id: "REGION-2", lonRad: NET_ACT3A_CORRIDOR_REGION.lonRad },
+      { id: "BACKHAUL-3", lonRad: NET_ACT3A_BACKHAUL_REGION.lonRad },
+    ];
+    for (let i = 0; i < lons.length; i++) {
+      for (let j = i + 1; j < lons.length; j++) {
+        const sep = Math.abs(lons[i].lonRad - lons[j].lonRad); // all three sit on the equator.
+        expect(sep, `${lons[i].id} vs ${lons[j].id}`).toBeGreaterThan(2 * rad);
+      }
+    }
   });
 
   it("the ground network is equatorial on the same meridian (lat 0°)", () => {
