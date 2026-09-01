@@ -86,6 +86,7 @@ import {
   A1_LEO_SEMI_MAJOR_M,
   A1_GEO_SEMI_MAJOR_M,
   NET_PRESETS,
+  LUNA_GATE,
   MARS_RELAY_PRESET,
   launchCost,
   launchCostBaseForPreset,
@@ -116,7 +117,16 @@ import {
   NET_ACT3A_BACKHAUL_SLA_BW,
   M1_SCENARIO,
 } from "./sim/net/scenario";
-import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD } from "./sim/net/endpoint";
+import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD, ACT3C_LUNA_CONTRACT_ID, NET_DEEP_SPACE_GROUND } from "./sim/net/endpoint";
+// Act-3c (M1-A3C-7) — the cislunar leg's RENDER positions. Pure reads of the tidally-locked lunar
+// frame + the halo station; the render layer recomputes no geometry of its own.
+import {
+  MOON_BODY_ID,
+  cislunarNodePosition,
+  cislunarOneWayLightS,
+  isLunaGateId,
+  lunarSurfacePointRelative,
+} from "./sim/net/cislunar";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
 // seed loss stamp (the trace's verbatim wording). Render-only; the sim owns the fault state.
@@ -348,6 +358,12 @@ const netDebugView = netMode && (NET_QUERY.get("netview") === "mars" || NET_QUER
 // surface only, NOT a sim/action/replay path (the replay harness builds its own session), so the
 // three goldens are provably untouched. Never reached in normal play; DEBUG-labelled.
 const netLiveDebugView = netMode && (NET_QUERY.get("netview") === "net" || NET_QUERY.get("netact") === "3");
+// `?netview=luna` (or `?netact=3c`) — Act-3c, THE CISLUNAR LEG. The rung between Earth's ~3 ms and
+// Mars's minutes had no debug seed at all, which is part of why it shipped unrendered: there was no
+// cheap way to LOOK at it (M1-A3C-7). Same contract as the other two seeds — render-only, never a
+// sim/action/replay path, so the goldens are untouched by construction.
+const netCislunarDebugView =
+  netMode && (NET_QUERY.get("netview") === "luna" || NET_QUERY.get("netact") === "3c");
 // X-04b — `?fresh=1`: a SCRATCH SESSION. Cold-boots even when the vault holds a run, AND
 // writes nothing back to it: no resume, no autosave cadence, no save-on-exit.
 //
@@ -361,17 +377,28 @@ const netLiveDebugView = netMode && (NET_QUERY.get("netview") === "net" || NET_Q
 // starts autosaves normally like any other.)
 const freshBoot = NET_QUERY.get("fresh") === "1";
 /**
+ * EVERY DEBUG SCREENSHOT SEED, in one place (M1-A3C-7). The predicate below used to name the debug
+ * views individually, so adding a third one silently opted it INTO the vault — which is exactly what
+ * happened: `?netact=3c` RESUMED whatever campaign was in the slot and then seeded on top of it, so
+ * every page load stacked another L2 gateway (measured: 1 → 3 → 5 LUNA-GATEs across three loads,
+ * with NaN geometry once the state went far enough off the rails). A seed drives the live session to
+ * a synthetic state; it must never start from a real run, and must never write one back. Any future
+ * seed joins THIS list and gets both halves for free.
+ */
+const netAnyDebugSeed = netDebugView || netLiveDebugView || netCislunarDebugView;
+/**
  * X-04b — may this page AUTOMATICALLY read and write the vault? One predicate, so the resume,
  * the autosave cadence and the save-on-exit hook can never disagree about it — an earlier cut
  * of this had the exit hook excluding the debug views while the cadence still wrote, which let
  * `?netview=mars` leave its artificial seeded world in the slot for the next real boot to
  * resume into.
  *
- * Excluded: cache mode (its own flow), the two DEBUG screenshot views (they drive the live
- * session to synthetic states for a shot — never a run), and `?fresh=1` (the scratch session).
+ * Excluded: cache mode (its own flow), EVERY debug screenshot seed ({@link netAnyDebugSeed} — they
+ * drive the live session to synthetic states for a shot, never a run), and `?fresh=1` (the scratch
+ * session).
  * A deliberate `v` quick-save still works anywhere; this governs only what happens on its own.
  */
-const autoVaultEnabled = netMode && !netDebugView && !netLiveDebugView && !freshBoot;
+const autoVaultEnabled = netMode && !netAnyDebugSeed && !freshBoot;
 // The selected planner preset cursor (GEO PARK default that already works; LEO SWEEP sweeps). The
 // preset is the FLOOR (§3.1: one-click); it SETS the editable draft below. Dragging the draft is the
 // CEILING. -1 ⇒ no preset matches the current (hand-dragged) draft, so no preset button lights.
@@ -1753,6 +1780,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       footprints: [],
       availability: null,
       mars: netMarsSlice(t),
+      cislunar: netCislunarSlice(t, add),
       focusBlob: netFocusBlobSlice(t, add),
       draft: netDraftSlice(t, add, null),
       servedLink: null,
@@ -1814,6 +1842,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     availability,
     focusBlob: netFocusBlobSlice(t, add),
     mars: netMarsSlice(t),
+    cislunar: netCislunarSlice(t, add),
     draft,
     servedLink,
     // SD-53 — the trace: the flow the routing table has selected renders at full strength while the
@@ -2202,9 +2231,12 @@ function netServedLinksSlice(
   const live = new Set<string>();
   for (const c of netSession.contracts) {
     if (c.state !== "active") continue;
-    if (c.region.bodyId !== "earth") continue; // Act-4 Mars leg is the crawler's job, not a toy beam.
     const solve = netSession.lastSolveFor(c.id);
     if (solve === null || !solve.served || solve.path === null || solve.path.length < 2) continue;
+    // Act-3c: the cislunar leg is NOT drawn here. It owns its own line in the cislunar slice, because
+    // the Earth link web is dropped away from home and that is the framing the leg lives in — see
+    // `NetRenderState.cislunar.pathPointsM`.
+    if (c.region.bodyId !== "earth") continue; // Mars leg = the crawler's job; Moon leg = its own line.
     // [regionId, ...satChain, groundId] — the router's own node-id path. The chain is ONE
     // sat for a direct bridge and every relay hop for a spine route (M1-SLV-1), so the arc
     // must walk it rather than assume a single sat: drawing region→servingSat→ground over a
@@ -2239,6 +2271,59 @@ function netServedLinksSlice(
   // Drop trackers for contracts no longer served (so a re-acquire flashes as a fresh re-route).
   for (const id of [...netLinkLastSat.keys()]) if (!live.has(id)) { netLinkLastSat.delete(id); netLinkReroute.delete(id); }
   return out;
+}
+
+/**
+ * Act-3c (M1-A3C-7) — resolve the router's lunar path `[farsideRegion, LUNA-GATE, dish]` to world
+ * points. Returns null if any node cannot be resolved, so a half-known path draws NOTHING rather
+ * than a line to the wrong place (LAW 1 — instruments never lie).
+ */
+function netCislunarLegPoints(
+  t: number,
+  add: (rel: Vec3) => Vec3,
+  c: Contract,
+  path: readonly string[],
+): Vec3[] | null {
+  const gateSat = netSession.sats.find((x) => x.id === path[1]);
+  if (gateSat === undefined) return null;
+  const gatePos = cislunarNodePosition(eph, gateSat, t);
+  if (gatePos === null) return null;
+  const dish = NET_DEEP_SPACE_GROUND.find((g) => g.id === path[path.length - 1]);
+  if (dish === undefined) return null;
+  return [
+    add(lunarSurfacePointRelative(eph, c.region.latRad, c.region.lonRad, t)),
+    add(gatePos),
+    add(surfacePointRelative(dish.latRad, dish.lonRad, t)),
+  ];
+}
+
+/**
+ * Act-3c (M1-A3C-7) — THE CISLUNAR LEG's render slice. Null until the act3c beat puts LUNA-1 on the
+ * board; from that instant the farside marker is drawn whether or not it can be reached, because the
+ * act's whole lesson is that the demand is REAL and no Earth orbit will ever see it. The gateway node
+ * appears only once launched — "nothing is there yet" is the honest picture of an unsolved farside.
+ *
+ * A pure read of the session + `sim/net/cislunar.ts`; never mutates sim state, so no golden moves.
+ */
+function netCislunarSlice(t: number, add: (rel: Vec3) => Vec3): import("./orrery/orrery").NetRenderState["cislunar"] {
+  const lc = netSession.contractById(ACT3C_LUNA_CONTRACT_ID);
+  if (lc === null) return null; // act3c not yet reached.
+  const gateSat = netSession.sats.find((x) => isLunaGateId(x.id)) ?? null;
+  const gatePos = gateSat !== null ? cislunarNodePosition(eph, gateSat, t) : null;
+  const solve = netSession.lastSolveFor(lc.id);
+  const served = solve !== null && solve.served;
+  // The REAL ephemeris light time, ~1.334 s — the rung the GDD asks for before Mars's minutes.
+  const oneWayS = cislunarOneWayLightS(eph, t);
+  return {
+    farsidePosM: add(lunarSurfacePointRelative(eph, lc.region.latRad, lc.region.lonRad, t)),
+    gatewayPosM: gatePos === null ? null : add(gatePos),
+    served,
+    oneWayS,
+    // Render-only cycle keyed on sim-time / oneWayS — the SAME construction the Mars crawl uses, so
+    // the two frontier legs crawl by the same rule at different scales. Only once the leg carries.
+    crawlProgress: served && oneWayS > 0 ? (t / oneWayS) % 1 : null,
+    pathPointsM: served && solve !== null && solve.path !== null ? (netCislunarLegPoints(t, add, lc, solve.path) ?? []) : [],
+  };
 }
 
 /**
@@ -2749,6 +2834,75 @@ function seedNetMarsDebugView(): void {
     entity: "DEBUG",
     value: "netview=mars",
     msg: "DEBUG VIEW — net session seeded at the Act-4 Mars frontier (relay launched, sample present). Not reached in normal play; does NOT affect replay.",
+  });
+}
+
+/**
+ * Act-3c (M1-A3C-7) — DEBUG VIEW seed for THE CISLUNAR LEG (`?netview=luna` / `?netact=3c`). Drive
+ * the LIVE session to the farside act: force the cursor to act3c, let the beat emit LUNA-1, launch
+ * the L2 GATEWAY with the same `net_launch` verb and preset the player uses, sign the demand, and
+ * step until the leg carries. Then frame CISLUNAR — the Earth–Moon pair, which is the only framing
+ * where "the far side never sees you" is a thing you can look at rather than read.
+ *
+ * NEVER reached in normal play; NOT a sim/action/replay path (the replay harness builds its own
+ * session and never reads this), so all three goldens are provably untouched. Not recorded to the
+ * SaveGame log either — a render seed is not player input.
+ */
+/** How far the cislunar debug seed advances the clock for the gateway's deploy pipeline to finish
+ * (sim-seconds). The canon's own gateway clears in ~18 s; 30 s is comfortable headroom. */
+const NET_CISLUNAR_DEBUG_DEPLOY_S = 30.0;
+/** …and again after the accept, so the router has solved the leg before the shot is taken. */
+const NET_CISLUNAR_DEBUG_SOLVE_S = 6.0;
+function seedNetCislunarDebugView(): void {
+  const t = clock.seconds;
+  // Force the cursor to act3c — DERIVED, never written down (SD-64's lesson: an appended beat moves
+  // every later index, and a hardcoded one silently seeds the wrong act).
+  const act3cIndex = M1_SCENARIO.findIndex((b) => b.id === "act3c");
+  while (netSession.cursor < act3cIndex) netSession.advanceCursor(Math.round(t / DT));
+  // Step so the act3c beat EMITS the farside demand onto the board.
+  netSession.step(eph, t, DT);
+  // Launch the L2 halo gateway via the SHARED applier — the same verb + preset the player commits.
+  applyNetAction(
+    eph,
+    netSession,
+    netLaunchAction(
+      {
+        presetId: LUNA_GATE.id,
+        semiMajorM: LUNA_GATE.semiMajorM,
+        incRad: LUNA_GATE.incRad,
+        subLonRad: LUNA_GATE.subLonRad,
+        count: 1,
+      },
+      clock.tick,
+    ),
+    DT,
+  );
+  // Walk the DEPLOY PIPELINE out in SIM-SECONDS, not raw ticks. DT is 1/60 s, so the gateway's ~18 s
+  // ascent is ~1,100 ticks — stepping "40 ticks" advanced two thirds of a second and the seed came up
+  // with an empty roster. Advance the clock the way the Mars seed does (seconds → ticks) and step, so
+  // the deploy actually completes; then sign, and step again so the router solves the
+  // farside → gateway → deep-space-dish path and the leg lights.
+  // ONE TICK AT A TIME, which is the only cadence the session is built for. Jumping the clock by
+  // 30 s and calling `step` once produced THREE LUNA-GATE satellites from a `count: 1` launch — one
+  // per step call — because the deploy pipeline advances per step, not per elapsed second. The Mars
+  // seed gets away with a jump only because it jumps AFTER its relay is already on station. This is
+  // ~1,800 iterations at DT = 1/60 s, which is nothing next to the replay suite's tick counts.
+  const settleS = (seconds: number) => {
+    const ticks = Math.round(seconds / DT);
+    for (let i = 0; i < ticks; i++) {
+      clock.setTick(clock.tick + 1);
+      netSession.step(eph, clock.seconds, DT);
+    }
+  };
+  settleS(NET_CISLUNAR_DEBUG_DEPLOY_S);
+  applyNetAction(eph, netSession, netAcceptAction(ACT3C_LUNA_CONTRACT_ID, clock.tick), DT);
+  settleS(NET_CISLUNAR_DEBUG_SOLVE_S);
+  log.append({
+    tSim: clock.seconds,
+    sev: "warn",
+    entity: "DEBUG",
+    value: "netview=luna",
+    msg: "DEBUG VIEW — net session seeded at the Act-3c cislunar leg (L2 gateway up, farside signed). Not reached in normal play; does NOT affect replay.",
   });
 }
 
@@ -4254,6 +4408,10 @@ function ledgerFleetState(): LedgerFleetState {
 
 // DEV probe (SD-45 flicker hunt): sample the live serve verdict from the console.
 (window as unknown as Record<string, unknown>).__discDebug = () => orrery.__discDebug();
+// Act-3c (M1-A3C-7) — the cislunar leg's DRAWN state, for the `cislunar` playtest scene.
+(window as unknown as Record<string, unknown>).__cislunar = () => orrery.__cislunarProbe();
+// Which geometry is carrying NaN — a NAMED answer to Three's anonymous bounding-sphere warning.
+(window as unknown as Record<string, unknown>).__nanScan = () => orrery.__nanScan();
 (window as unknown as Record<string, unknown>).__aimProbe = (x: number, y: number) => orrery.__aimProbe(x, y);
 // FL-13 (SD-49) — the ring-grab probe (scriptable pointer-priority verification).
 (window as unknown as Record<string, unknown>).__dragOrbitProbe = (x: number, y: number) =>
@@ -4668,6 +4826,15 @@ if (netDebugView) {
 // links (coloured by utilisation + the hand-off), framed at EARTH (the near-body view where the sats
 // visibly orbit) + paused so the web sits still for the shot. Never reached in normal play; NOT a
 // sim/action/replay path (the replay harness builds its own session) — the three goldens are untouched.
+else if (netCislunarDebugView) {
+  seedNetCislunarDebugView();
+  // FOCUS THE MOON, not the CISLUNAR preset. The preset is Earth-focused and, at its distance, the
+  // Moon sits outside the frame — so the seed that exists to SHOW the act rendered the act off-screen
+  // (measured: the leg left the pane as a stub). SD-63's body nav already owns the framing that holds
+  // the pair, so use it: this is the same jump the player makes with the MOON row or the B key.
+  orrery.focusBody(MOON_BODY_ID, true);
+  if (!clock.paused) clock.togglePause(); // hold the crawl still for the shot.
+}
 else if (netLiveDebugView) {
   seedNetLiveNetworkDebugView();
   orrery.setPreset(0); // EARTH — the near-body framing where the constellation + links read large.
@@ -5099,7 +5266,13 @@ function frame(now: number): void {
     // painting an off-screen tile is cheap (the Shell only mounts the visible ones, but a detached
     // panel's render is a no-op churn-wise). The orrery planner overlay keys on the net-launch tile.
     // UX sweep — the Mars story line wakes exactly when the frontier opens (act 4).
-    orrery.setMarsLinkLive(netSession.cursor >= 4);
+    // THE MARS LINE IS LIVE WHEN THE MARS LEG EXISTS — asked of the BOARD, not of a beat index
+    // (SD-66). This read `netSession.cursor >= 4`, which meant "reached act4" until SD-62 appended
+    // act3c at index 4 and moved Mars to 5. After that the Earth↔Mars dashes switched on during the
+    // CISLUNAR act: a leg the player has not reached, drawn across the pane — precisely the "diagonal
+    // of noise" the hide exists to prevent, and an instrument asserting a path that does not exist
+    // (LAW 1). Keyed on the contract instead, it cannot be moved by inserting another beat.
+    orrery.setMarsLinkLive(netSession.contractById(ACT4_MARS_CONTRACT_ID) !== null);
     // X-05 — the network's SOUNDTRACK: calm = the mean service level of live contracts,
     // strain = near-breach warmth (a dipped contract reads as a detuned undertone).
     {

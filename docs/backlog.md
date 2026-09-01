@@ -120,7 +120,7 @@
 - [x] **SD-56 — THE COVERAGE RE-SCALE + the launch interface as instruments** (2026-09-01). Beam cones become enforced physics (`BeamAim` in the link budget, `outside_beam` cause, `coneReachRad` projecting a cone half-angle at the SAT into a central angle at the BODY); horizon mask forks to a net-local 10°; the LEO family moves 310 → 400 km. Coverage stops being free: the measured zero-gap minimum for REGION-1 goes 4 → 9 sats and altitude becomes a real lever (~11° of ground painted from a low pass, ~19° from a parked GEO). The canonical hour is re-choreographed around it — sign REGION-1 only once the rolling availability window has filled, circularise the underburned bird BEFORE measuring, aim the fill batch with the `(ω − n)·Δt` co-phasing correction (the old formula undid the body's spin only), and derive the act-3 corridor ids from launch order instead of hard-coding them. Manifest discount 15% → 45% so the constellation the geometry now demands is affordable. Arc ends +€4,376, floor €3,488, four gates in order. ONE golden re-pin → `16791777382910013853n`. The pad is rebuilt as INSTRUMENTS (`src/panels/pad-instruments.ts`): the tender pinned above the aim with a draft-vs-requirement comparison, a side-on altitude horizon drawing the beam onto the ground, an inclination dial marking the customer's latitude, and THE RING showing what you already fly plus the hole a replacement wants; inert controls (RAAN at zero tilt, phase spread on a batch of one) grey out and say why; drag-scrub numbers replace the spinner boxes. 900 tests green.
 - [x] **SD-58 — THE BOARD IS A MAP: every tender is a place you can look at** (2026-09-01). The orrery drew exactly ONE region (the teaching cursor's), so from act 3a the corridor metro and the coastal backhaul were signed, billed and breached without ever appearing on the ball — reported as *"coastal backhaul and corridor metro are never shown in the orrery"*. `NetRenderState.otherRegions` + a pooled disc/label set draws the WHOLE standing market, lit by each contract's own served verdict, with a redundant glyph (▣ carrying · ▨ signed and dark · ▢ offered). Clicking a tender row TARGETS it: the camera swings onto its region and HOLDS it as the globe turns (`Orrery.followRegion`, released by any camera drag), it becomes the globe's primary region (so the draft's coverage-gap overlay measures against it), and the pad's coverage analysis — comb, compare table, FIT — designs against it. The three inline "which tender is the target" pickers collapse into one `r1TargetContract()`. Selection is render-only: not folded, not logged, goldens untouched by it. New pure module `src/orrery/aim.ts` (the camera-angle inversion + short-way azimuth unwrap) with 7 tests.
 - [x] **SD-58b — the equatorial board stops being one dot** (2026-09-01). Follow-on from the above, on the user's *"are we serving the same place with 3 different missions? that's kinda dumb no?"*: REGION-0 (0°), REGION-2 (3°E) and BACKHAUL-3 (6°W) were three 10°-radius discs whose centres all sat inside each other — three separately-priced tenders on one patch of ground. The mechanics only ever needed CO-VISIBILITY, and the measured bands are far wider: the corridor's 3 ms bar still clears at 2.73 ms from 20°E on the same equatorial ACCESS ring, and the parked GEO floodlights the backhaul 100% of the day out to 40°W (reach cliff between 40° and 45°). Corridor → 20°E, backhaul → 35°W, disc radius 10° → 6° (sim-INERT: the router bridges the region CENTRE — verified, 6° alone reproduces the old hash bit-for-bit). Act-4 canon beats retimed +1 tick to follow the act-3b gate (58104 → 58105). Arc ends RICHER: trough €3,488 → €4,100, mean €4,316 → €5,018, final €4,376 → €4,858. ONE golden re-pin → `10981192184426294200n`. 968 tests green (rebased onto the routing-graph work).
-- [x] **TRACE scene instability (found reconciling SD-57, 2026-09-01; CLOSED by SD-65)** — `npm run playtest` full-run is RED at `origin/main` 158acd7: 121 assertions, 3 failed, all in TRACE, and the failing SET varies run to run (`REPOINT opens a target picker — 0 options` / `STOW is offered` / `committing a target closes the picker — 5 options still showing` / `the table does not rebuild its DOM on a moving number — 36 rebuilds`). The scene passes GREEN 44/0 run ALONE. Pre-SD-56 tips ran GREEN 121/0, so the coverage re-scale + pad rewrite introduced it. Two candidates: the picker depends on prior-scene state the full run leaves behind, and `the commit lands one beam action` asserts on the LAST wire line (`tools/scenes/trace.mjs:486`) which a following `first signal` line can outrace. Deliberately NOT patched inside SD-57. **SD-64 (2026-09-01) re-measured it at `012ae8a`: 6 failures, and they read as DOWNSTREAM of act 2 rather than as the flakiness above — `0 flows`, `widest=[]`, `0.00` load across the window. The act-2 gate never fires (RC-09), so act 3 never opens and TRACE has nothing to trace. Re-measure this entry once RC-09/RC-10 land; the run-to-run variance may be a second, smaller defect hiding behind the first.** **RESOLVED (SD-65).** It was two defects, and both
+- [~] **TRACE scene instability (found reconciling SD-57, 2026-09-01; half-closed by SD-65, RE-OPENED by SD-66)** — `npm run playtest` full-run is RED at `origin/main` 158acd7: 121 assertions, 3 failed, all in TRACE, and the failing SET varies run to run (`REPOINT opens a target picker — 0 options` / `STOW is offered` / `committing a target closes the picker — 5 options still showing` / `the table does not rebuild its DOM on a moving number — 36 rebuilds`). The scene passes GREEN 44/0 run ALONE. Pre-SD-56 tips ran GREEN 121/0, so the coverage re-scale + pad rewrite introduced it. Two candidates: the picker depends on prior-scene state the full run leaves behind, and `the commit lands one beam action` asserts on the LAST wire line (`tools/scenes/trace.mjs:486`) which a following `first signal` line can outrace. Deliberately NOT patched inside SD-57. **SD-64 (2026-09-01) re-measured it at `012ae8a`: 6 failures, and they read as DOWNSTREAM of act 2 rather than as the flakiness above — `0 flows`, `widest=[]`, `0.00` load across the window. The act-2 gate never fires (RC-09), so act 3 never opens and TRACE has nothing to trace. Re-measure this entry once RC-09/RC-10 land; the run-to-run variance may be a second, smaller defect hiding behind the first.** **RESOLVED (SD-65).** It was two defects, and both
 guesses in this entry were right. (1) The varying SET was the act-2 gate: without it the board holds
 whatever partial state the run happened to reach, so the scene's later assertions were reading
 different worlds each time. (2) The scene clicked `querySelector("[data-net=repoint]")` — the FIRST
@@ -131,6 +131,28 @@ prefers a pipe whose antenna can actually be aimed. And `the commit lands one be
 only the LAST wire line, which a concurrent "first signal" line outraces — it now searches the lines
 added since the commit. Three consecutive runs byte-identical green: **51 ok / 0 failed, 37 s** (was
 29 ok / 6 failed, 170 s).
+
+**RE-OPENED (SD-66, 2026-09-01) — and the SD-65 claim above is corrected.** Those three green runs were
+measured with the scene ALONE, which is exactly the condition that hides the residue. Under the FULL
+14-scene playtest the scene still fails: 173 s instead of 37 s, and act 3 never opens (`0 flows`,
+`widest=[]`, `no repoint button at all`). Alone it is reliably green and reliably reaches NET-SAT-13
+as the serving pipe; under load it reaches NET-SAT-6, NET-SAT-8 or NET-SAT-0, and when the winner is
+the act-1 GEO's BROADCAST floodlight the REPOINT assertions have nothing to work with.
+
+The cause is that the scene's act-3 setup is paced by WALL CLOCK while the sim runs at 1000×, so how
+far the world moves during each step depends on how busy the machine is. SD-66 tried three fixes and
+**all three were reverted as net-negative, which is worth recording so they are not retried blind**:
+(1) committing the corridor batch with the clock held — principled (it is the SD-65 epoch lesson, and
+`resolveOrbit`'s `m0Rad = subLonRad + ω·t` really does make phase depend on the commit tick) and it
+did take 6 failures to 3, but on n=1 samples that is not evidence; (2) pointing the beams with the
+clock held — no measurable effect; (3) polling for the beam controls before pointing — actively
+harmful, because the poll itself runs while the clock is at 1000× and burned ~30,000 sim-seconds,
+taking the scene to 9 failures and 203 s.
+
+The honest next step is not another guess: it is to make the scene's act-3 setup key every step on
+SIM time (or hold the clock across the whole setup and step it deliberately), so the world it asserts
+against is the same on a loaded machine and an idle one. That is a rewrite of the scene's pacing, not
+a patch, and it wants doing before any more assertions are hung off it.
 - [ ] **OWED from SD-56** — the full-screen LAUNCH view (deferred by the user, "maybe skip the launch screen for now"); globe click-to-aim is wired but its FEEL is unverified by hand; M1's gate criterion still claims an hour the build does not have (measured: ~18 min, 20 actions) — restate it or build the sustain loop.
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, DEFERRED to M2 per user 2026-08-08 — massKg is the anchor, not dead code); WM minimize/collapse op.
 > - **Verification method:** every phase gated by the Playwright playtest loop (see memory `playwright-playtest-loop`) + 725 tests / tsc / build / boot smoke. NOTE: the MCP-driven Chromium pins its viewport at 1920×1080 — "GUI doesn't fill the window" while looking at THAT window is the pinned viewport, not the app (resolved 2026-07-02).
@@ -248,7 +270,7 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 - [x] **M1-A3C-4** The deep-space ground segment — *S* · three equatorial dishes at 120° spacing (`NET_DEEP_SPACE_GROUND`), the DSN's own reason: the toy Earth turns in 240 s and one station loses the Moon for half of it. A SEPARATE asset class from `groundNets`, which is why no Earth-act route changed. Tested: zero dropouts across five rotations, and all three dishes take a turn in the hand-off.
 - [x] **M1-A3C-5** The act3c beat + the canonical arc — *M* · cursor now `act1 → act2 → act3a → act3b → act3c → act4` (act3c at index 4, so every pre-existing index still means what it meant). Gate = LUNA-1 held for 160 served-seconds (two full dish hand-offs). The canon climbs the rung before Mars; **`NET_REPLAY_GOLDEN` re-pinned → `13498174276749145205n`** (held once as `NET_CANON_GOLDEN` in `canon.ts`). *Value corrected 2026-09-01 in the post-merge reconcile: measured in the worktree against the pre-SD-58 golden, then the rebase over SD-58's re-pin #4 moved the fold again. See `docs/decisions.md` SD-62.*
 - [ ] **M1-A3C-6 (OWED) — a real economy pass with the cislunar tier in it** — *M* · the R3 balance work predates this act. The current numbers (gateway €13,747; LUNA-1 €45/s frontier premium; arc ends €12,183, min €1,730) are tuned against the ONE scripted canonical run and were arrived at by measurement, but they have not been pressure-tested against player-shaped play. Dep: SD-62.
-- [ ] **M1-A3C-7 — render the cislunar leg** — *S* · a farside region marker, the L2 gateway node, and a camera framing that shows the Earth–Moon pair while the leg is live. The Moon already renders at its honest distance; nothing in this increment draws the new endpoint or relay, so the act is currently legible in the panels but not on the orrery.
+- [x] **M1-A3C-7 — render the cislunar leg** — **DONE (SD-66, 2026-09-01)** — *S* · the farside demand as a warm lunar-surface marker (drawn from the moment the act opens, DARK, because the lesson is that the demand is real and unreachable), the L2 halo gateway as a node beyond the Moon (drawn only once launched — "nothing is out there yet" is the honest picture of an unsolved farside), the two-hop path between them, and a signal crawling it at the honest ~1.35 s. The leg owns its OWN line rather than riding `servedLinks`: SD-63's away-from-home mode drops the whole toy-Earth layer including the link web, so the framing that shows the act best was the one framing that hid it. Framing comes from SD-63's body nav (the seed jumps to the Moon exactly as the player does) — `setPreset(1)` is Earth-focused and put the Moon off the pane. New `?netact=3c` / `?netview=luna` seed + a `cislunar` playtest scene (16 assertions) + a `__cislunar` render probe. No `src/sim/` behaviour changed; all three goldens untouched. · Verify: `docs/screenshots/cislunar-leg.png`, scene **16 ok / 0 failed**.
 - [-] **M1-A3C-8 (deferred, with reason)** — a LUNAR-ORBIT relay family as a cheap alternative to the halo. Real lunar orbital periods are ~2.1 h against a 240 s toy Earth day, so inside one session such a relay is quasi-static and cannot demonstrate the constellation tradeoff it would exist to teach. Revisit if cislunar time ever gets its own compression.
 - [-] **M1-A3C-9 (deferred, with reason)** — a player-BUILT ground segment. The act's one decision is where the relay goes; making the ground a second placement puzzle teaches the same lesson twice.
 
@@ -505,6 +527,57 @@ All 7 findings fixed:
 - [ ] **BN-09** *(P2)* The orrery's bottom-LEFT hint line runs underneath the centred camera bar
       and is clipped mid-word ("click a body/asset to fo…"). Pre-existing; found while adding the
       body bar above the camera bar, and deliberately not papered over by shortening the sentence.
+
+---
+
+### EPIC — SD-66 · THE CISLUNAR ACT BECOMES VISIBLE (the leg drawn · a NaN at its root · a Mars line one act early)
+
+> Decision: `docs/decisions.md` SD-66. Delivers M1-A3C-7 and fixes four defects found by the simple
+> act of trying to LOOK at the act SD-62 shipped unrendered.
+
+- [x] **CL-01** The leg, the farside marker and the L2 gateway are drawn — *S* · see M1-A3C-7 above.
+- [x] **CL-02** `lunarBasis` guards its normalise — *S* · it divided by the Earth→Moon distance
+      unconditionally, so a zero separation produced `-0/0` = NaN across x̂ and propagated through ŷ/ẑ
+      into `eml2Relative`, `lunarSurfacePointRelative` and the L2 station's orbit — NaN vertices in
+      both the leg and the gateway's ring, and Three's "computeBoundingSphere(): radius is NaN". A
+      REACHABLE input: the bodies read coincident on an early frame before the ephemeris is primed, so
+      every act-3c boot with a gateway hit it. The function already guarded its SECOND degeneracy and
+      not its first. · Verify: 3 tests that fail without the guard, incl. the fallback triad still
+      being ORTHONORMAL (a garbage fallback only moves the failure).
+- [x] **CL-02b** The f64→f32 crossing is TOTAL — *S* · with `lunarBasis` guarded the act still went red,
+      but only when another scene ran first. `__nanScan` named it in one run: `rings[moon]`, the Moon's
+      own dataset ring, NaN at vertex 52/180 — its samples are all finite, so the NaN entered in the
+      per-frame rebase. AGENTS §5 says `src/orrery/` owns the ONLY f64→f32 crossing and it writes
+      straight into GPU buffers, so it must never emit NaN whatever it is handed. `compressScale` now
+      tests `!(d > 0)` (NaN fails every comparison, so `d <= 0` let it through) and returns 0 for a
+      non-finite fold; `renderInto`/`writeRenderPoint` collapse a non-finite result to the focus
+      origin. Subsumes and replaces the earlier `updatePacketAndLink` guard. · Verify: the `cislunar`
+      scene asserts `__nanScan` is empty from the FIRST frame.
+- [x] **CL-02c** `__nanScan` — a NAMED answer to Three's anonymous NaN warning — *S* · walks the scene
+      and returns NaN-carrying geometries tagged against the orrery's own fields. Three names no
+      object, so each occurrence has cost a bisect (three so far). Read-only; allocates only when
+      something is wrong.
+- [x] **CL-03** The Earth↔Mars line stops switching on one act early — *S* ·
+      `setMarsLinkLive(netSession.cursor >= 4)` meant "reached act4" until SD-62 appended act3c AT 4.
+      From then the Mars dashes drew during the CISLUNAR act: a leg the player has not reached,
+      crossing the pane — the "diagonal of noise" the hide exists to prevent, and an instrument
+      claiming a path that does not exist (LAW 1). **The SEVENTH stale act-index reader from that one
+      beat insertion**, missed by SD-64 because its grep did not match `cursor >= 4`. Now keyed on the
+      Mars CONTRACT being on the board. A repo-wide grep for numeric cursor comparisons found no
+      others. · Verify: the `cislunar` scene pins that no Mars contract exists at act 3c.
+- [x] **CL-04** One predicate for every debug seed — *S* · `autoVaultEnabled` listed the debug views
+      BY NAME, so a third one silently opted INTO the vault: `?netact=3c` RESUMED the saved campaign
+      and seeded on top, stacking a gateway per page load (measured 1 → 3 → 5, with NaN geometry once
+      the state drifted far enough). Replaced with `netAnyDebugSeed`, which future seeds join to get
+      both the read and write halves. **The two older seeds shared the hazard:** any `?netact=3` /
+      `?netact=4` shot taken while a save existed was of a contaminated world. · Verify: the scene
+      asserts exactly ONE gateway flies.
+- [ ] **CL-05** *(P2)* The launch deploy pipeline advances per STEP, not per elapsed second — *S* ·
+      a debug seed that jumped the clock 30 s and called `step` once spawned THREE satellites from a
+      `count: 1` launch. The seed now walks tick by tick, which is correct and cheap, so this is a
+      sharp edge in the SEEDING surface rather than a defect in play — but a pipeline that double-
+      spawns when a step is large is worth understanding before anything else jumps the clock.
+      Found by SD-66.
 
 ---
 

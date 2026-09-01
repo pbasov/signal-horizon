@@ -331,6 +331,45 @@ export interface NetRenderState {
     breadcrumbPlaced: boolean;
   } | null;
   /**
+   * Act-3c — THE CISLUNAR LEG, drawn (M1-A3C-7). SD-62 built the act and rendered none of it: the
+   * farside demand, the L2 gateway and the two-hop path existed only in the panels, so the one act
+   * whose entire lesson is GEOMETRIC — "some places can never see you" — was the one act you could
+   * not look at. Null until the act3c beat puts LUNA-1 on the board.
+   *
+   * The positions are pure reads of `sim/net/cislunar.ts` (the tidally-locked lunar frame, the halo
+   * station) resolved in main.ts; nothing here recomputes geometry. The leg's PATH is drawn by the
+   * ordinary {@link NetRenderState.servedLinks} polyline — this slice carries the two ENDPOINT nodes
+   * the web has no other way to name, plus the crawl.
+   */
+  cislunar: {
+    /** The farside region's lunar surface point (earth-relative, m) — the demand that no Earth orbit
+     * can ever see. Always present once the act is live: it is dark-but-real before the gateway. */
+    farsidePosM: Vec3;
+    /** The Earth–Moon L2 halo gateway's position (earth-relative, m), or null before one is launched.
+     * Null is the honest state for "the farside is unreachable" — there is no node to draw. */
+    gatewayPosM: Vec3 | null;
+    /** True while the router reports LUNA-1 served — the nodes read lit rather than dark. */
+    served: boolean;
+    /** The REAL one-way Earth↔Moon light time (s) at this t, ~1.334 s. This is the rung the GDD asks
+     * for (risk #7: "teach light-delay by sight at cislunar's ~1.3 s before Mars bites"). */
+    oneWayS: number;
+    /** Crawl progress ∈ [0,1] of the signal along the leg, keyed on sim-time / oneWayS, so the delay
+     * is SEEN and not merely printed. Null until the leg carries. */
+    crawlProgress: number | null;
+    /**
+     * THE LEG ITSELF: the router's solved path as world points — farside → L2 gateway → deep-space
+     * dish. Empty until the leg carries.
+     *
+     * This does NOT ride {@link NetRenderState.servedLinks} like every Earth path, and that is
+     * deliberate. SD-63's away-from-home render mode drops the whole toy-Earth layer — globe, surface
+     * discs, ground markers and the LINK WEB — the moment the camera leaves the operated body, which
+     * is right for Earth links and exactly wrong for this one: the cislunar leg's whole subject is
+     * the pair of bodies, so the framing that shows it best was the one framing that hid it. Owning
+     * its own line means the leg draws at home AND away, and the Earth web's rules stay untouched.
+     */
+    pathPointsM: Vec3[];
+  } | null;
+  /**
    * §3 — THE LIVE PLANNER DRAFT consequence, drawn on the globe AS THE PLAYER DRAGS (the spec's
    * make-or-break UX: "you are not setting inclination to 53°, you are dragging the orbit until its
    * ground-track covers the region that's currently dark"). A render-only projection of the pure
@@ -1003,6 +1042,13 @@ export class Orrery {
   /** The Act-4 Earth↔Mars signal crawler — a disc that crawls Earth→Mars at the REAL light delay
    * (reuses the packet-crawl machinery). Built once + hidden; shown when the relay is up. */
   private netMarsCrawler?: THREE.Mesh;
+  /** Act-3c (M1-A3C-7) — the farside demand marker, the L2 gateway node, and the signal crawling
+   * the ~1.334 s cislunar leg. Built once + hidden; shown only once the act3c beat is live. */
+  private netLunaFarside?: THREE.Mesh;
+  private netLunaGate?: THREE.Mesh;
+  private netLunaCrawler?: THREE.Mesh;
+  /** Act-3c — the leg's own polyline (see {@link NetRenderState.cislunar.pathPointsM}). */
+  private netLunaLeg?: THREE.LineSegments;
   /** Hot "fresh data" tint for the Mars node (bleeds toward grey as freshness drains). */
   private readonly _netMarsHot = new THREE.Color(1.0, 0.5, 0.26);
   private readonly _netMarsColor = new THREE.Color();
@@ -1059,6 +1105,8 @@ export class Orrery {
   private readonly _netUtilWarm = new THREE.Color(1.0, 0.72, 0.2); // near capacity: amber.
   private readonly _netUtilHot = new THREE.Color(1.0, 0.28, 0.26); // at/over capacity: red.
   private readonly _netLinkScratch = new THREE.Color();
+  /** Act-3c — the farside demand's SERVED tint (amber-warm: a demand, not a relay). */
+  private readonly _netLunaLit = new THREE.Color(1.0, 0.72, 0.3);
   private readonly _netRerouteFlash = new THREE.Color(0.95, 1.0, 1.0); // re-route pulse: white-hot.
 
   // --- §3 the OPERATED BODY as a real 3D sphere + graticule (body-agnostic) -------------------
@@ -1312,6 +1360,27 @@ export class Orrery {
     this.netMarsCrawler.renderOrder = 13;
     this.scene.add(this.netMarsCrawler);
     this.buildNetMarsReadout();
+
+    // Act-3c (M1-A3C-7) — THE CISLUNAR LEG's endpoints. The farside marker is amber-warm so it reads
+    // as a DEMAND (the same family as a region), the gateway cyan like every other relay the player
+    // launches, and the crawler cyan like the Mars one — the two frontier legs should read as the
+    // same kind of thing at different scales, which is the whole point of cislunar being the rung.
+    this.netLunaFarside = this.buildSignalDisc([1.0, 0.72, 0.3]);
+    this.netLunaFarside.visible = false;
+    this.netLunaFarside.renderOrder = 12;
+    this.scene.add(this.netLunaFarside);
+    this.netLunaGate = this.buildSignalDisc([0.45, 0.85, 1.0]);
+    this.netLunaGate.visible = false;
+    this.netLunaGate.renderOrder = 12;
+    this.scene.add(this.netLunaGate);
+    this.netLunaCrawler = this.buildSignalDisc([0.45, 0.85, 1.0]);
+    this.netLunaCrawler.visible = false;
+    this.netLunaCrawler.renderOrder = 13;
+    this.scene.add(this.netLunaCrawler);
+    // The leg: a short polyline (3 nodes ⇒ 2 hops), cyan like the relay it runs through.
+    this.netLunaLeg = this.buildPolyline(8, 0x74d9ff, 0.85);
+    this.netLunaLeg.visible = false;
+    this.scene.add(this.netLunaLeg);
 
     // §3 — THE LIVE PLANNER DRAFT overlay (the make-or-break planner). All four parts are render-
     // only billboards/lines on the toy globe, built once + hidden; updateNetDraft shows + positions
@@ -2146,6 +2215,104 @@ export class Orrery {
    * Earth/Mars endpoints the link line already computes). Hidden when there is no Mars slice or no
    * relay. Render-only — no sim feedback; the minutes-long latency is a READOUT (§8 fenced).
    */
+  /**
+   * Act-3c (M1-A3C-7) — DRAW THE CISLUNAR LEG: the farside demand, the L2 gateway, and the signal
+   * crawling between them at the honest ~1.334 s.
+   *
+   * Two things are deliberately visible BEFORE the player has solved anything. The farside marker is
+   * drawn from the moment the act opens, dark, because the act's lesson is that the demand is real
+   * and unreachable — a demand you cannot see is just a number in a panel refusing to go green. And
+   * the gateway node is drawn only once launched, because "there is nothing there yet" is the honest
+   * picture of an unsolved farside.
+   *
+   * The PATH itself is not drawn here: it rides the ordinary served-link polyline, so the leg is
+   * tinted and traced by the same machinery as every Earth link and cannot drift from it.
+   */
+  private updateNetCislunar(_t: number, focusAbs: Vec3, worldPerPx: number): void {
+    const farside = this.netLunaFarside;
+    const gate = this.netLunaGate;
+    const crawler = this.netLunaCrawler;
+    if (!farside || !gate || !crawler) return;
+    const cs = this.netRenderMode ? this.netState?.cislunar ?? null : null;
+    const leg = this.netLunaLeg;
+    if (cs === null) {
+      farside.visible = false;
+      gate.visible = false;
+      crawler.visible = false;
+      if (leg) leg.visible = false;
+      return;
+    }
+
+    // THE LEG — farside → gateway → dish, as segments. Two hops, so the player can SEE that the
+    // path goes out PAST the Moon and comes back to Earth: the shape of the answer is the lesson.
+    if (leg) {
+      const pts = cs.pathPointsM;
+      if (pts.length < 2) {
+        leg.visible = false;
+      } else {
+        const attr = leg.geometry.getAttribute("position") as THREE.BufferAttribute;
+        const arr = attr.array as Float32Array;
+        const segs = Math.min(pts.length - 1, arr.length / 6);
+        let w = 0;
+        for (let i = 0; i < segs; i++) {
+          w = this.writeRenderPoint(arr, w, pts[i][0], pts[i][1], pts[i][2], focusAbs);
+          w = this.writeRenderPoint(arr, w, pts[i + 1][0], pts[i + 1][1], pts[i + 1][2], focusAbs);
+        }
+        leg.geometry.setDrawRange(0, segs * 2);
+        attr.needsUpdate = true;
+        leg.visible = true;
+      }
+    }
+
+    // THE FARSIDE DEMAND — warm when the leg carries, grey when it does not. Same served/dim
+    // language as a region disc, so it reads as a demand rather than a decoration.
+    this.renderInto(this._rp, cs.farsidePosM, focusAbs);
+    farside.position.copy(this._rp);
+    const fMat = farside.material as THREE.ShaderMaterial;
+    fMat.uniforms.uColor.value.copy(cs.served ? this._netLunaLit : this._grey);
+    this.sizeBillboard(farside, 13, worldPerPx);
+    farside.visible = true;
+
+    // THE L2 GATEWAY — only once it exists. Nothing to draw is the truth before that.
+    if (cs.gatewayPosM !== null) {
+      this.renderInto(this._rp, cs.gatewayPosM, focusAbs);
+      gate.position.copy(this._rp);
+      this.sizeBillboard(gate, 10, worldPerPx);
+      gate.visible = true;
+    } else {
+      gate.visible = false;
+    }
+
+    // THE CRAWL — 1.334 s each way is slow enough to SEE at 1× and is the rung the GDD asks for
+    // before Mars's minutes. It runs farside → gateway → Earth along the same two hops the router
+    // solved, so the thing crawling is the path that exists.
+    if (cs.crawlProgress !== null && cs.gatewayPosM !== null) {
+      const p = cs.crawlProgress;
+      // Two equal legs: [0,0.5) farside→gateway, [0.5,1] gateway→Earth.
+      const earthAbs = this.ctx.eph.position("earth", _t);
+      if (p < 0.5) {
+        this.lerpRender(cs.farsidePosM, cs.gatewayPosM, p / 0.5, focusAbs);
+      } else {
+        this.lerpRender(cs.gatewayPosM, earthAbs, (p - 0.5) / 0.5, focusAbs);
+      }
+      crawler.position.copy(this.tmpV);
+      this.sizeBillboard(crawler, 8, worldPerPx);
+      crawler.visible = true;
+    } else {
+      crawler.visible = false;
+    }
+  }
+
+  /** Rebase two world points, lerp between them by `f`, and leave the result in {@link tmpV}. */
+  private lerpRender(a: Vec3, b: Vec3, f: number, focusAbs: Vec3): void {
+    this.renderInto(this._rp, a, focusAbs);
+    const ax = this._rp.x;
+    const ay = this._rp.y;
+    const az = this._rp.z;
+    this.renderInto(this._rp, b, focusAbs);
+    this.tmpV.set(ax + (this._rp.x - ax) * f, ay + (this._rp.y - ay) * f, az + (this._rp.z - az) * f);
+  }
+
   private updateNetMars(t: number, focusAbs: Vec3, worldPerPx: number): void {
     const node = this.netMarsNode;
     const relay = this.netMarsRelay;
@@ -2836,6 +3003,88 @@ export class Orrery {
   }
 
   /** DEV probe (SD-45 flicker hunt): per-frame mesh states of the net surface discs. */
+  /**
+   * Act-3c (M1-A3C-7) — DEV PROBE for the cislunar leg's DRAWN state. The panels could always say
+   * the farside was carrying; nothing could say whether anything was on the ORRERY, which is how the
+   * act shipped unrendered in the first place. A scene asserting "the leg is on screen" needs to read
+   * the geometry, not the copy. Read-only; mirrors the `__dragOrbitProbe`/`__discDebug` family.
+   */
+  __cislunarProbe(): Record<string, unknown> | null {
+    const cs = this.netState?.cislunar ?? null;
+    if (cs === null) return null;
+    const leg = this.netLunaLeg;
+    return {
+      farsideVisible: this.netLunaFarside?.visible ?? false,
+      gateVisible: this.netLunaGate?.visible ?? false,
+      crawlerVisible: this.netLunaCrawler?.visible ?? false,
+      legVisible: leg?.visible ?? false,
+      /** Segments actually submitted for drawing — 2 for a farside → gateway → dish path. */
+      legSegments: leg ? Math.floor((leg.geometry.drawRange.count ?? 0) / 2) : 0,
+      served: cs.served,
+      oneWayS: cs.oneWayS,
+      pathNodes: cs.pathPointsM.length,
+      gatewayUp: cs.gatewayPosM !== null,
+      /** Every drawn point finite — the SD-66 NaN would show here as false. */
+      finite:
+        cs.pathPointsM.every((q) => q.every(Number.isFinite)) &&
+        cs.farsidePosM.every(Number.isFinite) &&
+        (cs.gatewayPosM === null || cs.gatewayPosM.every(Number.isFinite)),
+    };
+  }
+
+  /**
+   * DEV PROBE — WHICH GEOMETRY IS CARRYING NaN (SD-66).
+   *
+   * Three's own complaint is anonymous: "computeBoundingSphere(): Computed radius is NaN" names no
+   * object, so every occurrence costs a bisect to locate. This walks the scene and returns the
+   * offenders BY NAME, tagged against the orrery's own fields. It exists because that bisect has now
+   * been paid three times in this codebase, and because a scene can assert on it — a named failure
+   * ("netServedLinks carries NaN at vertex 1") is worth a great deal more than a console warning the
+   * playtest can only report verbatim.
+   *
+   * Read-only, allocates only when something is wrong, and is never called per frame.
+   */
+  __nanScan(): Record<string, unknown>[] {
+    const out: Record<string, unknown>[] = [];
+    const known: Record<string, unknown> = {
+      linkLine: this.linkLine,
+      netGroundTrack: this.netGroundTrack,
+      netDraftRing: this.netDraftRing,
+      netServedLink: this.netServedLink,
+      netServedLinks: this.netServedLinks,
+      netCandidateLines: this.netCandidateLines,
+      netBeamLines: this.netBeamLines,
+      netBlindBeamLines: this.netBlindBeamLines,
+      netLaunchArcLines: this.netLaunchArcLines,
+      netBodyGraticule: this.netBodyGraticule,
+      netLunaFarside: this.netLunaFarside,
+      netLunaGate: this.netLunaGate,
+      netLunaCrawler: this.netLunaCrawler,
+      netLunaLeg: this.netLunaLeg,
+    };
+    this.scene.traverse((o: THREE.Object3D) => {
+      const g = (o as unknown as { geometry?: THREE.BufferGeometry }).geometry;
+      if (!g) return;
+      const pos = g.getAttribute("position") as THREE.BufferAttribute | undefined;
+      if (!pos) return;
+      const arr = pos.array as Float32Array;
+      let bad = -1;
+      for (let i = 0; i < arr.length; i++) {
+        if (Number.isNaN(arr[i])) {
+          bad = i;
+          break;
+        }
+      }
+      if (bad < 0) return;
+      let tag = "(unknown)";
+      for (const [k, v] of Object.entries(known)) if (v === o) tag = k;
+      for (let i = 0; i < this.satRings.length; i++) if (this.satRings[i].line === o) tag = `satRings[${i}]`;
+      for (const [k, v] of this.rings) if (v.line === o) tag = `rings[${k}]`;
+      out.push({ tag, type: o.type, visible: o.visible, vertices: pos.count, firstNaNVertex: Math.floor(bad / 3) });
+    });
+    return out;
+  }
+
   __discDebug(): Record<string, unknown> {
 
     const m = (mesh: THREE.Mesh | null) =>
@@ -3371,6 +3620,7 @@ export class Orrery {
     // net/ Act-4 — the Mars frontier teaser: the desaturating Mars data node + the relay node +
     // the Earth↔Mars signal crawling at the real light delay (shown only at act4 in net mode).
     this.updateNetMars(t, focusAbs, worldPerPx);
+    this.updateNetCislunar(t, focusAbs, worldPerPx);
 
     this.renderer.render(this.scene, this.camera);
     this.updateLabels(t, focusAbs);
@@ -3556,6 +3806,8 @@ export class Orrery {
     this.renderInto(this._marsR, this.ctx.eph.position("mars", t), focusAbs);
     const ex = this._earthR.x, ey = this._earthR.y, ez = this._earthR.z;
     const mx = this._marsR.x, my = this._marsR.y, mz = this._marsR.z;
+    // (The f64→f32 crossing is total — see writeRenderPoint — so a non-finite rebase here collapses
+    // to the origin for a frame rather than filling the attribute with NaN.)
 
     const pos = this.linkLine.geometry.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
@@ -3848,12 +4100,17 @@ export class Orrery {
    * fold are both visual lies on rendered radius; the ANGULAR direction (the caller's
    * unit vector) is untouched, and neither ever feeds coverage/link/delay math. */
   private compressScale(d: number): number {
-    if (d <= 0) return 0;
+    // `!(d > 0)` rather than `d <= 0` so a NaN distance is caught too — NaN fails every comparison,
+    // so the old form let it straight through (SD-66).
+    if (!(d > 0)) return 0;
     const r = this.orbitScale ? orbitRenderRadius(d, this.orbitScale) : d;
     // scene-units-per-true-metre = (log-fold of the de-squashed radius) / d, so the
     // caller's `f*scale` lands the point at the de-squashed-then-folded radius while
     // keeping the f64 direction exact.
-    return (this.cur.logScale * Math.log(1 + r / this.cur.logK)) / d;
+    const s = (this.cur.logScale * Math.log(1 + r / this.cur.logK)) / d;
+    // A d of Infinity gives Inf/Inf = NaN; a degenerate preset could give a non-finite fold. Either
+    // way the crossing returns a NUMBER, because its callers write straight into GPU buffers.
+    return Number.isFinite(s) ? s : 0;
   }
 
   /** Floating-origin rebase (f64 m) → de-squash → log-compress → ecliptic→three, into `out`. */
@@ -3863,18 +4120,35 @@ export class Orrery {
     const fz = abs[2] - focusAbs[2];
     const s = this.compressScale(Math.sqrt(fx * fx + fy * fy + fz * fz));
     // ecliptic (x, y, z=north) → three (x, up=z, -y)
-    return out.set(fx * s, fz * s, -fy * s);
+    const x = fx * s;
+    const y = fz * s;
+    const z = -fy * s;
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) ? out.set(x, y, z) : out.set(0, 0, 0);
   }
 
-  /** Same transform written straight into a Float32Array at offset `w`; returns the new offset. */
+  /**
+   * Same transform written straight into a Float32Array at offset `w`; returns the new offset.
+   *
+   * THIS CROSSING IS TOTAL (SD-66). AGENTS §5: `src/orrery/` owns the ONLY f64→f32 crossing, and its
+   * output goes directly into GPU buffers — so it must never emit NaN, whatever it is handed. A
+   * single NaN component makes the whole attribute undrawable and Three answers with the anonymous
+   * "computeBoundingSphere(): Computed radius is NaN", which has cost this codebase three separate
+   * bisects. Non-finite input collapses the point to the focus origin: a degenerate segment for one
+   * frame is a far better failure than garbage geometry, and it is honest — we do not know where the
+   * point is, so we do not draw it somewhere. (`__nanScan` names the offender when it happens.)
+   */
   private writeRenderPoint(arr: Float32Array, w: number, ax: number, ay: number, az: number, focusAbs: Vec3): number {
     const fx = ax - focusAbs[0];
     const fy = ay - focusAbs[1];
     const fz = az - focusAbs[2];
     const s = this.compressScale(Math.sqrt(fx * fx + fy * fy + fz * fz));
-    arr[w++] = fx * s;
-    arr[w++] = fz * s;
-    arr[w++] = -fy * s;
+    const x = fx * s;
+    const y = fz * s;
+    const z = -fy * s;
+    const ok = Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
+    arr[w++] = ok ? x : 0;
+    arr[w++] = ok ? y : 0;
+    arr[w++] = ok ? z : 0;
     return w;
   }
 

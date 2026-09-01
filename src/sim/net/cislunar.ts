@@ -100,7 +100,18 @@ export function lunarBasis(eph: Ephemeris, t: number): { x: Vec3; y: Vec3; z: Ve
   const c = moonCentreRelative(eph, t);
   const r = Math.hypot(c[0], c[1], c[2]);
   // x̂ points FROM the Moon TOWARD Earth — the sub-Earth point, lunar longitude 0.
-  const x: Vec3 = [-c[0] / r, -c[1] / r, -c[2] / r];
+  //
+  // GUARD THE NORMALISE (SD-66). This divided by `r` unconditionally, and a zero-length Earth→Moon
+  // vector therefore produced `-0/0` = NaN in all three components — which then propagated through
+  // ŷ/ẑ into {@link eml2Relative}, {@link lunarSurfacePointRelative} and the L2 station's recorded
+  // orbit. Downstream that meant NaN vertices in the served-link polyline and in the gateway's orbit
+  // ring, and Three answering "computeBoundingSphere(): Computed radius is NaN" on the frames it hit.
+  // It is reachable: Earth and Moon read as coincident on an early frame, before the ephemeris is
+  // primed, so the act-3c render NaN'd briefly on every boot that had a gateway up. The second
+  // degeneracy below was already guarded — this is the same care applied to the first. With no
+  // separation there IS no sub-Earth direction, so any unit vector is equally arbitrary; +X keeps the
+  // triad finite and orthonormal, which is what every caller needs.
+  const x: Vec3 = r > 1e-9 ? [-c[0] / r, -c[1] / r, -c[2] / r] : [1, 0, 0];
   // Gram–Schmidt ecliptic north against x̂ so the triad is exactly orthonormal.
   const d = x[2]; // = dot([0,0,1], x)
   let zx = -d * x[0];

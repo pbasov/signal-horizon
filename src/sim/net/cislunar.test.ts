@@ -303,3 +303,47 @@ describe("cislunar — node position dispatch", () => {
     expect(cislunarNodePosition(eph, s, 100)).toBeNull();
   });
 });
+
+/**
+ * SD-66 — THE BASIS STAYS FINITE EVEN WITH NO SEPARATION.
+ *
+ * `lunarBasis` divided by the Earth→Moon distance without guarding it, so a zero-length separation
+ * produced `-0/0` = NaN across all three components of x̂ — and from there through ŷ/ẑ into
+ * `eml2Relative`, `lunarSurfacePointRelative` and the L2 station's recorded orbit. The render layer
+ * then wrote NaN vertices into the served-link polyline and the gateway's orbit ring, and Three
+ * answered "computeBoundingSphere(): Computed radius is NaN".
+ *
+ * This is not a theoretical input: Earth and Moon read as coincident on an early frame before the
+ * ephemeris is primed, so every act-3c boot with a gateway up hit it briefly. The guarded triad must
+ * stay finite AND orthonormal — a fallback that returns garbage would only move the failure.
+ */
+describe("SD-66 — lunarBasis survives a degenerate Earth–Moon separation", () => {
+  /** An ephemeris stub whose Earth and Moon sit at exactly the same point. */
+  const coincident = {
+    position: () => [0, 0, 0] as Vec3,
+    // `eml2FractionBeyondMoon` reads self-mus off this; an empty map exercises its own zero guard.
+    bodies: new Map<string, { muSelf: number }>(),
+    radiusMeters: () => 1_737_400,
+  } as unknown as Parameters<typeof lunarBasis>[0];
+
+  it("returns a finite triad instead of NaN", () => {
+    const { x, y, z } = lunarBasis(coincident, 0);
+    for (const v of [x, y, z]) for (const k of v) expect(Number.isFinite(k)).toBe(true);
+  });
+
+  it("keeps the triad ORTHONORMAL, so callers still get a usable frame", () => {
+    const { x, y, z } = lunarBasis(coincident, 0);
+    const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const len = (a: Vec3) => Math.hypot(a[0], a[1], a[2]);
+    for (const v of [x, y, z]) expect(len(v)).toBeCloseTo(1, 12);
+    expect(dot(x, y)).toBeCloseTo(0, 12);
+    expect(dot(y, z)).toBeCloseTo(0, 12);
+    expect(dot(z, x)).toBeCloseTo(0, 12);
+  });
+
+  it("keeps every position built on the basis finite (the NaN's actual blast radius)", () => {
+    expect(eml2Relative(coincident, 0).every(Number.isFinite)).toBe(true);
+    expect(lunarSurfacePointRelative(coincident, 0, Math.PI, 0).every(Number.isFinite)).toBe(true);
+    expect(lunarSurfaceNormal(coincident, 0, Math.PI, 0).every(Number.isFinite)).toBe(true);
+  });
+});

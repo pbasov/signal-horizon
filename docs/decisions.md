@@ -2050,7 +2050,15 @@ BROADCAST floodlight, whose picker has nothing to commit: the click was a no-op,
 open with 4 options, and no beam action reached the WIRE. It now prefers a pipe whose antenna can
 actually be aimed. The other half was real too, exactly as the backlog guessed: the wire assertion
 read only the LAST log line, which a concurrent "first signal" line outraces; it now searches the
-lines added since the commit. Three consecutive runs are byte-identical green.
+lines added since the commit.
+
+**CORRECTION (SD-66, same day).** This entry said "three consecutive runs are byte-identical green",
+and that measurement was taken with the scene running ALONE — which is precisely the condition that
+hides what is left. Under the FULL 14-scene playtest the scene is still flaky: it runs 173 s instead
+of 37 s and act 3 never opens (`0 flows`, `no repoint button at all`). Both fixes above are real and
+stand; the claim of determinism does not. What SD-65 actually removed was the act-2 gate failure that
+made the variance dramatic. The residue is timing under load and is re-filed, honestly, in the
+backlog.
 
 **Consequences.** `hour` 4 failed/258 s → **15 ok, 0 failed, 33 s**. `trace` 6 failed/170 s →
 **51 ok, 0 failed, 37 s**, stable across repeats. The full playtest goes from 10 failures to **0**.
@@ -2066,3 +2074,127 @@ re-scale and the scenes were left behind, silently, because a scene that cannot 
 reports its act-1 assertions as green. The fix is not new constants; it is that a scene should read
 what the game tells the player and act on that. That also makes the scene a much better witness: it
 now fails loudly when the pad stops naming a hole, rather than quietly buying the wrong orbit.
+
+---
+
+### SD-66 — THE CISLUNAR ACT BECOMES VISIBLE: the leg drawn, a NaN at its root, and a Mars line one act early (2026-09-01)
+
+**Status:** ACCEPTED. Delivers M1-A3C-7, and fixes four defects found by the simple act of trying to
+look at the act.
+
+**Context.** SD-62 built Act 3c — the rung the GDD asks for in three places, between Earth's ~3 ms and
+Mars's minutes — and rendered none of it. Its own backlog entry said so: *"the act is currently
+legible in the panels but not on the orrery."* It also shipped with no playtest scene and no debug
+seed, which is the more interesting fact: **the one act whose entire lesson is GEOMETRIC was the one
+act nobody could see, and nothing in the harness could report that.** A panel can say "the farside is
+carrying" while the pane is empty, and for a whole day it did.
+
+**What the act now draws.** The farside demand as a warm marker on the lunar surface, the L2 halo
+gateway as a cyan node beyond the Moon, the two-hop path between them, and a signal crawling it at
+the honest ~1.35 s. Three deliberate choices:
+
+- **The farside marker is drawn from the moment the act opens, dark, before anything can reach it.**
+  A demand you cannot see is just a number in a panel refusing to go green; the act's lesson is that
+  the demand is REAL and no Earth orbit will ever see it.
+- **The gateway appears only once launched.** "There is nothing out there yet" is the honest picture
+  of an unsolved farside.
+- **The leg owns its own line rather than riding `servedLinks`.** SD-63's away-from-home render mode
+  drops the whole toy-Earth layer — globe, surface discs, ground markers and the LINK WEB — the moment
+  the camera leaves the operated body. That is right for Earth links and exactly wrong for this one:
+  the cislunar leg's subject IS the pair of bodies, so the framing that shows it best was the single
+  framing that hid it. Owning its line means it draws at home and away, and the Earth web's rules are
+  untouched.
+
+Nothing in `src/sim/` moved for the rendering: every position is a pure read of `net/cislunar.ts`
+(the tidally-locked frame, the halo station) resolved in main.ts. Both replay goldens and
+`NET_CANON_GOLDEN` are untouched by construction.
+
+**Finding 1 — an unguarded normalise in `lunarBasis` put NaN through the whole act.** The first thing
+the new debug seed did was print
+`THREE.BufferGeometry.computeBoundingSphere(): Computed radius is NaN`. Chased to source:
+
+    const r = Math.hypot(c[0], c[1], c[2]);
+    const x = [-c[0] / r, -c[1] / r, -c[2] / r];   // no guard on r === 0
+
+The function carefully guards its SECOND degeneracy (`zn <= 1e-12`, with a comment explaining it) and
+not its first. With Earth and Moon coincident every component becomes `-0/0` = NaN, and it propagates
+through ŷ/ẑ into `eml2Relative`, `lunarSurfacePointRelative` and the L2 station's recorded orbit —
+producing NaN vertices in both the leg polyline and the gateway's orbit ring. It is a reachable input:
+the two bodies read as coincident on an early frame before the ephemeris is primed, so **every
+act-3c boot with a gateway up hit it briefly.** Guarded the same way its sibling was, with a finite
+orthonormal fallback (+X); pinned by three tests that fail without the guard, including one that
+asserts the fallback triad is still ORTHONORMAL — a fallback returning garbage would only move the
+failure downstream.
+
+**And then a SECOND NaN, which forced the better fix.** With `lunarBasis` guarded, the act still went
+red — but only when another scene ran first, never alone. `__nanScan` (below) named it in one run:
+`rings[moon]`, the Moon's own dataset orbit ring, NaN at vertex 52 of 180. Its samples are all finite
+(checked directly), so the NaN was entering in the per-frame rebase, on an early frame, under a
+timing this scene only meets when the browser is already warm.
+
+Rather than guard a third consumer, the fix went where it belongs. AGENTS §5: **`src/orrery/` owns the
+ONLY f64→f32 crossing** — and its output goes straight into GPU buffers, so that crossing must be
+TOTAL. It is now: `compressScale` tests `!(d > 0)` instead of `d <= 0` (NaN fails every comparison, so
+the old form let it straight through) and returns 0 for any non-finite fold; `renderInto` and
+`writeRenderPoint` collapse a non-finite result to the focus origin rather than emitting it. A
+degenerate segment for one frame is a far better failure than garbage geometry, and it is honest: we
+do not know where the point is, so we do not draw it somewhere. This subsumes the earlier
+`updatePacketAndLink` guard, which was removed rather than left as a second mechanism.
+
+The underlying question — what makes a rebase non-finite on an early frame at all — is NOT answered
+here, and is filed. But it can no longer reach the screen, and when it happens `__nanScan` names the
+object instead of Three's anonymous warning.
+
+**Finding 2 — the Earth↔Mars line switched on one act early.** `setMarsLinkLive(netSession.cursor >= 4)`,
+with a docstring reading *"stays hidden until the Mars leg exists (cursor reached act4)"*. SD-62
+appended act3c at index 4 and moved Mars to 5, so from that commit the Mars dashes were drawn during
+the CISLUNAR act — a leg the player has not reached, crossing the pane, which is precisely the
+"diagonal of noise" the hide exists to prevent and an instrument asserting a path that does not exist
+(LAW 1). **This is the seventh stale act-index reader from the same SD-62 beat insertion**, and it
+survived SD-64's sweep because that grep matched `=== 4` and `>= ` forms but not
+`netSession.cursor >= 4`. Now keyed on whether the Mars CONTRACT is on the board — the truth the
+docstring describes, and immune to the next inserted beat. A repo-wide grep for numeric cursor
+comparisons found no others.
+
+**Finding 3 — a debug seed run on top of a resumed campaign stacks assets, silently.** The new seed
+produced ONE gateway, then three, then five across three page loads. Cause:
+`autoVaultEnabled = netMode && !netDebugView && !netLiveDebugView && !freshBoot` lists the debug views
+BY NAME, so adding a third silently opted it INTO the vault — it resumed whatever run was in the slot
+and seeded on top. The predicate's own docstring already warned about the write half of this
+(*"an earlier cut of this had the exit hook excluding the debug views while the cadence still
+wrote"*); the read half had the same shape of hole. Replaced with one `netAnyDebugSeed` predicate that
+every future seed joins to get both halves for free. **The two pre-existing seeds share the hazard's
+blast radius:** any `?netact=3` / `?netact=4` screenshot taken while a save existed was of a
+contaminated world.
+
+**Finding 4 — the seed framed the act off-screen.** `orrery.setPreset(1)` (CISLUNAR) is
+Earth-focused, and at its distance the Moon is outside the pane, so the seed built to SHOW the act
+rendered it as a stub leaving the frame. SD-63's body nav already owns the framing that holds the
+pair, so the seed jumps to the Moon exactly as the player does with the MOON row or the `B` key.
+
+**A probe worth keeping.** `__nanScan` walks the scene and returns NaN-carrying geometries BY NAME,
+tagged against the orrery's own fields. Three's complaint names no object, so every occurrence has
+cost a bisect — three of them in this codebase now. It is read-only, allocates only when something is
+wrong, and the `cislunar` scene asserts on it from the FIRST frame, so a transient NaN that a later
+frame overwrites is still caught and still named. That assertion is the standing regression pin for
+the total-crossing fix (`compressScale` is instance state, so there is no pure unit to test instead).
+
+**Consequences.** `?netact=3c` (`?netview=luna`) joins the debug-seed family, and a new `cislunar`
+playtest scene asserts the act on BOTH channels: 17 assertions in ~4 s covering the panels AND the
+drawn geometry, through a new `__cislunar` probe. That probe is the point — the scene reads segment
+counts and finiteness rather than trusting copy, because "the panel says carrying while the pane is
+empty" is the exact failure this act already had once. It also pins the two defects above: that
+exactly ONE gateway flies (the vault stacking), and that no Mars contract exists at act 3c (the early
+Mars line).
+
+**GATES.** `tsc` clean · `npm test` 92 files, **1111 tests, 0 failed** (+3 from the `lunarBasis` guard)
+· `npm run build` clean · `npm run smoke` clean · `npm run playtest` (14 scenes): every scene green
+EXCEPT `trace`, which is the pre-existing instability re-opened above and is NOT caused by this work
+— it is green alone at 51/0 and fails only under full-run load, with SD-66's changes reverted out of
+it entirely. The new `cislunar` scene is 17/0.
+
+**Still owed, and unchanged by this.** M1-A3C-6 (a real economy pass with the cislunar tier in it) and
+the deferred M1-A3C-8/9. The seed advances the clock TICK BY TICK through the deploy pipeline rather
+than jumping it, because a 30-second jump with a single `step` spawned three satellites from a
+`count: 1` launch — the pipeline advances per step, not per elapsed second. That is a sharp edge in
+the seeding surface, not in play, and it is noted here so the next seed author does not rediscover it.
