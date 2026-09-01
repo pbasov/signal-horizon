@@ -21,7 +21,13 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - Every bugfix **must** include a test that fails without the fix and passes with it.
 - Golden-master pins (e.g. `ephemeris.test.ts`, `rng.test.ts`) are non-negotiable — they prove bit-identity against the C# reference implementation.
 - Test behavior, not implementation. Assert invariants and outputs, not internal state.
-- Run `npm test` before declaring any change done. All existing tests must pass.
+- **Match the gate to the blast radius.** The full suite is ~8 minutes and 977 tests; running it for a change that cannot reach the sim is waste, not rigour. Pick the smallest gate that could actually catch your change breaking something:
+  - **`src/sim/` touched** → full `npm test`. The goldens are the whole point and they are cheap next to a silent replay divergence.
+  - **Frontend only** (`src/orrery/`, `src/wm/`, `src/panels/`, `src/style.css`, `index.html`) → `npm run test:fast` (skips the two replay whales, which no render change can move) + the Playwright evidence §3 requires.
+  - **`tools/`, docs, config, CI** → the test files that cover what you changed (`npx vitest run <file>`) + `npx tsc --noEmit` if anything typed imports it. No sim suite: it cannot see your change.
+  - **Docs only** → nothing. Read it back instead.
+- **Don't re-run a suite that cannot have changed.** After a rebase or merge, re-run only what the incoming commits could break — code they landed was already gated on main. A rebase of a tooling change onto new game code does not owe the game suite a second run.
+- Whatever you ran, **say exactly what you ran** when you report. "Tests pass" without a scope is a claim nobody can check.
 
 ---
 
@@ -31,7 +37,7 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - Frontend changes **must** be verified with a Playwright screenshot using `tools/shoot.mjs` or a headful test. "It compiles" is not sufficient.
 - Visual regressions are bugs. Compare screenshots before and after when changing rendering, layout, or styling.
 - The app runs via `npm run dev` — on **this checkout's own port**: `5173` in the main checkout, and one owned port per worktree under `.claude/worktrees/` (`tools/workspace.mjs`). `tools/shoot.mjs`, `tools/smoke.mjs` and the playtest all default to it, so **pass no url** and you cannot shoot a neighbouring tree's app by accident. Ask for the number with `node -e 'import("./tools/workspace.mjs").then(m=>console.log(m.devPort()))'`.
-- `npm run playtest` starts a dev server for its own tree if none is up, and holds a **repo-wide lock** while it runs: a second playtest in any worktree waits rather than fighting it for the GPU. `SH_NO_LOCK=1` opts out; `BASE=<url>` points it somewhere else entirely.
+- `npm run playtest` starts a dev server for its own tree if none is up, and holds a **repo-wide lock** while it runs: a second playtest in any worktree waits rather than fighting it for the GPU. `SH_NO_LOCK=1` opts out; `BASE=<url>` points it somewhere else entirely. Run the scene your change can reach — `node tools/playtest.mjs <scene>` — and the whole set only when you changed the loop itself or are calling a milestone green.
 - For complex UI changes, write a Playwright test script, not just a one-off screenshot.
 
 ---
@@ -73,5 +79,5 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 
 - One logical change per commit. Don't bundle unrelated refactors with feature work.
 - Commit messages must reference the ticket (e.g. `P0-05: Add action-log save format`).
-- Run `npm test && npx tsc --noEmit && npm run build` before every push.
+- Before every push run `npx tsc --noEmit && npm run build` (both fast, both catch real breakage) plus the test gate §2 sizes for your change — not automatically the whole suite.
 - **Always push immediately after committing.** Do not batch commits locally — push after each commit so the remote stays current and work is never lost.
