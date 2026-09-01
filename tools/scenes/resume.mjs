@@ -82,7 +82,9 @@ export default {
     ctx.ok("the resume beat carries the fold-hash receipt", /fold [0-9a-f]+/i.test(wire) && /resumed/i.test(wire), wire.slice(0, 160));
     // The boot console must not greet a mid-campaign player as a newcomer.
     await ctx.page.goto(ctx.base, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await ctx.settle(700);
+    // The intro TYPES its lines (SD-60: four of them at 260 ms each, the resume receipt last),
+    // so this has to wait out the whole crawl — reading too early caught only the licence line.
+    await ctx.settle(1800);
     const bootLines = await ctx.eval(() => [...document.querySelectorAll(".boot-line")].map((e) => e.textContent).join(" | "));
     ctx.ok("the boot console announces a RESTORED run", /RUN RESTORED/.test(bootLines), bootLines.slice(0, 160));
     await ctx.settle(2000);
