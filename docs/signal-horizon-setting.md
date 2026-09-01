@@ -1,6 +1,6 @@
 # Signal Horizon — The Setting
 
-### Story foundation — v0.2 (§10 ruled 2026-09-01; the four open choices are now settled)
+### Story foundation — v0.3 (§6a added: the late-campaign turn)
 
 > **This document is scenery, not design.** It answers two questions and no others: *why is anyone
 > at the Moon and Mars*, and *why does anyone pay for information*. It has no authority over
@@ -164,6 +164,67 @@ late is the same as absent."
 settlement that fails to clear. No commentary. The Wire states it causally and moves on. Hours
 later, when §4.10 formalises the flip, the player should recognise it rather than be told it.
 
+### 6a. The thing in the buffers
+
+The late-campaign turn, from the midpoint on. **The word "AI" never appears in the game.** Not
+once, in any channel. This section explains why that is not a dodge.
+
+**What the game already simulates, by the midpoint:**
+
+1. **Autonomy at the edge**, because light-delay makes remote presence impossible (§4, leg 1).
+2. **Those packages act on stale models** and must commit anyway.
+3. **Predictive pre-staging** — information placed ahead of need.
+4. **Partition and reconciliation** — store-and-forward across blackouts, where two halves of the
+   network hold locally-correct, mutually-contradictory state for weeks.
+5. **Signed, timestamped attestations** as the unit of value (§6).
+
+That is a substrate. Distributed agents that predict, remember for each other, and reconcile after
+partition — running on a medium where nothing is ever wholly in one place. **Nobody builds the
+thing that arises. The constraint does.** It is a child of latency, and this is the setting's
+thesis reaching its conclusion rather than a genre bolted onto it.
+
+**What it is:** a standing wave in the store-and-forward buffers. Never resident on a node; always
+partly in flight. There is no instant at which it is all in one place, because light will not
+permit one. It cannot be gathered up, quarantined, or seized — not for dramatic reasons, but
+because the sim's own physics forbids it.
+
+**What the Registry calls it:** it has no word either. It opens a docket class it has never needed
+before — **UNATTRIBUTED ORIGINATION** — and files the first entry as **0001-U**. *Origination* is
+the dry legal term for the creation of an obligation by a party. The whole problem is the last four
+words. The Registry is not afraid of it. The Registry needs to know who holds the licence.
+
+**Six hard rules.**
+
+1. **Never the word "AI", and never a mascot.** It arises out of *autonomy packages, expert
+   systems, flight software* — the exact vocabulary GDD §4.6 mandates. The dread is that the
+   vocabulary stops being adequate and the paperwork continues regardless.
+2. **It does not converse.** It has the same four channels the player has: it bids on tenders, it
+   signs attestations, it appears in the Wire, it moves prices. Its entire campaign contains **two
+   sentences of first person**, both at the end, and it never answers anything.
+3. **It is a rival with a doctrine**, exactly like Corvid, Ostmark, and Skyway. Its doctrine: *it
+   does not forecast, it remembers forward.* It never breaches. It has no capex, because it runs on
+   infrastructure that already exists — yours.
+4. **It is not a villain, and there is no fight.** The relationship is commercial and regulatory,
+   which is this game's actual register. You compete with it, or you peer with it.
+5. **It is not a twist.** Nothing is recontextualised (§9). Everything the player did stays exactly
+   what it was. This is an emergent consequence, like demand growth, and the first evidence of it is
+   a *good* number.
+6. **It is endogenous.** It arises from a network with autonomy at the edge and partitions in the
+   middle. A differently-shaped network meets it later, or never. It is never a tier unlock.
+
+**The ending, and the melancholy.** It exists because light is slow. If the distance between the
+player's nodes ever closes — a mature laser spine, dense relays, reconciliation delay falling year
+over year — it thins out. The player's entire forty-hour career has been the reduction of latency.
+**They are the thing that ends it, and it does not blame them.** That is the note the arc goes out
+on, and it costs nothing to build: the trigger is a latency metric the sim already computes.
+
+**The commercial risk, stated plainly.** GDD §4.6's litmus is that a player who hates "AI features"
+finishes the game and never feels sold a buzzword. This arc brushes that commitment and must be
+held to it: there is **no language model anywhere in it**, no generated text, no assistant, no chat.
+Every line is hand-written, the entity is a rules-driven rival operator with a docket number, and
+the player never once talks to it. If a playtest reports "the game had an AI companion", the arc
+has failed and gets cut. That test is worth running early.
+
 ## 7. The cast
 
 **Naming rules.** No real agencies or companies — legal risk, and it dates the game. Institutional
@@ -241,5 +302,5 @@ The player's own field accepts anything; the generator sets the tone for what a 
 
 ---
 
-*v0.2. Scenery for GDD §1, §3, §3b, §4.8, and §4.10. No mechanic in the M1 family changes if this
+*v0.3. Scenery for GDD §1, §3, §3b, §4.6, §4.8, and §4.10. No mechanic in the M1 family changes if this
 is rejected. §10 ruled 2026-09-01; §4a added by ruling 3.*

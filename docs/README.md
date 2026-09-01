@@ -22,8 +22,8 @@ The product you sell is *knowledge moved across distance*; the speed of light is
 
 ## Reference
 
-- [signal-horizon-setting.md](signal-horizon-setting.md) — **The Setting** v0.2. Scenery only: why anyone is at the Moon and Mars, and why information is precious. Zero authority over mechanics — delete it and every rule still stands. §10 ruled 2026-09-01.
-- [signal-horizon-beats.md](signal-horizon-beats.md) — **The Beats** v0.1 DRAFT. The narrative *content*: the cast, the four channels, the tender/Wire/Registry grammar, and eighteen beats with shipping copy. Adds no systems.
+- [signal-horizon-setting.md](signal-horizon-setting.md) — **The Setting** v0.3. Scenery only: why anyone is at the Moon and Mars, and why information is precious. Zero authority over mechanics — delete it and every rule still stands. §10 ruled 2026-09-01.
+- [signal-horizon-beats.md](signal-horizon-beats.md) — **The Beats** v0.1 DRAFT. The narrative *content*: the cast, the four channels, the tender/Wire/Registry grammar, and twenty-eight beats with shipping copy across four eras. Adds no systems.
 - [mockups/](mockups/) — Ops Console visual targets.
 - [screenshots/](screenshots/) — Spike verification captures (Chromium headful).
 
