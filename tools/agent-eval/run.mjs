@@ -22,7 +22,7 @@
 import { chromium } from "playwright-core";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeCtx } from "../ctx.mjs";
@@ -67,11 +67,38 @@ const KEY_WHITELIST = new Set([
 const FF_SCALE_PRESSES = 3; // '.' three times reaches the top scale; further presses are no-ops
 const FF_REAL_TIMEOUT_MS = 45000;
 
-const buildHash = (() => {
+/**
+ * The build key is a hash of the GAME's own sources — not git HEAD, and not the working tree.
+ *
+ * Keying on HEAD (or on `git status --porcelain`) made every harness edit invalidate the pinned
+ * baselines: the floor and ceiling were measured against `bf46a5e9-dirty`, and the next commit made
+ * them unreadable for a build whose game code had not changed by one byte. What a baseline must
+ * track is the thing being measured. So: content hash over src/, index.html, data/ and the vite
+ * config. Harness churn no longer invalidates a baseline; a real game change always does.
+ */
+function gameHash() {
+  const files = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(ts|css|html|json)$/.test(e.name) && !e.name.endsWith(".test.ts")) files.push(full);
+    }
+  };
+  walk(join(ROOT, "src"));
+  walk(join(ROOT, "data"));
+  const h = createHash("sha256");
+  for (const f of [...files.sort(), join(ROOT, "index.html"), join(ROOT, "vite.config.ts")]) {
+    h.update(f.replace(ROOT, ""));
+    h.update(readFileSync(f));
+  }
+  return h.digest("hex").slice(0, 8);
+}
+
+const buildHash = gameHash();
+const gitSha = (() => {
   try {
-    const sha = execFileSync("git", ["rev-parse", "--short=8", "HEAD"], { cwd: ROOT }).toString().trim();
-    const dirty = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT }).toString().trim().length > 0;
-    return dirty ? `${sha}-dirty` : sha;
+    return execFileSync("git", ["rev-parse", "--short=8", "HEAD"], { cwd: ROOT }).toString().trim();
   } catch {
     return "nogit";
   }
@@ -340,7 +367,8 @@ const metrics = computeMetrics({
 
 const runJson = {
   key: {
-    build_hash: buildHash,
+    build_hash: buildHash, // content hash of the GAME's sources — see gameHash()
+    git_sha: gitSha, //  provenance only; harness commits do not move build_hash
     seed: `scenario-fixed/run-${CFG.runIndex}`,
     model_id: CFG.policy === "llm" ? CFG.model : "random-policy",
     model_version: CFG.policy === "llm" ? CFG.model : "n/a",

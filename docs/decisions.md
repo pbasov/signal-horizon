@@ -989,3 +989,35 @@ verdicts — §1 of `agent-eval.md`):
   pad's chip reading "serving NOW", the signed region read DARK and the shortfall line said a LEO
   "only visits". Worth a look, but the run was already inside the reboot window, so it is a
   transcript quote and nothing more until someone reproduces it.
+
+**Addendum 2 (2026-09-01) — the clean run, two more leads, and the build key.**
+
+Run 3, on its own dev server with the four harness defects fixed: hand-aim scored correctly (M10
+YES — sub-lon dragged −90° → 0° before commit), first serve at 03:51 mission time on turn 23, act 1
+reached, 4/15 decision surfaces, 4 % invalid, 13 % no-op, $0.71 for 24 turns, zero errors. The floor
+and ceiling are pinned by playing the same loop: the random policy never serves and touches 1
+surface at 21 % no-op; the scripted golden path serves at 07:41 with 3 surfaces at 0 % no-op. An
+agent number is now readable between two measured ends.
+
+**Two more leads, both verified by hand (leads, not verdicts):**
+
+- **The SLA pips carry no information at boot.** The Act-1 tender renders LAT / AVL / BW as three
+  labels that are byte-identical in the text layer *and* pixel-identical in style — same
+  `mission-pip` class, same dim `rgb(90,90,99)`, same border, no active/enforced variant. Their only
+  explanation is a `title` tooltip on the parent row, i.e. hover-only. GDD §5 asks for a glanceable
+  summary before hover detail; here the glanceable layer is three grey stubs, and a first-time player
+  has no lit example to read "dim = not enforced" against. Also fails a colour-off / text-only read
+  (X-03).
+- **The pad's "100 % · serving NOW" reads as a status claim when it is a capability claim.** A cold
+  player said it best, unprompted: *"I'd treat the pad's '100 % coverage / serving NOW' as a
+  capability claim, not a status claim… nothing in the pad's language warned me that footprint math ≠
+  live traffic."* It cost that run nine turns hunting for a route/pipe/payload to "bind" after
+  signing, when the answer was that the router needed sim-time. Two independent runs hit it. This is
+  the LAW-1 boundary in practice: the draft chip is honest about the draft and silent about the gap
+  between a draft and a flying network.
+
+**One design fix inside the harness: the build key is a content hash of the GAME's sources**
+(`src/`, `data/`, `index.html`, `vite.config.ts`), not git HEAD and not the working tree. Keying on
+HEAD had just invalidated the pinned floor and ceiling for a build whose game code had not changed by
+one byte — the baseline must track the thing being measured, not the commit that happened to be
+checked out. The git sha rides along in `run.json` as provenance.

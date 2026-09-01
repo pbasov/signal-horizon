@@ -51,6 +51,7 @@ and repeatably**. Any change justified only by "the agent did better" is a bug i
 
 | Layer | Choice | Why |
 |---|---|---|
+| Server | **its own `vite` per run**, on its own port, serving the tree it measures | Worktrees under `.claude/worktrees/` are a standing part of how this repo is worked on, and several agents run at once. A shared `:5173` is a shared fate: a concurrent session's worktree made vite force a full reload and re-booted the app mid-run. `vite.config.ts` now excludes worktrees and artifacts from the dev watcher (which protects human sessions too), and a run never borrows someone else's server unless `--base` says so. |
 | Browser | **playwright-core**, headless chromium (`/usr/bin/chromium`) | Byte-stable observations, deterministic replay, CI-friendly, no per-turn token cost. The Playwright **MCP** server (`.mcp.json`) stays the *interactive* debugging path — its accessibility snapshots are token-expensive and vary turn to turn, it has no cost ceiling and no transcript. |
 | Action vocabulary | **The existing `ctx` helpers**, extracted to `tools/ctx.mjs` | One verb set shared by the scripted scenes (`tools/scenes/`) and the agent driver, so a scripted trajectory and an agent trajectory are the same format. The agent's tool schema maps 1:1 onto `click` / `key` / `setParam` / `wait`. |
 | Observation channel | **Rendered DOM text + the probe JSON.** Not screenshots. | BALROG (arXiv:2411.13543) reports multimodal agents do *worse* given an image than a textual observation, and the weakness is precisely spatial/geometric reasoning — which is all this game is. Orbital geometry is exposed numerically (`__aimProbe`, `__satScreenPos`, the draft chip, the coverage comb) rather than as pixels. Screenshots are captured every turn for the *human* reviewing the bundle, and for the reject-only perception probe (§10). |
@@ -140,7 +141,9 @@ a reason), never a crash:
 The LLM is not deterministic and no flag makes it so. Everything around it is:
 
 - **Run key:** `{build_hash, seed, model_id, model_version, params_hash, prompt_version, persona,
-  clock_mode}`. `prompt_version` is the sha256 of the persona file plus the observation-schema
+  clock_mode}`. `build_hash` is a content hash of the **game's** sources (`src/`, `data/`,
+  `index.html`, `vite.config.ts`), never git HEAD — otherwise a harness commit invalidates a pinned
+  baseline for a build whose game code did not change. The git sha rides in `run.json` as provenance. `prompt_version` is the sha256 of the persona file plus the observation-schema
   version, so a prompt edit can never masquerade as a build regression.
 - **Record–replay:** every brain request and response is logged to `transcript.jsonl`. A replay mode
   feeds the recorded responses back so a failed run is re-inspectable without spending a token —

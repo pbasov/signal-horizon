@@ -1,11 +1,12 @@
 {
   "label": "random",
   "key": {
-    "build_hash": "bf46a5e9-dirty",
+    "build_hash": "fc5ef6da",
+    "git_sha": "9492f79e",
     "seed": "scenario-fixed/run-900",
     "model_id": "random-policy",
     "model_version": "n/a",
-    "params_hash": "a755cb939cd2",
+    "params_hash": "3087f869b3c9",
     "prompt_version": "4cd91bbb65a8",
     "persona": "optimizer",
     "clock_mode": "PDQ"
@@ -58,7 +59,7 @@
       "shape_repairs": 0,
       "rate": 0
     },
-    "m8b_no_op_action_rate": 0.22727272727272727,
+    "m8b_no_op_action_rate": 0.20833333333333334,
     "m9_time_to_first_served_s": null,
     "m9b_turns_to_first_served": null,
     "m10_hand_aimed_before_commit": null,

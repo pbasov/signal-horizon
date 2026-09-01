@@ -56,7 +56,7 @@ export function writeReport({ outDir, cfg, runJson, metrics, timeline, debrief, 
   // Every row carries its floor and ceiling: an agent number between them is readable, and one
   // without them is not (docs/agent-eval.md §5). "not measured" is printed, never guessed.
   const cell = (base, get) => {
-    if (!base) return "not measured";
+    if (!base) return "not pinned for this build";
     try {
       const v = get(base.metrics);
       return v === null || v === undefined ? "—" : b(v);
@@ -66,20 +66,20 @@ export function writeReport({ outDir, cfg, runJson, metrics, timeline, debrief, 
   };
   const row = (name, val, get = null) =>
     p(`| ${name} | ${val} | ${get ? cell(random, get) : "n/a"} | ${get ? cell(scripted, get) : "n/a"} | not measured |`);
-  row("M1 committed actions in act 1", b(m.m1_committed_actions_act1));
-  row("M2 decision surfaces touched", `${m.m2_decision_surfaces.count}/${m.m2_decision_surfaces.of} — ${m.m2_decision_surfaces.touched.join(", ") || "none"}`);
-  row("M3 fork taken", `consolidate ${b(m.m3_strategy_fork.consolidate)} · split ${b(m.m3_strategy_fork.split)} (${m.m3_strategy_fork.launches} launches)`);
-  row("M4 no instruction strings on screen", b(m.m4_instruction_string_absent));
-  row("M5 own-success strain answered", b(m.m5_responded_to_own_success_strain));
-  row("M6 no softlock, no errors", b(m.m6_completed_without_softlock));
-  row("M7 novice floor reached", b(m.m7_novice_floor_reachable));
-  row("M8 invalid-action rate", pct(m.m8_invalid_action_rate));
-  row("M8b no-op action rate", pct(m.m8b_no_op_action_rate));
-  row("M9 time to first served", m.m9_time_to_first_served_s === null ? "never served" : `${mmss(m.m9_time_to_first_served_s)} (turn ${b(m.m9b_turns_to_first_served)})`);
-  row("M10 hand-aimed before commit", b(m.m10_hand_aimed_before_commit));
-  row("M11 acts reached", b(m.m11_acts_reached));
-  row("M12 economy", `final €${b(m.m12_economy.final_eur)} · min €${b(m.m12_economy.min_eur)} · breach ${b(Math.round(m.m12_economy.breach_seconds_total))}s`);
-  row("M13 page/console errors", b(m.m13_errors));
+  row("M1 committed actions in act 1", b(m.m1_committed_actions_act1), (x) => x.m1_committed_actions_act1);
+  row("M2 decision surfaces touched", `${m.m2_decision_surfaces.count}/${m.m2_decision_surfaces.of} — ${m.m2_decision_surfaces.touched.join(", ") || "none"}`, (x) => `${x.m2_decision_surfaces.count}/${x.m2_decision_surfaces.of}`);
+  row("M3 fork taken", `consolidate ${b(m.m3_strategy_fork.consolidate)} · split ${b(m.m3_strategy_fork.split)} (${m.m3_strategy_fork.launches} launches)`, (x) => `${x.m3_strategy_fork.launches} launches`);
+  row("M4 no instruction strings on screen", b(m.m4_instruction_string_absent), (x) => x.m4_instruction_string_absent);
+  row("M5 own-success strain answered", b(m.m5_responded_to_own_success_strain), (x) => x.m5_responded_to_own_success_strain);
+  row("M6 no softlock, no errors", b(m.m6_completed_without_softlock), (x) => x.m6_completed_without_softlock);
+  row("M7 novice floor reached", b(m.m7_novice_floor_reachable), (x) => x.m7_novice_floor_reachable);
+  row("M8 invalid-action rate", pct(m.m8_invalid_action_rate), (x) => pct(x.m8_invalid_action_rate));
+  row("M8b no-op action rate", pct(m.m8b_no_op_action_rate), (x) => pct(x.m8b_no_op_action_rate));
+  row("M9 time to first served", m.m9_time_to_first_served_s === null ? "never served" : `${mmss(m.m9_time_to_first_served_s)} (turn ${b(m.m9b_turns_to_first_served)})`, (x) => (x.m9_time_to_first_served_s === null ? "never" : mmss(x.m9_time_to_first_served_s)));
+  row("M10 hand-aimed before commit", b(m.m10_hand_aimed_before_commit), (x) => x.m10_hand_aimed_before_commit);
+  row("M11 acts reached", b(m.m11_acts_reached), (x) => x.m11_acts_reached);
+  row("M12 economy", `final €${b(m.m12_economy.final_eur)} · min €${b(m.m12_economy.min_eur)} · breach ${b(Math.round(m.m12_economy.breach_seconds_total))}s`, (x) => `€${b(x.m12_economy.final_eur)}`);
+  row("M13 page/console errors", b(m.m13_errors), (x) => x.m13_errors);
   p();
   p(`Harness quality (NOT a reading of the build): protocol shape rejects ${m.m8c_protocol_noise.shape_rejects}, ` +
     `lenient repairs ${m.m8c_protocol_noise.shape_repairs}, ${pct(m.m8c_protocol_noise.rate)} of turns. ` +

@@ -1,11 +1,12 @@
 {
   "label": "scripted",
   "key": {
-    "build_hash": "bf46a5e9-dirty",
+    "build_hash": "fc5ef6da",
+    "git_sha": "9492f79e",
     "seed": "scenario-fixed/run-800",
     "model_id": "random-policy",
     "model_version": "n/a",
-    "params_hash": "bc1b74a3ec53",
+    "params_hash": "d5652bf09a0f",
     "prompt_version": "4cd91bbb65a8",
     "persona": "optimizer",
     "clock_mode": "PDQ"
@@ -59,12 +60,12 @@
       "rate": 0
     },
     "m8b_no_op_action_rate": 0,
-    "m9_time_to_first_served_s": 521.0999999996275,
+    "m9_time_to_first_served_s": 461.1166666671634,
     "m9b_turns_to_first_served": 8,
     "m10_hand_aimed_before_commit": true,
     "m11_acts_reached": 1,
     "m12_economy": {
-      "final_eur": 74038,
+      "final_eur": 73249,
       "min_eur": 62739,
       "breach_seconds_total": 0,
       "ended_net_positive": true
