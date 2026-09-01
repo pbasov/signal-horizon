@@ -114,6 +114,7 @@ import {
   NET_ACT3A_BACKHAUL_REGION,
   NET_ACT3A_LOW_LATENCY_S,
   NET_ACT3A_BACKHAUL_SLA_BW,
+  M1_SCENARIO,
 } from "./sim/net/scenario";
 import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
@@ -198,7 +199,7 @@ import { StatusStrip } from "./panels/status";
 // net/ M1 — the ONBOARDING briefing popups (the UX-cold floor): one dismissible 1-bit info card per
 // CORE CONCEPT, fired off the scenario beats (act1 at the cold open; the rest when the cursor reaches
 // them). Render/UI only — no sim math, net mode ONLY. See drainNetOnboarding below for the trigger.
-import { Onboarding, type OnboardingConcept } from "./panels/onboarding";
+import { Onboarding, ONBOARDING_CONCEPTS_IN_BEAT_ORDER } from "./panels/onboarding";
 import type { ContractReadout, ContractsRenderState, FrameState, NetEconomy } from "./types";
 
 applyDither();
@@ -1538,14 +1539,16 @@ function drainNetAct4Log(): void {
 /**
  * net/ M1 — fire the ONBOARDING briefing card for the CURRENT concept off the scenario cursor
  * (render-only; the sim owns the truth). The cursor is the index into the M1 arrival sequence
- * (act1=0, act2=1, act3a=2, act3b=3, act4=4 — see M1_SCENARIO), so the beat that is CURRENT is the
+ * (act1=0, act2=1, act3a=2, act3b=3, act3c=4, act4=5 — see M1_SCENARIO), so the beat that is CURRENT is the
  * concept just INTRODUCED: act1's card fires at the cold open (cursor 0 at boot, the Act-1 contract
  * already emitted); the others fire the frame the cursor first reaches them (the prior gate fired +
  * the new beat emitted). Onboarding.trigger de-dupes — each card shows ONCE per session — and the
  * card is dismissed via GOT IT / Esc / click-out (the clock never stops). Net mode only (onboarding
  * is null in cache mode). A pure read of netSession.cursor; never mutates sim state, no golden.
  */
-const NET_ONBOARDING_CONCEPTS: OnboardingConcept[] = ["act1", "act2", "act3a", "act3b", "act4"];
+// The beat-order concept list lives in onboarding.ts, beside the cards it names, and is pinned
+// against M1_SCENARIO by `act-cards.test.ts` — see SD-64 for why it stopped being a literal here.
+const NET_ONBOARDING_CONCEPTS = ONBOARDING_CONCEPTS_IN_BEAT_ORDER;
 function drainNetOnboarding(): void {
   if (onboarding === null) return; // cache mode (or never net) — no cards.
   const concept = NET_ONBOARDING_CONCEPTS[netSession.cursor];
@@ -2698,10 +2701,14 @@ function netPlaceMarsCache(): void {
 const NET_MARS_DEBUG_AGE_S = 400.0;
 function seedNetMarsDebugView(): void {
   const t = clock.seconds;
-  // (1) Force the cursor to act4 (index 4 in M1_SCENARIO: act1, act2, act3a, act3b, act4). Each
-  //     advanceCursor bumps the cursor + stamps a gate tick; the next step's emit fires act4 only
-  //     (the intermediate beats' emits are skipped — we only need the Mars opportunity + relay).
-  while (netSession.cursor < 4) netSession.advanceCursor(Math.round(t / DT));
+  // (1) Force the cursor to act4 — the index is DERIVED from M1_SCENARIO, never written down. It was
+  //     hardcoded `4` until SD-64: SD-62 appended act3c at index 4, so the loop stopped on the LUNAR
+  //     beat and this seed emitted the farside contract, then tried to accept a Mars contract that had
+  //     never been offered. Each advanceCursor bumps the cursor + stamps a gate tick; the next step's
+  //     emit fires act4 only (the intermediate beats' emits are skipped — we only need the Mars
+  //     opportunity + relay).
+  const act4Index = M1_SCENARIO.findIndex((b) => b.id === "act4");
+  while (netSession.cursor < act4Index) netSession.advanceCursor(Math.round(t / DT));
   // (2) Step once so the act4 beat EMITS the Mars contract onto the board (the same in-step emit
   //     the live scenario engine runs). Pure step on the live session.
   netSession.step(eph, t, DT);

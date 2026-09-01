@@ -942,13 +942,15 @@ describe("SD-40 D1 — act4 Mars teaser: light-delay (deterministic minutes), fr
 
   it("THE CURSOR STOPS ON ACT4 (a read, not a gate): act4.gate is false forever — the cursor never advances past it (no win screen, 'to be continued')", () => {
     const r = replayTo(act4Log(), MAX_TICK_ACT4);
-    // The cursor reached act4 (cursor === 4: act1→act2→act3a→act3b→act4) and STAYS there — the final
-    // beat's gate is false forever, so no 5th gate tick is ever recorded (the deliberate stop).
-    expect(r.session.cursor).toBe(4);
-    expect(r.session.snapshot().gateTicks.length).toBe(4); // exactly four gates fired (act1..act3b).
+    // The cursor reached act4 (cursor === 5: act1→act2→act3a→act3b→act3c→act4) and STAYS there —
+    // the final beat's gate is false forever, so no 6th gate tick is ever recorded (the stop).
+    // SD-62 APPENDED act3c at index 4, which moved Mars 4 → 5; these three reads were the ones it
+    // missed (this file is excluded by `test:fast`, which is how they landed red — see SD-64).
+    expect(r.session.cursor).toBe(5);
+    expect(r.session.snapshot().gateTicks.length).toBe(5); // five gates fired (act1..act3c).
     // Running well past the Mars actions does NOT advance the cursor (no gate fires past act4).
     const farther = replayTo(act4Log(), MAX_TICK_ACT4);
-    expect(farther.session.cursor).toBe(4);
+    expect(farther.session.cursor).toBe(5);
   }, 60000);
 });
 
@@ -1102,7 +1104,7 @@ describe("P0b/R0 — launches DEBIT the wallet (stack cost) + the seeded EVENT-p
     // relay, with the cursor reached + stopped on act4.
     const r = replayTo(act4Log(), MAX_TICK_ACT4);
     expect(r.session.sats.length).toBe(CANON_ACT4_ROSTER);
-    expect(r.session.cursor).toBe(4);
+    expect(r.session.cursor).toBe(5); // act4 is index 5 since SD-62 appended act3c at 4.
     expect(r.session.sats.some((sat) => sat.id.startsWith("MARS-RELAY"))).toBe(true);
     // The pointing state survived the arc: every corridor beam still points at REGION-2.
     // Derived from the launch order, never hard-coded — a stale id here would silently point

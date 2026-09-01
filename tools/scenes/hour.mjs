@@ -135,10 +135,48 @@ export default {
     await simSleep(ctx, 290);
     // The seeded attrition: two no-seps + an underburn. Fix what's fixable.
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
-    // The fill batch — 4 more poised to plug the holes (canon interleaves +45°).
-    await launchDraft(ctx, { altKm: 310, incDeg: 90, subLonDeg: 45, count: 4, spreadDeg: 90 });
+    // THE FILL BATCH — plug the holes the seeded attrition left in the ring.
+    //
+    // This used to read `{ altKm: 310, ..., count: 4, spreadDeg: 90 }` — the PRE-SD-56 numbers, and
+    // after the coverage re-scale they were simply a different orbit (SD-64). Measured at the gate,
+    // the fleet was `{310: 4, 402: 7, 535: 1}`: the assist had flown a 402 km ring (nine asked for,
+    // seven surviving the no-seps) while the fill put four birds at 310 km — a lower, faster orbit
+    // that shares neither the plane nor the period, so it is not a ring member at all and closes
+    // nothing. REGION-1 held 90.6 %, the act-2 gate never fired, and every later assertion in the
+    // scene fell with it.
+    //
+    // The altitude is now DERIVED from the ring actually flying, so the next re-scale cannot silently
+    // strand this launch in the wrong orbit again. `spreadDeg` stays 2π/N over the batch, matching
+    // ACT2_PHASE_SPREAD_RAD in canon.ts.
+    const ringAltKm = await ctx.eval(() => {
+      const st = window.__netState?.();
+      // The polar ring is the modal altitude among the act-2 batch — everything except the lone
+      // GEO park (the tallest) and anything obviously off it.
+      const counts = new Map();
+      for (const x of st.sats) counts.set(x.aKm, (counts.get(x.aKm) ?? 0) + 1);
+      let bestAlt = null;
+      let bestN = 0;
+      for (const [alt, n] of counts) if (n > bestN) { bestN = n; bestAlt = alt; }
+      return bestAlt;
+    });
+    ctx.ok("the ring to be filled reports an altitude", typeof ringAltKm === "number" && ringAltKm > 0, `${ringAltKm} km`);
+    await launchDraft(ctx, { altKm: ringAltKm, incDeg: 90, subLonDeg: 45, count: 4, spreadDeg: 90 });
     await ctx.settle(2400);
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
+    const diag = await ctx.eval(() => {
+      const st = window.__netState?.();
+      const alts = {};
+      for (const x of st.sats) { const k = String(x.aKm); alts[k] = (alts[k] || 0) + 1; }
+      const r1 = st.contracts.find((c) => c.id === "REGION-1");
+      return { n: st.sats.length, altHistogram: alts, region1: r1 ? { state: r1.state, avail: r1.avail, servedFrac: r1.servedFrac } : null, cursor: st.cursor };
+    });
+    // The ring must be ONE ring: every act-2 member on the same altitude. A split histogram here is
+    // the SD-64 failure returning (a fill batch stranded in the wrong orbit).
+    ctx.ok(
+      "the act-2 fleet is one ring plus the GEO park (no batch stranded in a foreign orbit)",
+      Object.keys(diag.altHistogram).length <= 2,
+      JSON.stringify(diag),
+    );
     const g2 = await untilCursor(ctx, 2);
     ctx.ok("ACT-2 GATE: the polar metro HELD across a full hand-off cycle", g2 !== null, g2 ? `cursor ${g2.cursor} · €${g2.balance} · ${g2.sats.length} sats` : "timeout");
     await ctx.shot("10-act2-held");

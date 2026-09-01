@@ -9,6 +9,10 @@ export default {
   async run(ctx) {
     await ctx.page.goto(ctx.base, { waitUntil: "networkidle", timeout: 30000 });
     await ctx.settle(2000);
+    // SD-64 — the cold open is a full-window overlay for ~3.8 s and it EATS the first real
+    // pointerdown. The ring drag below is this scene's only real-mouse gesture, so without this the
+    // drag was spent skipping the intro and never reached the orrery at all.
+    ctx.ok("the cold open finished before the first real gesture", await ctx.bootDone(), "boot-seq gone");
 
     // ── 1. open the pad; the boot draft is the dead pre-aim (90° W — honestly unsweetened) ──
     await ctx.click("[data-net=pad-toggle]");
@@ -22,9 +26,26 @@ export default {
     await ctx.setParam("subLonDeg", 0);
     await ctx.settle();
     const chip1 = await ctx.eval(() => document.querySelector(".net-draft-chip")?.textContent ?? "");
-    ctx.ok("aimed draft reports serving NOW", chip.includes || chip1.includes("serving NOW"), chip1);
+    // `chip.includes || chip1.includes("serving NOW")` used to stand here. The left operand is an
+    // UNCALLED function reference — always truthy — so the assertion could not fail and the typed
+    // aim was never actually proven (SD-64).
+    ctx.ok("aimed draft reports serving NOW", chip1.includes("serving NOW"), chip1);
 
-    // ring-grab: find the ring on screen, drag up 100 px, watch altitude + price move.
+    // ring-grab: find the ring on screen, drag up, watch the altitude move.
+    //
+    // TWO THINGS WENT WRONG HERE AND HID EACH OTHER (SD-64).
+    //  1. The assertion read `Number(altAfter) < Number(altBefore) === false` — `<` binds tighter
+    //     than `===`, so it asserted "altAfter is NOT LESS than altBefore", which is TRUE when they
+    //     are EQUAL. It passed while reporting `534.7 → 534.7`: the gesture did nothing at all.
+    //  2. The grab accepted the handler's BARE tolerance (26 px, PICK_TOLERANCE_PX). The scan is
+    //     slow — it projects the whole ring geometry per sample, ~12k samples — and the draft ring
+    //     SWEEPS across the screen as the body turns. A point found at the edge of tolerance during
+    //     the scan can be outside it by the time the press lands, and the orrery then reads the drag
+    //     as a CAMERA ORBIT instead. Silently: no error, no altitude change.
+    // The verb itself is sound — verified by hand at 534.7 → 659.9 km, headful AND headless. So the
+    // scan keeps its best point unconditionally, the distance is RE-MEASURED at press time, and a
+    // comfortable margin is required, so a near-miss fails loudly instead of testing nothing.
+    const RING_GRAB_MARGIN_PX = 8;
     const probe = await ctx.eval(() => {
       const p = window.__dragOrbitProbe;
       if (typeof p !== "function") return null;
@@ -34,18 +55,33 @@ export default {
           const r = p(x, y);
           if (r && r.distPx < best.d) { best.x = x; best.y = y; best.d = r.distPx; }
         }
-      return best.d < 26 ? best : null;
+      return Number.isFinite(best.d) ? best : null;
     });
-    ctx.ok("found a grabbable point on the draft ring", probe !== null, probe ? `(${probe.x},${probe.y})` : "none");
+    ctx.ok("found a grabbable point on the draft ring", probe !== null, probe ? `(${probe.x},${probe.y}) d=${probe.d.toFixed(1)}px` : "none");
+    // The ring must still be under that point when the press lands, or the drag is a camera orbit.
+    const grabDist = probe === null ? null : await ctx.eval((pt) => window.__dragOrbitProbe(pt.x, pt.y)?.distPx ?? null, probe);
+    // `__dragOrbitProbe` is pure projection maths: it has no idea whether anything is ON TOP of that
+    // pixel, so it reported a 0.2 px "hit" through the boot overlay all along. A press only reaches
+    // the orrery if the canvas is the top element there — assert it, and the next overlay that eats
+    // a gesture says so instead of reading as a passing drag.
+    const onCanvas = probe === null ? false : await ctx.eval((pt) => {
+      const c = document.querySelector("canvas");
+      return document.elementFromPoint(pt.x, pt.y) === c;
+    }, probe);
+    ctx.ok("the grab point is the orrery canvas, not an overlay", onCanvas, onCanvas ? "canvas" : "covered by something else");
+    const grabbable = onCanvas && grabDist !== null && grabDist <= RING_GRAB_MARGIN_PX;
+    ctx.ok("the ring is still under the grab point when the press lands", grabbable, `${grabDist === null ? "no ring" : grabDist.toFixed(1) + "px"} (need ≤ ${RING_GRAB_MARGIN_PX})`);
     const altBefore = await ctx.eval(() => document.querySelector("[data-net=param-altKm]")?.value);
-    if (probe) {
+    if (grabbable) {
       await ctx.page.mouse.move(probe.x, probe.y);
       await ctx.page.mouse.down();
       for (let i = 1; i <= 8; i++) await ctx.page.mouse.move(probe.x, probe.y - i * 12);
       await ctx.page.mouse.up();
       await ctx.settle();
       const altAfter = await ctx.eval(() => document.querySelector("[data-net=param-altKm]")?.value);
-      ctx.ok("ring drag RAISED the orbit", Number(altAfter) < Number(altBefore) === false, `${altBefore} → ${altAfter}`);
+      // STRICTLY higher. The drag saturates at the preset's altitude ceiling (~660 km from this
+      // start), which is fine — the claim is that pulling up RAISES the orbit, not by how much.
+      ctx.ok("ring drag RAISED the orbit", Number(altAfter) > Number(altBefore), `${altBefore} → ${altAfter}`);
       // Put it BACK to GEO park altitude so the loop below is the canonical one.
       await ctx.setParam("altKm", 535);
       await ctx.settle();

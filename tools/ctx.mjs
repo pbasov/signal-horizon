@@ -38,16 +38,40 @@ export function makeCtx({ page, base, shotsDir, tag, results = [] }) {
     async pressKey(k) {
       await page.keyboard.press(k);
     },
+    /**
+     * Click a control the way a HAND does: SCROLL IT INTO VIEW, then a real device-level click at
+     * its centre. Unlike `click` (DOM `.click()`), this is subject to the layout — that is the point.
+     *
+     * It returns `{ ok, reason }` (SD-64). It used to return a bare `false` that its only caller
+     * ignored, and it did not scroll. At 1920×1080 the MISSION panel's scroll viewport is 562 px
+     * while the pad's content is 1043 px, so ARM and LAUNCH sit BELOW THE PANEL FOLD: the click was
+     * dispatched at y≈1118 in a 1080-tall window, hit nothing, and the scene carried on as though
+     * the launch had been committed. A human scrolls the panel and clicks; so does this now. When a
+     * control genuinely cannot be reached, the reason is reported instead of swallowed.
+     */
     async realClick(sel) {
       const box = await page.evaluate((s) => {
         const el = document.querySelector(s);
-        if (!el) return null;
+        if (!el) return { reason: "no such element" };
+        // What a hand does first. The pad is taller than its panel's scroll viewport.
+        el.scrollIntoView({ block: "center", inline: "nearest" });
         const r = el.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        if (r.width === 0 || r.height === 0) return { reason: "zero-size box" };
+        if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) {
+          return { reason: `centre (${Math.round(x)},${Math.round(y)}) is outside the ${innerWidth}×${innerHeight} viewport even after scrolling it into view` };
+        }
+        const top = document.elementFromPoint(x, y);
+        if (top !== el && !el.contains(top)) {
+          return { reason: `covered by ${top ? top.tagName + "." + (top.className || "(none)") : "nothing"}` };
+        }
+        if (el.disabled) return { reason: "disabled" };
+        return { x, y };
       }, sel);
-      if (!box) return false;
+      if (box.reason !== undefined) return { ok: false, reason: box.reason };
       await page.mouse.click(box.x, box.y);
-      return true;
+      return { ok: true, reason: "" };
     },
     async click(sel) {
       const found = await page.evaluate((s) => {
@@ -104,6 +128,27 @@ export function makeCtx({ page, base, shotsDir, tag, results = [] }) {
     },
     wait: (ms) => page.waitForTimeout(ms),
     settle: (ms = 350) => page.waitForTimeout(ms),
+    /**
+     * WAIT OUT THE COLD OPEN (SD-64). SD-60's boot sequence mounts `.boot-seq` as a FULL-WINDOW
+     * overlay that types four lines (260 ms each) and then holds 2400 ms before fading over 320 ms
+     * — about 3.8 s in total, comfortably longer than the 2 s most scenes settle for.
+     *
+     * It matters because the overlay dismisses on the FIRST `pointerdown` and CONSUMES it. So any
+     * scene whose first gesture is a REAL pointer event spends that gesture skipping the intro and
+     * never reaches the game. `ctx.click` (DOM `.click()`) tunnels straight through the overlay,
+     * which is why this stayed invisible: in act1 the ring drag was the only real-mouse gesture in
+     * the scene, and its assertion could not fail.
+     *
+     * Call this after `goto` in any scene that uses `page.mouse`, `realClick`, or `ctx.key`.
+     */
+    async bootDone(timeoutMs = 8000) {
+      try {
+        await page.waitForFunction(() => !document.querySelector(".boot-seq"), undefined, { timeout: timeoutMs });
+        return true;
+      } catch {
+        return false; // let the scene's own assertions report the consequence
+      }
+    },
     probe: (name, ...args) => page.evaluate(([n, a]) => window[`__${n}`]?.(...a), [name, args]),
   };
 }

@@ -1676,7 +1676,16 @@ LEO metro traffic — which is also precisely why no Earth-act route changed.
 before act4 meant the scripted "good playthrough" no longer reached Mars at all: it stopped at
 act3c, because the canon never launched a gateway. The canon now climbs the rung (gateway at
 t=975, LUNA-1 signed at t=995, gate fires t=1155, Mars relay t=1330) and runs to t=1460 instead of
-1090. **`NET_REPLAY_GOLDEN` re-pinned `16791777382910013853n` → `5151969548480093925n`.** Two
+1090. **`NET_REPLAY_GOLDEN` re-pinned → `13498174276749145205n`**, now held ONCE as
+{@link NET_CANON_GOLDEN} in `canon.ts` so the replay golden and the economy measurement can
+never drift onto two pins. *(Value CORRECTED 2026-09-01 in the post-merge reconcile. This
+entry was written inside the SD-62 worktree, which sat on the pre-SD-58 golden
+`16791777382910013853n`, and recorded the number measured there: `5151969548480093925n`.
+Landing over SD-58's re-pin #4 — the board-map longitudes, `10981192184426294200n` — moved
+the fold again, so the pin that actually shipped is `13498174276749145205n`. The CODE was
+always self-consistent: both consumers read the one constant, and the suite was green on it.
+Only this line and its backlog twin were stale — the cost of measuring a golden before the
+rebase that changes it.)* Two
 second-order effects were found by measurement, not by reasoning: (1) the extra launch SHIFTED THE
 SEEDED RNG STREAM, so the Mars relay drew a `no_sep` at its old tick — charged and lost — and its
 instant had to move (accepts draw no RNG, so only launches can do this); (2) the longer arc lets a
@@ -1782,3 +1791,181 @@ board as a map, per-checkout dev ports, the skippable intro, the save/resume lad
 cislunar on-ramp). Rebased onto that train, and it lands on the same side of two of them: SD-58 made
 every tender a place you can LOOK at on one globe, this makes every BODY a place you can look at;
 SD-62 deferred "the cislunar camera framing" out of its increment, and the CISLUNAR jump here is it.
+
+---
+
+### SD-64 — POST-MERGE RECONCILE: what a day of parallel worktrees broke, and the pins that will catch it next time (2026-09-01)
+
+**Status:** ACCEPTED.
+
+**Context.** Nine increments landed on `main` in one day (SD-55 through SD-63) out of separate
+worktrees, several of them rebased over each other mid-flight. This is the reconcile pass over that
+train. It found `main` RED at `012ae8a` — 2 failing tests out of 1101 — plus two player-facing
+defects that no test could see, one shipped-code defect, and a documented number that never existed.
+Each one is a *merge* failure rather than an authoring failure: every increment was correct against
+the tree it was written on.
+
+**Finding 1 — SD-62 inserted a scenario beat, and five readers outside `src/sim/net/` kept the old
+index.** `M1_SCENARIO` went from five beats to six, with `act3c` APPENDED AT INDEX 4, ahead of
+`act4`. SD-62's own source comment states the consequence exactly: *"Only Mars moves — from 4 to 5."*
+Inside `src/sim/net/` everything followed. Outside it, six sites did not:
+
+1. `src/sim/net-replay.test.ts` — three reads asserting the act4 cursor is `4` and that exactly four
+   gates fired. **This is why the suite was red.**
+2. `src/main.ts:seedNetMarsDebugView` — `while (netSession.cursor < 4)`. **Shipped code, not a test.**
+   The loop now stopped on the LUNAR beat, so the `?netview=mars` debug seed emitted the farside
+   contract, then launched a Mars relay and tried to accept a Mars contract that had never been
+   offered. The Mars debug view — the screenshot path for the whole frontier — was broken.
+3. `src/main.ts:NET_ONBOARDING_CONCEPTS` — a five-entry list **indexed by cursor**. The Mars briefing
+   card fired on the CISLUNAR act; Mars itself (cursor 5) read `undefined` and briefed nothing.
+4. `src/panels/onboarding.ts` — no `act3c` card existed at all. A whole act shipped unbriefed.
+5. `src/panels/howto.ts` — `HOWTO_CARDS` keyed by `cursor`, with Mars at 4. During the Moon act the
+   reference panel highlighted MARS as LIVE; on the real final beat NO card was live, and the
+   cislunar act had no card to read.
+6. `tools/scenes/frontier.mjs` — two `cursor === 4` reads. One of them **passed for the wrong
+   reason**: the broken seed stopped on act3c, which is also 4.
+
+**Why nothing caught it.** The two failing assertions live in `src/sim/net-replay.test.ts` — one of
+the exact two files `npm run test:fast` excludes. The SD-62 golden re-pin was independently
+verifiable through `canon-balance.test.ts`, which is NOT excluded, so a fast gate would have shown a
+correctly re-pinned golden while never running the cursor pins beside it. AGENTS §2 already required
+the full suite for an `src/sim/` change; the failure mode is that the cheap gate looks authoritative
+because the golden — the scary part — genuinely does get checked. Findings 3–5 were invisible to any
+gate: **neither card deck had a single test.**
+
+**Decision — index-keyed player copy gets pinned to the scenario, not to a literal.** The beat-order
+concept list moved out of `main.ts` into `onboarding.ts`, beside the cards it names, as the exported
+`ONBOARDING_CONCEPTS_IN_BEAT_ORDER`; `HOWTO_CARDS` is exported; and `src/panels/act-cards.test.ts`
+pins both decks against `M1_SCENARIO` index-for-index. The Mars debug seed now DERIVES act4's index
+(`M1_SCENARIO.findIndex`) instead of writing `4` down. The next inserted beat fails the build rather
+than quietly mis-briefing the player. Verified the pins fail without the fix: removing `act3c` from
+the list reproduces the exact bug as `expected undefined to be 'act4'`.
+
+The new copy is authored, not stubbed: act3c gets an onboarding card and a HOW IT WORKS card carrying
+SD-62's actual lesson — the farside is the first demand no Earth orbit can EVER reach, and the answer
+is a relay where neither endpoint sits. Both pass the R1 copy lint.
+
+**Finding 2 — `node_modules` was tracked, as an ABSOLUTE symlink into one machine's home directory.**
+Swept into `2bbb703` (a commit entirely about coverage geometry) and still on `origin/main`. Two
+consequences: the main checkout, where `node_modules` is a real directory, reported the path deleted
+forever — a permanently dirty `git status` — and a fresh clone on any other machine would land a
+dangling link where `npm install` wants to write.
+
+The root cause is a `.gitignore` pattern, and it is the second time it has bitten: **`node_modules/`
+with a trailing slash matches DIRECTORIES ONLY.** In a worktree `node_modules` is a SYMLINK — a file,
+as far as git is concerned — so it was never ignored, and one `git add -A` in a worktree committed it.
+The `.claude/worktrees` gitlink stubs untracked in `9492f79` were the same accident with the same
+cause. Both patterns are now slash-free, which matches the directory, the symlink and the gitlink
+alike.
+
+Untracking it removed something load-bearing: that committed symlink is what silently gave every new
+worktree its `node_modules`. The deliberate replacement is `npm run link-modules`
+(`tools/link-modules.mjs`) — idempotent, refuses to touch an install that exists, and writes a
+**relative** link, so unlike the committed one it survives the repo being moved. AGENTS §3 now names
+it as the first thing a new worktree does.
+
+**Finding 3 — the SD-62 golden was documented as a value that never shipped.** `docs/backlog.md` and
+this file both recorded `NET_REPLAY_GOLDEN` re-pinned `16791777382910013853n` → `5151969548480093925n`.
+The value on `main` is `13498174276749145205n`, and `5151969548480093925n` appears nowhere in the
+code, ever. The chain explains it: SD-56 pinned `16791777382910013853n`; SD-58's board-map longitudes
+re-pinned it to `10981192184426294200n`; the SD-62 worktree branched BEFORE SD-58, measured its own
+golden against the old one, wrote that number down, and then landed over SD-58's re-pin — which moved
+the fold again. The code was always self-consistent (both consumers read the one constant, and the
+hash test is green); only the two doc lines were stale. **Measuring a golden before the rebase that
+changes it produces a true number and a false record.** Corrected in both places, with the cause.
+
+**Consequences.** `main` was also 16 commits behind `origin/main` at the start of this pass and was
+fast-forwarded to `012ae8a` before anything else. No `src/sim/` behaviour changed here: the replay
+fixes are assertion updates to match SD-62's intended semantics, and `NET_CANON_GOLDEN` is untouched.
+The one shipped-behaviour change is the Mars debug seed reaching act4 again, which is a debug path.
+
+**THE PLAYTEST HALF — three defects, and a harness that could not have told you.** The full
+`npm run playtest` was RED at `012ae8a`: 13 failures over audio, hour and trace. Every one of them
+had been invisible for a reason worth writing down.
+
+**Finding 4 — a dev server inside a worktree served STALE CODE, and a stale playtest reports GREEN.**
+This one invalidates evidence, so it comes first. `vite.config.ts`'s `server.watch.ignored` (added
+today in `6b910e0`) listed `**/.claude/worktrees/**` — a SUFFIX glob. Every worktree lives at
+`<main>/.claude/worktrees/<name>`, so a dev server started inside a worktree matched its own root and
+ignored changes to its own source. Vite then served its cached transform indefinitely: edit a file,
+re-run the playtest, verify code that never loaded. SD-59's per-checkout ports (`85217a9`, also
+today) are what activated it — before that, worktrees drove :5173, the main checkout, which is not
+under `.claude/worktrees`, so watching worked. Caught here by accident: a fix that provably ran in a
+unit test kept failing in the playtest, and `curl`ing the dev server for the edited module showed the
+old text. The patterns are now anchored at `ROOT`, so they ignore only trees NESTED INSIDE this
+checkout and never the checkout itself. Verified by editing a file and watching the served bytes
+change, then revert. **Any worktree playtest or smoke run between `6b910e0` and this fix should be
+treated as unverified.**
+
+**Finding 5 — the cold open ate the gestures, and two assertions in `act1.mjs` could not fail.**
+SD-60's boot sequence mounts `.boot-seq` as a full-window overlay for ~3.8 s (four lines at 260 ms,
+a 2400 ms hold, a 320 ms fade) and dismisses on the FIRST `pointerdown`, CONSUMING it. Scenes settle
+2 s, so the overlay is still up. It never mattered for most of the harness because `ctx.click` uses
+DOM `.click()`, which tunnels straight through an overlay — but the act-1 ring drag is the scene's
+only real-mouse gesture, and it was spent skipping the intro. It never reached the orrery at all:
+measured `elementFromPoint` at the grab point returned `DIV.boot-seq`, not the canvas.
+
+It went unnoticed because the assertion was written
+
+    ctx.ok("ring drag RAISED the orbit", Number(altAfter) < Number(altBefore) === false, ...)
+
+and `<` binds tighter than `===`, so it asserted "altAfter is NOT LESS than altBefore" — TRUE when
+they are EQUAL. It had been passing while printing `534.7 → 534.7`: the embodied verb the whole pad
+is built around was doing nothing, and the test said fine. The same file's neighbouring assertion
+read `chip.includes || chip1.includes("serving NOW")`, whose left operand is an UNCALLED FUNCTION
+REFERENCE — permanently truthy. Two assertions in one scene that could not fail.
+
+The verb itself is sound: 534.7 → 659.9 km, verified by hand headful and headless. Fixed by adding
+`ctx.bootDone()` (wait for `.boot-seq` to go) and calling it in the two scenes that use real
+gestures; both assertions are now strict; and the scene additionally asserts that the grab point is
+the CANVAS rather than an overlay, because `__dragOrbitProbe` is pure projection maths with no idea
+what is on top of a pixel — it reported a 0.2 px "hit" straight through the intro. act1 is now
+20 ok · 0 failed.
+
+**Finding 6 — the audio scene never committed a launch, so three cues "never played."** All three
+audio failures were one cause. `ctx.realClick` clicks the element's box centre without scrolling, and
+at 1920×1080 the MISSION panel's scroll viewport is 562 px against 1043 px of pad content, so ARM and
+LAUNCH sit BELOW THE PANEL FOLD (y≈1118 in a 1080-tall window). The click landed on nothing, the
+launch was never committed, and `credit_committed` / `deploy_pop` / `gate_act` were correctly absent.
+`realClick` returned `false` and the scene ignored it. It now scrolls the target into view first —
+what a hand does — and returns `{ ok, reason }` that the scene asserts. audio went 5 ok · 3 failed →
+**11 ok · 0 failed**, and 86 s → 26 s (it had been waiting 20 s for a pipeline that never started).
+The audio engine was never broken. Worth noting as a UX read rather than a bug: the pad's commit row
+is below the fold at the commonest desktop height, and every other scene drives it with DOM clicks
+that ignore layout, so nothing in the harness could have told you.
+
+**Finding 7 — the scripted hour cannot clear act 2: its fill batch was stranded in a foreign orbit.**
+`hour.mjs` launched the act-2 fill as `{ altKm: 310, incDeg: 90, subLonDeg: 45, count: 4,
+spreadDeg: 90 }` — the PRE-SD-56 numbers. After the coverage re-scale the LEO family flies at 400 km
+with `ACT2_ZERO_GAP_N = 9`, and canon.ts derives every one of those values. Measured at the gate, the
+fleet was `{310: 4, 402: 7, 535: 1}`: the assist had flown a 402 km ring (nine asked for, seven
+surviving the seeded no-seps) while the fill put four birds at 310 km — a lower, faster orbit sharing
+neither plane nor period, so not ring members at all. REGION-1 held **90.6 %** against
+`ACT2_SLA_AVAIL = 0.99`, the act-2 gate never fired, and act3a, the corridor tender and the pad's
+"one bird" read all fell behind it. This is precisely the failure SD-56's own commit message
+describes ("every replacement landed in the wrong place and the ring read 87 % held forever") — the
+sim canon was re-choreographed for the re-scale and the PLAYTEST hour was not.
+
+Half-fixed here, deliberately. The fill altitude is now DERIVED from the ring actually flying, and a
+new standing assertion requires the act-2 fleet to be ONE ring plus the GEO park. That takes the
+fleet to `{402: 11, 535: 1}` and availability **90.6 % → 96.9 %**. It still misses the 99 % SLA,
+and the residual is PHASE, not altitude: the canon places its fill at
+`LEO_SWEEP.subLonRad + FILL_OFFSET_RAD − FILL_PHASE_COMP_RAD`, undoing BOTH the body's spin and the
+ring's own mean motion over the gap between launches, while the scene still aims at a fixed +45°.
+SD-56 is explicit that this arithmetic is "the sum no player should ever be asked to do in their
+head — the reason the pad has to SHOW the ring and let you drop a replacement into the gap." So the
+right finish is for the scene to drop the replacement into the hole the pad already computes
+(`pad-ring.ts:widestGap`), which is not exposed to a script today. Filed rather than guessed: what
+the intended player path is for closing a ring hole is a design call, not a mechanical one. See the
+backlog entry.
+
+**What was NOT fixed, and is stated plainly.** The playtest is still RED on the hour (the act-2 phase
+residual above) and on TRACE, whose 6 failures are downstream of the same act-2 gate never firing
+("0 flows", `widest=[]`) plus the run-to-run instability already filed at `docs/backlog.md` under
+"TRACE scene instability". Nothing here papers over either. The score moved 19 failures → the hour
+and trace remainders, with act1, audio and frontier taken to green.
+
+**The rule this argues for.** An APPEND to an ordered sim structure is not a safe operation just
+because every earlier index is unchanged — it is safe only for readers that never name the LAST
+index. Both card decks and one `while` loop named it. Where copy is keyed by position, the position
+has to be derived or pinned; a literal index in player-facing code is a latent mis-briefing.

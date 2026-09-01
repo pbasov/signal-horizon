@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "smoke": "node tools/smoke.mjs",
     "test:fast": "vitest run --exclude src/sim/net-replay.test.ts --exclude src/sim/m2/events.test.ts",
-    "playtest": "node tools/playtest.mjs"
+    "playtest": "node tools/playtest.mjs",
+    "link-modules": "node tools/link-modules.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.184.1",

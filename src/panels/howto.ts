@@ -12,7 +12,7 @@ import type { PanelHandle } from "../wm/shell";
 
 /** One authored explainer card (mirrors the onboarding cards + the objective "next move" line). */
 interface HowtoCard {
-  /** The act this card teaches (cursor index 0..4). */
+  /** The act this card teaches (a cursor index into M1_SCENARIO). */
   cursor: number;
   title: string;
   /** 1–3 short lines: name the system, then point the next action / where the control lives. */
@@ -21,8 +21,10 @@ interface HowtoCard {
   xref: string;
 }
 
-/** THE FIVE CONCEPT CARDS (reuses the onboarding + objective copy). Order = scenario cursor order. */
-const HOWTO_CARDS: HowtoCard[] = [
+/** THE SIX CONCEPT CARDS (reuses the onboarding + objective copy). Order = scenario cursor order —
+ * ONE card per M1_SCENARIO beat, since `render()` matches a card to the LIVE beat by cursor index.
+ * A missing beat leaves the final act with no LIVE card at all; `act-cards.test.ts` pins it (SD-64). */
+export const HOWTO_CARDS: HowtoCard[] = [
   {
     cursor: 0,
     title: "1 · SERVE A REGION — & THE BET",
@@ -61,7 +63,16 @@ const HOWTO_CARDS: HowtoCard[] = [
   },
   {
     cursor: 4,
-    title: "5 · DISTANCE — THE FRONTIER",
+    title: "5 · SOME PLACES CAN NEVER SEE YOU",
+    lines: [
+      "The Moon is tidally locked — one face toward Earth, forever — so the lunar farside is the first demand no Earth orbit can EVER reach. More satellites do not help, and neither does a better orbit.",
+      "The answer is a relay parked where NEITHER end sits: the Earth–Moon L2 halo, which holds the farside and Earth in view at once. Light costs about 1.3 s each way there — the frontier's first real bite.",
+    ],
+    xref: "the launch pad → the cislunar gateway · the orrery → the Earth–Moon pair",
+  },
+  {
+    cursor: 5,
+    title: "6 · DISTANCE — THE FRONTIER",
     lines: [
       "Mars is minutes away at light-speed — your real-time playbook breaks here, and the signal arrives old.",
       "A teaser: connectivity by relay presence, latency by the REAL light delay. To be continued.",

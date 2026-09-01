@@ -1,6 +1,12 @@
-# deps & build
-node_modules/
-dist/
+# deps & build.
+# NO TRAILING SLASH, deliberately: a trailing slash matches DIRECTORIES ONLY, and in a git
+# worktree `node_modules` is a SYMLINK to the main checkout's install — a file as far as git is
+# concerned. So `node_modules/` did not ignore it, a `git add -A` in a worktree committed the
+# symlink (an ABSOLUTE path into one machine's home dir), and main — where node_modules is a real
+# directory — then reported it deleted forever. Same accident as the `.claude/worktrees` gitlink
+# stubs. Slash-free patterns match the directory, the symlink and the gitlink alike. See SD-64.
+node_modules
+dist
 
 # logs & os cruft
 *.log
@@ -19,5 +25,6 @@ dist/
 # agent-eval run bundles (artifacts, not source)
 tools/agent-eval/runs/
 
-# other sessions' worktrees live here — never the parent repo's business
-.claude/worktrees/
+# other sessions' worktrees live here — never the parent repo's business (slash-free: these show up
+# as GITLINKS, which a directory-only pattern does not catch — they were committed once already)
+.claude/worktrees

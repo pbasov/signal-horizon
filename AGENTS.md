@@ -38,6 +38,13 @@ These rules are **mandatory** for every change to this codebase, whether by a hu
 - Visual regressions are bugs. Compare screenshots before and after when changing rendering, layout, or styling.
 - The app runs via `npm run dev` — on **this checkout's own port**: `5173` in the main checkout, and one owned port per worktree under `.claude/worktrees/` (`tools/workspace.mjs`). `tools/shoot.mjs`, `tools/smoke.mjs` and the playtest all default to it, so **pass no url** and you cannot shoot a neighbouring tree's app by accident. Ask for the number with `node -e 'import("./tools/workspace.mjs").then(m=>console.log(m.devPort()))'`.
 - `npm run playtest` starts a dev server for its own tree if none is up, and holds a **repo-wide lock** while it runs: a second playtest in any worktree waits rather than fighting it for the GPU. `SH_NO_LOCK=1` opts out; `BASE=<url>` points it somewhere else entirely. Run the scene your change can reach — `node tools/playtest.mjs <scene>` — and the whole set only when you changed the loop itself or are calling a milestone green.
+- **A NEW WORKTREE NEEDS `npm run link-modules` BEFORE ANYTHING ELSE.** Worktrees share the main
+  checkout's install through a relative `node_modules` symlink; that link used to be COMMITTED, so
+  it arrived by accident with the checkout. SD-64 untracked it (an absolute path into one machine's
+  home dir, and main reported the path deleted forever), so a fresh worktree now has no
+  `node_modules` until you run this. It is idempotent and never touches an install that exists.
+  Still `npx --no-install <tool>` always — a bare `npx` can self-symlink and destroy the shared
+  install for every tree at once.
 - For complex UI changes, write a Playwright test script, not just a one-off screenshot.
 
 ---

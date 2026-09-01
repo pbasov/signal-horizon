@@ -8,6 +8,10 @@ export default {
   async run(ctx) {
     await ctx.page.goto(ctx.base, { waitUntil: "networkidle", timeout: 30000 });
     await ctx.settle(2000);
+    // SD-64 — every gesture in this scene is a REAL click (the autoplay policy needs trusted
+    // events), and the cold open swallows the first real pointerdown for ~3.8 s. Wait it out, or
+    // the "first gesture" is spent on the intro and the launch pipeline never runs.
+    await ctx.bootDone();
 
     // First gesture (a REAL device-level click, trusted by the autoplay policy) unlocks.
     await ctx.page.mouse.click(960, 540);
@@ -17,7 +21,8 @@ export default {
 
     // UI click → key_click cue recorded.
     const beforeClicks = await ctx.eval(() => window.__audio?.()?.cuesPlayed ?? 0);
-    await ctx.realClick("[data-net=pad-toggle]");
+    const padHit = await ctx.realClick("[data-net=pad-toggle]");
+    ctx.ok("a HAND can reach the pad toggle", padHit.ok, padHit.reason);
     await ctx.settle(300);
     const p1 = await ctx.eval(() => window.__audio?.());
     ctx.ok("a button click plays a key_click", p1 && p1.cuesPlayed > beforeClicks && p1.lastKinds.includes("key_click"), p1?.lastKinds.join(","));
@@ -25,9 +30,17 @@ export default {
     // The launch pipeline: commit → liftoff → deploy_pop (the "money + first signal" ears).
     await ctx.setParam("subLonDeg", 0);
     await ctx.settle(120);
-    await ctx.realClick("[data-net=arm]");
+    // SD-64 — THE COMMIT CONTROLS MUST BE REACHABLE BY A HAND, not just by DOM `.click()`. At
+    // 1920×1080 the MISSION panel's scroll viewport is 562 px against 1043 px of pad content, so ARM
+    // and LAUNCH sit BELOW THE PANEL FOLD and a real click only lands after scrolling (which
+    // `ctx.realClick` now does, as a hand would). Every other scene drives the pad with DOM clicks,
+    // which ignore layout entirely — so nothing in the harness could tell you the commit row had
+    // gone under the fold. These assertions are the standing witness.
+    const armHit = await ctx.realClick("[data-net=arm]");
+    ctx.ok("a HAND can reach ARM", armHit.ok, armHit.reason);
     await ctx.settle(150);
-    await ctx.realClick("[data-net=launch]");
+    const launchHit = await ctx.realClick("[data-net=launch]");
+    ctx.ok("a HAND can reach LAUNCH", launchHit.ok, launchHit.reason);
     await ctx.settle(150);
     await ctx.wait(20000); // pipeline lands
     const p2 = await ctx.eval(() => window.__audio?.());

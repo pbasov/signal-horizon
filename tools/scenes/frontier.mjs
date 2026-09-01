@@ -14,7 +14,9 @@ export default {
     await ctx.settle(2500);
 
     const state = await ctx.eval(() => window.__netState?.());
-    ctx.ok("the debug seed reaches act 4", state?.cursor === 4, `cursor ${state?.cursor}`);
+    // act4 is cursor 5 since SD-62 appended act3c at index 4 (SD-64: this read still said 4, and
+    // passed for the WRONG reason — the broken seed stopped on act3c, which is also 4).
+    ctx.ok("the debug seed reaches act 4", state?.cursor === 5, `cursor ${state?.cursor}`);
     ctx.ok("the relay is up (Mars row + relay sat)", !!state && state.sats.length > 0, `${state?.sats.length} sats`);
 
     const bookTenders = await ctx.eval(() =>
@@ -31,12 +33,12 @@ export default {
     ctx.ok("the staleness readout is on the orrery", /ago|stale|fresh/i.test(marsReadout), marsReadout.slice(0, 140));
     await ctx.shot("act4-mars-view");
 
-    // The Mars LINK should be visible now (the UX gate: cursor 4 ⇒ live).
+    // The Mars LINK should be visible now (the UX gate: the act4 cursor ⇒ live).
     const linkVisible = await ctx.eval(() => {
       // Probe the nearest rendered state: the orrery exposes nothing textual for the line;
-      // assert through the world: cursor 4 AND a Mars contract present ⇒ the line is drawn.
+      // assert through the world: the act4 cursor AND a Mars contract present ⇒ the line is drawn.
       const s = window.__netState?.();
-      return s?.cursor === 4 && s.contracts.some((c) => c.id.startsWith("MARS"));
+      return s?.cursor === 5 && s.contracts.some((c) => c.id.startsWith("MARS"));
     });
     ctx.ok("the Earth↔Mars line is LIVE at act 4 (was dark all hour)", linkVisible === true);
 

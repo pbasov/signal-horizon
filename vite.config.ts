@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { devPort } from "./tools/workspace.mjs";
+import { devPort, ROOT } from "./tools/workspace.mjs";
 
 // Root is left implicit so it defaults to the cwd — i.e. this directory, since
 // `npm run {dev,build,preview}` always run from the package root. This keeps the
@@ -25,7 +25,20 @@ export default defineConfig({
       // second half mid-flight (the sim reset to boot, wallet back to €75,000) and would cost a human
       // playtester their session just as silently. Worktrees are not part of this app's module graph;
       // neither are harness artifacts.
-      ignored: ["**/.claude/worktrees/**", "**/tools/agent-eval/runs/**", "**/docs/screenshots/**"],
+      //
+      // THESE PATTERNS ARE ANCHORED AT *THIS* ROOT, AND THAT IS THE WHOLE POINT (SD-64). They used to
+      // be suffix globs (`**/.claude/worktrees/**`), and every worktree LIVES at
+      // `<main>/.claude/worktrees/<name>` — so a dev server started inside a worktree matched its own
+      // root and ignored changes to ITS OWN SOURCE. Vite then kept serving its cached transform: you
+      // edited a file, re-ran the playtest, and verified STALE CODE that reported GREEN. That is the
+      // exact failure SD-59 existed to prevent, arriving from the other direction and louder, because
+      // a stale playtest looks like a pass. Anchored at ROOT, these ignore only trees NESTED INSIDE
+      // this checkout (the main checkout's real case) and never the checkout itself.
+      ignored: [
+        ROOT + "/.claude/worktrees/**",
+        ROOT + "/tools/agent-eval/runs/**",
+        ROOT + "/docs/screenshots/**",
+      ],
     },
   },
   build: {

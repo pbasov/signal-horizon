@@ -26,8 +26,10 @@
  * lands on it immediately; `Escape` / a backdrop click / a click on the dismiss button all close it.
  */
 
-/** The five M1 core concepts, one card each — the stable concept id keys the shown-once set. */
-export type OnboardingConcept = "act1" | "act2" | "act3a" | "act3b" | "act4";
+/** The six M1 core concepts, one card each — the stable concept id keys the shown-once set.
+ * One entry per M1_SCENARIO beat, in beat order; `act-cards.test.ts` pins that correspondence, because
+ * main.ts indexes the concept list BY CURSOR and a missing entry silently mis-fires a card (SD-64). */
+export type OnboardingConcept = "act1" | "act2" | "act3a" | "act3b" | "act3c" | "act4";
 
 /** One authored briefing card: a title + 1–3 short lines (system, then the next action). */
 interface OnboardingCard {
@@ -40,7 +42,7 @@ interface OnboardingCard {
 }
 
 /**
- * THE FIVE CONCEPT CARDS (design onboarding — one ONE-concept card per act). The wording is short +
+ * THE SIX CONCEPT CARDS (design onboarding — one ONE-concept card per act). The wording is short +
  * concrete: the first line(s) name the SYSTEM, the last points the NEXT ACTION (the diegetic "here
  * is the next thing"). Machine / mission-control tone — the NETWORK is briefing the operator.
  */
@@ -80,6 +82,14 @@ const ONBOARDING_CARDS: Record<OnboardingConcept, OnboardingCard> = {
       "A telegraphed failure warns you before it dies.",
     ],
   },
+  act3c: {
+    id: "act3c",
+    title: "SOME PLACES CAN NEVER SEE YOU",
+    lines: [
+      "The Moon keeps one face toward Earth, so its farside never sees you — no orbit and no number of satellites can change that.",
+      "A relay parked out past the far limb, at Earth–Moon L2, holds both ends in view at once.",
+    ],
+  },
   act4: {
     id: "act4",
     title: "DISTANCE",
@@ -89,6 +99,23 @@ const ONBOARDING_CARDS: Record<OnboardingConcept, OnboardingCard> = {
     ],
   },
 };
+
+/**
+ * THE CONCEPTS IN M1_SCENARIO BEAT ORDER. main.ts indexes this BY CURSOR to fire the card for the
+ * beat the player just reached, so it must carry ONE entry per beat, in beat order. It used to live
+ * in main.ts as a bare literal, which is how SD-62's new act3c beat slipped past it: the list still
+ * had five entries, so act4's card fired on the LUNAR act and Mars (cursor 5) read `undefined` and
+ * showed nothing at all. It lives HERE now, beside the cards it names, and `act-cards.test.ts` pins
+ * it against M1_SCENARIO so the next inserted beat fails the build instead of mis-firing a card.
+ */
+export const ONBOARDING_CONCEPTS_IN_BEAT_ORDER: OnboardingConcept[] = [
+  "act1",
+  "act2",
+  "act3a",
+  "act3b",
+  "act3c",
+  "act4",
+];
 
 /**
  * The onboarding popup overlay (render/UI only). Mounts a backdrop + a single card into the host
