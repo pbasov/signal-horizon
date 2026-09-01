@@ -9,7 +9,12 @@ import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
 import {
   DEV_ACT_IDS,
   DEV_LAST_CURSOR,
+  DEV_SANDBOX_BANKROLL_EUR,
   cheatArmFences,
+  cheatSandbox,
+  describeBeats,
+  safeLaunchNeedsWork,
+  sandboxNeedsWork,
   cheatCircularizeAll,
   cheatClearBreach,
   cheatClearFaults,
@@ -290,6 +295,132 @@ describe("SD-70 cheat engine — contracts", () => {
     expect(s.cleanSinceS).toBe(999);
     // Served time + € earned are a real record — never touched.
     expect(s.contractById("REGION-0")!.state).toBe("active");
+  });
+});
+
+describe("SD-70 sandbox — the standing 'just let me look at it' mode", () => {
+  it("freezes offers, holds the breach window, and tops the wallet — but lets a term COMPLETE", () => {
+    const s = new NetSession();
+    s.addContract(offerNetContract("REGION-0", NET_ACT1_REGION, { offerWindowS: 1, offeredAtS: 0, payHalvingS: 10 }));
+    s.addContract(offerNetContract("REGION-9", NET_ACT1_REGION, { offerWindowS: 1, offeredAtS: 0 }));
+    s.acceptContract("REGION-9");
+
+    const snap = s.snapshot();
+    snap.balance = 12;
+    snap.contracts[1].breachSecondsAccum = 45;
+    const note = cheatSandbox(snap, 100);
+    s.restore(snap);
+
+    expect(note).toContain("wallet topped");
+    expect(note).toContain("1 offer(s) frozen");
+    expect(note).toContain("1 breach window(s) held");
+    expect(s.balance).toBe(DEV_SANDBOX_BANKROLL_EUR);
+    expect(s.contractById("REGION-0")!.offerExpiresAtS).toBe(Infinity);
+    expect(s.contractById("REGION-0")!.payHalvingS).toBe(Infinity);
+    expect(s.contractById("REGION-9")!.breachSecondsAccum).toBe(0);
+    // COMPLETION is a success, not a way to die — the sandbox leaves the term alone.
+    expect(s.contractById("REGION-9")!.termSeconds).toBeGreaterThan(0);
+  });
+
+  it("leaves the SIGN-ON clock ticking — an un-clocked bonus has no honest countdown to draw", () => {
+    // Regression: freezing signOnBonusUntilS to Infinity made the MISSION panel render the
+    // bonus line as "the window closes in Infinitym NaNs" (found by pressing the switch and
+    // reading the board). The offer clock and the pay decay are what "no expiry" means; the
+    // €2,000 bonus is not, least of all beside a cheat that mints millions.
+    const s = new NetSession();
+    s.addContract(
+      offerNetContract("REGION-0", NET_ACT1_REGION, {
+        offerWindowS: 60,
+        offeredAtS: 0,
+        signOnBonusEur: 2000,
+        signOnBonusUntilS: 900,
+      }),
+    );
+    for (const apply of [cheatFreezeOffers, (snap: ReturnType<NetSession["snapshot"]>) => cheatSandbox(snap, 0)]) {
+      const fresh = new NetSession();
+      fresh.addContract(
+        offerNetContract("REGION-0", NET_ACT1_REGION, {
+          offerWindowS: 60,
+          offeredAtS: 0,
+          signOnBonusEur: 2000,
+          signOnBonusUntilS: 900,
+        }),
+      );
+      const snap = fresh.snapshot();
+      apply(snap);
+      fresh.restore(snap);
+      const c = fresh.contractById("REGION-0")!;
+      expect(c.offerExpiresAtS).toBe(Infinity);
+      expect(c.payHalvingS).toBe(Infinity);
+      expect(Number.isFinite(c.signOnBonusUntilS)).toBe(true);
+    }
+  });
+
+  it("the offer really stops lapsing, run forward past its original window", () => {
+    const s = new NetSession();
+    s.addContract(offerNetContract("REGION-0", NET_ACT1_REGION, { offerWindowS: 1, offeredAtS: 0 }));
+    const snap = s.snapshot();
+    cheatSandbox(snap, 0);
+    s.restore(snap);
+    for (let tick = 1; tick <= 60 * 300; tick++) s.step(eph, tick * DT, DT);
+    expect(s.contractById("REGION-0")!.state).toBe("offered");
+  });
+
+  it("the cheap gate is what keeps the mode free: it says NO once everything is held", () => {
+    const s = new NetSession();
+    s.addContract(offerNetContract("REGION-0", NET_ACT1_REGION, { offerWindowS: 1, offeredAtS: 0 }));
+    // A finite offer clock, or a wallet under the floor, is work to do.
+    expect(sandboxNeedsWork(s.contracts, DEV_SANDBOX_BANKROLL_EUR)).toBe(true);
+    expect(sandboxNeedsWork([], 0)).toBe(true);
+
+    const snap = s.snapshot();
+    cheatSandbox(snap, 0);
+    s.restore(snap);
+    // Held: nothing to do, so the caller never takes a snapshot (and never wipes the
+    // router cache) on an ordinary frame.
+    expect(sandboxNeedsWork(s.contracts, s.balance)).toBe(false);
+  });
+
+  it("safeLaunchNeedsWork gates on a real in-flight failure, not on any launch at all", () => {
+    const s = new NetSession();
+    s.step(eph, 0, DT);
+    s.launchBatch([geoSat("NET-SAT-0")], 0, 0);
+    expect(safeLaunchNeedsWork(s.launchEvents)).toBe(false); // act1 forces clean outcomes.
+
+    const broken = s.snapshot();
+    broken.pendingLaunches[0].members[0].outcome = "no_sep";
+    s.restore(broken);
+    expect(safeLaunchNeedsWork(s.launchEvents)).toBe(true);
+  });
+});
+
+describe("SD-70 mission catalogue — derived from the beats, never hand-listed", () => {
+  it("names every authored demand and which beat emits it", () => {
+    const beats = describeBeats();
+    expect(beats.map((b) => b.actId)).toEqual(["act1", "act2", "act3a", "act3b", "act4"]);
+
+    const byAct = Object.fromEntries(beats.map((b) => [b.actId, b]));
+    expect(byAct.act1.contractIds).toEqual(["REGION-0"]);
+    expect(byAct.act2.contractIds).toEqual(["REGION-1"]);
+    expect(byAct.act3a.contractIds).toEqual(["REGION-2", "BACKHAUL-3"]);
+    expect(byAct.act3b.contractIds).toEqual([]); // faults, no demand.
+    expect(byAct.act4.contractIds).toEqual(["MARS-1"]);
+
+    // Labels come from the contracts themselves, so the browser reads like the board does.
+    expect(byAct.act1.labels[0].length).toBeGreaterThan(0);
+    expect(byAct.act3b.effects).toContain("faults");
+    expect(byAct.act3a.effects).toContain("escalation");
+  });
+
+  it("every authored contract is reachable from exactly one beat (no orphan, no duplicate)", () => {
+    const ids = describeBeats().flatMap((b) => b.contractIds);
+    expect(new Set(ids).size).toBe(ids.length);
+    // The full authored demand set the console's browser can put on the board.
+    expect(ids.sort()).toEqual(["BACKHAUL-3", "MARS-1", "REGION-0", "REGION-1", "REGION-2"]);
+  });
+
+  it("is pure: describing the beats twice gives the same answer and touches no shared state", () => {
+    expect(describeBeats()).toEqual(describeBeats());
   });
 });
 

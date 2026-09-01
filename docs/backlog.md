@@ -824,3 +824,26 @@ on the WIRE, and in the run's CHEATS FIRED counter.*
       explicit `?dev=1`; otherwise no host, no rail button, no key.
       · Verify: `vite preview` of the production bundle shows 7 rail buttons and no console;
       the same bundle with `?dev=1` shows 8 and mounts it.
+- [x] **DEV-07** SANDBOX MODE — the one switch — *M* · `|` (or the console's top button) unlocks every
+      act, puts every authored mission on the board, tops the wallet, and stops things expiring; a
+      standing MODE, so offers arriving later are frozen too and a signed mission can't breach out
+      while you look at it. Term COMPLETION is deliberately left alone.
+      · Verify: one keypress from a cold boot puts all five missions up at €10M; four sim-hours of
+      warp later, still `5 offered · 0 lapsed`.
+- [x] **DEV-08** The derived mission browser — *M* · `describeBeats()` runs each beat's own `emit` on
+      a throwaway session and diffs the board, so the console names what an act actually offers with
+      nothing hand-listed. `OFFER` fires that beat's emit at the current sim-time WITHOUT moving the
+      cursor — a mission inspected outside its act.
+      · Verify: on a fresh run at act1, OFFER on the 3a row lands *corridor metro + coastal backhaul*
+      with the cursor still reading `act1`. A test pins the authored set at five contracts, each
+      reachable from exactly one beat.
+- [x] **DEV-09** The standing-mode perf gate — *S* · every per-frame mode asks a free question of the
+      live session (`balance` / `contracts` / `launchEvents`) before touching `snapshot()`, because
+      `restore()` clears the router's solve cache and an unguarded write would force a full re-solve
+      every frame. Retired the original `∞ SOLVENT` per-frame write the same way.
+      · Verify: `__perf()` with the mode on vs off — sim p50 stays 0 ms, frame p50 1.1 → 1.2 ms.
+- [x] **DEV-10** *(bug, found by playing)* The MISSION panel rendered an un-clocked sign-on window as
+      "the window closes in Infinitym NaNs" — the `bonusLapsesInS` projection lacked the
+      `Number.isFinite` guard its sibling `expiresInS` line already had. Guard added; the cheats no
+      longer freeze the sign-on clock at all.
+      · Verify: sandbox on, no `NaN`/`Infinity` anywhere in the rendered page text.

@@ -115,6 +115,7 @@ import {
   NET_ACT3A_BACKHAUL_REGION,
   NET_ACT3A_LOW_LATENCY_S,
   NET_ACT3A_BACKHAUL_SLA_BW,
+  // Also SD-70: the console's mission browser fires a beat's OWN emit, never a hand-copied offer.
   M1_SCENARIO,
   // SD-70 — the dev console reads these to print WHY the current act's gate has not fired
   // (the hand-off cycle it must clear) and to re-offer a lapsed tender on the canon window.
@@ -222,6 +223,7 @@ import { DevConsole, type DevGateRow, type DevHooks, type DevViewState } from ".
 import {
   DEV_ACT_IDS,
   DEV_LAST_CURSOR,
+  DEV_SANDBOX_BANKROLL_EUR,
   cheatArmFences,
   cheatCircularizeAll,
   cheatClearBreach,
@@ -233,9 +235,13 @@ import {
   cheatReopenLapsed,
   cheatRewindCursor,
   cheatSafeLaunch,
+  cheatSandbox,
   cheatSetBalance,
+  describeBeats,
   devContractCounts,
   devFleetCounts,
+  safeLaunchNeedsWork,
+  sandboxNeedsWork,
 } from "./sim/net/devtools";
 import type { ContractReadout, ContractsRenderState, FrameState, NetEconomy } from "./types";
 
@@ -1086,8 +1092,13 @@ function netContractRows(t: number): NetContractRow[] {
       // the bonus still on the table, the decay tempo, and the shared breach grace.
       boardPayPerHr: decayedPayAtS(c, t) * 3600,
       bonusEur: c.state === "offered" && signOnBonusAtS(c, t) > 0 ? c.signOnBonusEur : null,
+      // The finiteness guard matches `expiresInS` above: an un-clocked window is a legal
+      // Contract state (Act 1's offer window was Infinity before FL-07 made windows
+      // universal), and without the guard the panel renders the countdown as "Infinitym NaNs".
       bonusLapsesInS:
-        c.state === "offered" && signOnBonusAtS(c, t) > 0 ? Math.max(0, c.signOnBonusUntilS - t) : null,
+        c.state === "offered" && signOnBonusAtS(c, t) > 0 && Number.isFinite(c.signOnBonusUntilS)
+          ? Math.max(0, c.signOnBonusUntilS - t)
+          : null,
       decayHalvingS:
         c.state === "offered" && Number.isFinite(c.payHalvingS) ? c.payHalvingS : null,
       graceS: BREACH_GRACE_SECONDS,
@@ -4623,6 +4634,10 @@ let devTurbo = 1;
 let devSolventLock = false;
 /** While on, every in-flight launch member is forced to a clean outcome before it deploys. */
 let devSafeLaunchLock = false;
+/** SANDBOX MODE — the one switch (key `|`). Standing, not one-shot: while on, each frame
+ * re-freezes any offer that has arrived since, holds the breach windows, and keeps the wallet
+ * off the floor, so a mission stays inspectable however long you look at it. */
+let devSandbox = false;
 /** How many cheats this run has fired (0 ⇒ the run is still clean + replayable). */
 let devCheatCount = 0;
 /** The last cheat's note (shown in the console + written to the WIRE). */
@@ -4705,19 +4720,108 @@ function devWarp(seconds: number): void {
   devNote(`warped +${(clock.seconds - t0).toFixed(0)} sim-s (${ticks} ticks) → t ${clock.seconds.toFixed(0)} s`, "WARP");
 }
 
-/** The per-frame turbo drain + the two standing locks. Called from {@link frame} while the
- * console is enabled; a no-op when nothing is armed, so the cost off-duty is one branch. */
-function devFrameTick(): void {
-  if (devSafeLaunchLock) {
+/**
+ * UNLOCK EVERYTHING — the one switch (`|`, or the console's top button). Turns SANDBOX MODE
+ * on: every act unlocked, every authored mission on the board, the wallet off the floor, and
+ * nothing expiring. Clicking again turns the mode off and hands the run back to its own rules
+ * (what the cheats already changed STAYS changed — this is a mode, not an undo).
+ *
+ * Unlocking the acts is what puts the missions up: walking the cursor to the last beat fires
+ * every beat's authored arrival on the way, which is exactly the set the mission browser
+ * lists. The standing holds then run each frame in {@link devFrameTick}.
+ */
+function devToggleSandbox(): void {
+  devSandbox = !devSandbox;
+  if (!devSandbox) {
+    devNote("SANDBOX OFF — the run gates, prices and expires normally again (nothing already cheated is undone)", "SANDBOX");
+    return;
+  }
+  // (1) UNLOCK THE ACTS — and with them every authored mission, since each beat's emit fires
+  //     as the cursor passes it. Silent per-step: the one SANDBOX line below is the record.
+  const from = netSession.cursor;
+  while (netSession.cursor < DEV_LAST_CURSOR) {
+    const target = netSession.cursor + 1;
     const snap = netSession.snapshot();
-    const note = cheatSafeLaunch(snap);
-    // Only pay the restore when there was actually something to fix, and stay silent on the
-    // WIRE — the lock is a standing policy, and one line per frame would drown the log.
-    if (note !== "nothing in flight to fix") netSession.restore(snap);
+    cheatArmFences(snap, target);
+    netSession.restore(snap);
+    netSession.advanceCursor(clock.tick);
+    netSession.step(eph, clock.seconds, DT);
+  }
+  // (2) Un-lapse anything that expired earlier in the run, then apply the standing holds once
+  //     immediately so the board is already frozen before the next frame.
+  const snap = netSession.snapshot();
+  cheatReopenLapsed(snap, clock.seconds, NET_OFFER_WINDOW_S);
+  cheatSandbox(snap, clock.seconds);
+  netSession.restore(snap);
+  const missions = netSession.contracts.length;
+  devNote(
+    `SANDBOX ON — acts ${DEV_ACT_IDS[from]}→${DEV_ACT_IDS[DEV_LAST_CURSOR]} unlocked · ${missions} mission(s) on the board · ` +
+      `wallet topped to €${DEV_SANDBOX_BANKROLL_EUR / 1e6}M · no lapse, no decay, no breach-out`,
+    "SANDBOX",
+  );
+}
+
+/**
+ * OFFER ONE MISSION — fire a single beat's authored `emit` at the current sim-time WITHOUT
+ * moving the scenario cursor, so a mission can be inspected outside the act that gates it.
+ * This calls the beat's OWN emit (never a hand-copied offer), so what lands is byte-for-byte
+ * the demand the act would have produced. Fences are armed first because `act3b.emit` throws
+ * without the act3a witness. Idempotent — the board de-dupes by contract id.
+ */
+function devOfferBeat(cursor: number): void {
+  const beat = M1_SCENARIO[cursor];
+  if (beat === undefined) return;
+  const snap = netSession.snapshot();
+  cheatArmFences(snap, cursor);
+  netSession.restore(snap);
+  const before = new Set(netSession.contracts.map((c) => c.id));
+  beat.emit(netSession, clock.seconds);
+  netSession.step(eph, clock.seconds, DT);
+  // Sandbox is a STANDING mode, so a mission offered while it is on must land frozen too —
+  // otherwise the newest tender is the one that lapses while you read it.
+  if (devSandbox) {
+    const held = netSession.snapshot();
+    cheatSandbox(held, clock.seconds);
+    netSession.restore(held);
+  }
+  const fresh = netSession.contracts.filter((c) => !before.has(c.id));
+  devNote(
+    fresh.length === 0
+      ? `${DEV_ACT_IDS[cursor]} re-emitted — its demand was already on the board (cursor unchanged at ${DEV_ACT_IDS[netSession.cursor]})`
+      : `${DEV_ACT_IDS[cursor]} demand offered outside its act: ${fresh.map((c) => c.label).join(" + ")} ` +
+        `(cursor unchanged at ${DEV_ACT_IDS[netSession.cursor]})`,
+    "MISSION",
+  );
+}
+
+/**
+ * The per-frame turbo drain + the standing modes. Called from {@link frame} while the console
+ * is enabled.
+ *
+ * THE CHEAP GATES MATTER. Writing session state means `snapshot()` (a deep copy of the roster
+ * and every contract) followed by `restore()` — and restore CLEARS the router's solve cache,
+ * so an unguarded per-frame write would force a full re-solve on every frame of the run. Each
+ * mode therefore asks a free question of the live session first (`balance`, `contracts`,
+ * `launchEvents` are all plain getters) and only reaches for the snapshot when the answer is
+ * yes. In the steady state that is never.
+ */
+function devFrameTick(): void {
+  if (devSafeLaunchLock && safeLaunchNeedsWork(netSession.launchEvents)) {
+    const snap = netSession.snapshot();
+    cheatSafeLaunch(snap);
+    netSession.restore(snap);
+  }
+  if (devSandbox && sandboxNeedsWork(netSession.contracts, netSession.balance)) {
+    const snap = netSession.snapshot();
+    cheatSandbox(snap, clock.seconds);
+    netSession.restore(snap);
   }
   if (devSolventLock && netSession.balance < NET_OPENING_BALANCE) {
     const snap = netSession.snapshot();
-    cheatSetBalance(snap, NET_OPENING_BALANCE);
+    // Top up TO the sandbox bankroll, not to the opening balance: opex drains the wallet every
+    // single tick, so "hold it at exactly X" would write (and wipe the router cache) every
+    // frame. A high top-up above a low floor makes the write happen approximately never.
+    cheatSetBalance(snap, DEV_SANDBOX_BANKROLL_EUR);
     netSession.restore(snap);
   }
   if (devTurbo <= 1 || clock.paused) return;
@@ -4768,6 +4872,8 @@ function devGateRows(): DevGateRow[] {
 }
 
 const devHooks: DevHooks = {
+  toggleSandbox: () => devToggleSandbox(),
+  offerBeat: (cursor) => devOfferBeat(cursor),
   skipAct: () => devSkipAct(),
   rewindAct: () => devJumpToAct(netSession.cursor - 1),
   jumpToAct: (cursor) => devJumpToAct(cursor),
@@ -4839,7 +4945,10 @@ const devHooks: DevHooks = {
   },
 };
 
-const devConsole = devEnabled ? new DevConsole(devHooks) : null;
+// The mission browser's rows are DERIVED once at boot by running each beat's own emit on a
+// throwaway session (describeBeats), so the console can never disagree with `scenario.ts`
+// about what an act puts on the board. Only computed when the console is actually enabled.
+const devConsole = devEnabled ? new DevConsole(devHooks, describeBeats()) : null;
 
 /** Assemble the console's per-frame read (only while it is actually on screen). */
 function devViewState(): DevViewState {
@@ -4871,6 +4980,8 @@ function devViewState(): DevViewState {
     lastCheat: devLastCheat,
     solventLock: devSolventLock,
     safeLaunchLock: devSafeLaunchLock,
+    sandbox: devSandbox,
+    onBoard: new Set(netSession.contracts.map((c) => c.id)),
   };
 }
 
@@ -5269,6 +5380,12 @@ window.addEventListener("keydown", (e) => {
     } else if (k === "N") {
       // X-04b — NEW RUN (shift-only: a run is hours of work, a bare `n` must never wipe it).
       vaultNewRun();
+    } else if (k === "|" && devConsole !== null) {
+      // SD-70 — THE ONE SWITCH (shift-\): unlock every act, put every authored mission on the
+      // board, top up the wallet, stop everything expiring. Deliberately global rather than a
+      // console-only button, so a cold boot reaches the sightseeing state in ONE keypress
+      // without first finding the panel.
+      devToggleSandbox();
     } else if (k === "\\" && devConsole !== null) {
       // SD-70 — `\` TOGGLES THE DEV CONSOLE: summon it into the focused tile if it is off
       // screen, else hand the focused tile back to the MISSION pad. Dev builds only; in a
