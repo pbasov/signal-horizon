@@ -24,6 +24,7 @@ import { DemandField } from "../sim/coverage/demand";
 import { scoreCoverageAt } from "../sim/coverage/score";
 import { CoverageOverlay } from "./coverage-overlay";
 import { COASTLINES } from "./coastlines";
+import { aimAnglesForRelDir, unwrapAz } from "./aim";
 import { type CoverageDimension, DIMENSION_CYCLE, dimensionLabel } from "./heatmap-color";
 import { orbitRenderRadius, type OrbitRenderScale } from "./orbit-render-scale";
 import { pickNearest, type PickCandidate } from "./pick";
@@ -225,7 +226,29 @@ export interface NetRenderState {
     served: boolean;
     /** R2 (SD-45): signed-and-dark ⇒ the queue ring pulses (bleeding, not just dim). */
     active?: boolean;
+    /** The tender's human label ("corridor metro") — painted beside the disc. */
+    label?: string;
   } | null;
+  /**
+   * EVERY OTHER live demand region (offered or active) besides {@link NetRenderState.region}.
+   *
+   * The board can carry four tenders by act 3a — the corridor metro and the coastal backhaul
+   * arrive while the teaching cursor still points at REGION-0/REGION-1 — and until this list
+   * existed the globe drew exactly ONE disc, so those two regions were signed, billed and
+   * breached without ever appearing on the ball you were supposed to be covering. Same disc
+   * geometry as the primary (an oriented surface patch, lit when served, dim when not), one
+   * label each, and no queue ring: the ring is the SELECTED region's alarm, not the board's.
+   */
+  otherRegions: {
+    id: string;
+    /** The tender's human label — painted beside the disc so a region has a NAME on the ball. */
+    label: string;
+    centerPosM: Vec3;
+    radiusRad: number;
+    served: boolean;
+    /** SIGNED (active) vs merely OFFERED — an offered region reads as an outline, not a hole. */
+    active: boolean;
+  }[];
   /**
    * Act-2 — the HAND-OFF render (design §6, the make-or-break "footprint snaps over the
    * region" beat generalized to a constellation). ONE disc per covering sat: with a single
@@ -509,6 +532,11 @@ const PICK_TOLERANCE_PX = 26;
  * is a small set (the measured zero-gap N=4, plus headroom for over-build); only the on-screen
  * discs are capped, the served verdict itself is unbounded. */
 const MAX_NET_FOOTPRINTS = 12;
+
+/** Max SECONDARY demand discs drawn at once (the live board minus the selected region). The
+ * authored board never exceeds a handful of simultaneous tenders; the cap is the X-02 no-
+ * unbounded-pool discipline, not a design limit. */
+const MAX_NET_OTHER_REGIONS = 8;
 /** P1 (GDD §5) — the LIVE-NETWORK link buffer caps: at most this many active served contracts'
  * paths are drawn at once, each with up to this many hops (region→sat→ground = 2 hops in Act 1;
  * headroom for the multi-hop relay graph of Acts 2–3). The pooled LineSegments holds
@@ -900,6 +928,14 @@ export class Orrery {
    * cover→paid beat, generalized to a hand-off: several discs sweep so one slides on as
    * another slides off). Built once + hidden; updateNetOverlay shows/positions the in-use set. */
   private netFootprintMeshes: THREE.Mesh[] = [];
+  /** The SECONDARY demand discs — one per other live region on the board (see
+   * {@link NetRenderState.otherRegions}). Built once, hidden, re-oriented per frame. */
+  private netOtherRegionMeshes: THREE.Mesh[] = [];
+  /** The region the camera is FOLLOWING (a mission clicked on the board), or null. Held —
+   * not a one-shot snap — because the toy globe turns a full revolution every 240 sim-seconds,
+   * so a snap would slide the region off the pane within a few real seconds of watching it.
+   * Any camera drag drops it (the player's hands always win). */
+  private netFollowRegionId: string | null = null;
   private netFocusBlob?: THREE.Mesh;
   private netMemberBlobs: THREE.Mesh[] = [];
 
@@ -1206,6 +1242,19 @@ export class Orrery {
       // 6.2 .. draft 7.0), below the markers (10+).
       m.renderOrder = 6.5 + i * 0.02;
       this.netFootprintMeshes.push(m);
+      this.scene.add(m);
+    }
+    // THE REST OF THE BOARD: one surface disc per OTHER live demand region, so a tender that
+    // is signed and billing is a place on the ball and not just a row in a panel. Seeded amber
+    // like the primary (the shader tint is rewritten per frame from the served verdict), and
+    // parked just UNDER the primary's 6.2 so the selected region always paints on top.
+    for (let i = 0; i < MAX_NET_OTHER_REGIONS; i++) {
+      const m = this.buildSurfaceDisc([0.95, 0.6, 0.2]);
+      m.visible = false;
+      // Distinct per-slot order (6.10, 6.11, …) for the same no-z-tiebreaker reason the
+      // footprint pool steps: two regions 9° apart overlap at the hero framing.
+      m.renderOrder = 6.1 + i * 0.01;
+      this.netOtherRegionMeshes.push(m);
       this.scene.add(m);
     }
     // Act-2 — the availability SAWTOOTH meter (design §4.4 / §6): a small bar+trace pinned over
@@ -1761,7 +1810,12 @@ export class Orrery {
     const ns = this.netState;
     if (ns === null) {
       region.visible = false;
+      this.labelFor("region:primary").style.display = "none";
       for (const m of this.netFootprintMeshes) m.visible = false;
+      for (let i = 0; i < this.netOtherRegionMeshes.length; i++) {
+        this.netOtherRegionMeshes[i].visible = false;
+        this.labelFor(`region:${i}`).style.display = "none";
+      }
       for (let i = 0; i < this.netSiteMarkers.length; i++) {
         this.netSiteMarkers[i].visible = false;
         this.labelFor(`site:${i}`).style.display = "none";
@@ -1809,10 +1863,59 @@ export class Orrery {
           ring.visible = false;
         }
       }
+      // `active` is the slice's own SIGNED flag, never a hardcoded true: a TARGETED but still
+      // OFFERED tender becomes the primary region, and claiming it was signed painted the
+      // "signed and dark" glyph over a tender nobody had committed to yet.
+      this.paintRegionLabel(
+        "region:primary",
+        region,
+        ns.region.label ?? ns.region.id,
+        lit,
+        ns.region.active === true,
+      );
     } else {
       region.visible = false;
+      this.labelFor("region:primary").style.display = "none";
       if (this.netQueueRing) this.netQueueRing.visible = false;
     }
+
+    // THE REST OF THE BOARD (the corridor metro / coastal backhaul fix): every OTHER live
+    // demand gets the same honest disc — lit when the router says it is carrying, dim when it
+    // is dark — plus its name. A signed tender you cannot find on the ball is a bill with no
+    // place attached; this is the whole standing market, drawn where it actually is.
+    let rslot = 0;
+    if (body !== null) {
+      for (const r of ns.otherRegions ?? []) {
+        if (rslot >= this.netOtherRegionMeshes.length) break;
+        const mesh = this.netOtherRegionMeshes[rslot];
+        const mat = mesh.material as THREE.ShaderMaterial;
+        mat.uniforms.uColor.value.copy(r.served ? this._netLit : this._netDim);
+        // A SIGNED region carries the board's weight, so it paints at the primary's strength;
+        // an OFFERED one sits back as a faint ghost — the alpha IS the "you have not signed
+        // this yet" channel, redundant with the label's ° marker below (§8 CVD).
+        mat.uniforms.uAlpha.value = r.active ? (r.served ? 0.8 : 0.6) : 0.32;
+        this.orientSurfaceDisc(
+          mesh,
+          r.centerPosM,
+          body.centerPosM,
+          bodySceneR,
+          r.radiusRad,
+          focusAbs,
+          // A hair under the primary's lift so a co-located pair never z-fights.
+          0.9,
+        );
+        mesh.visible = true;
+        this.paintRegionLabel(`region:${rslot}`, mesh, r.label, r.served, r.active);
+        rslot++;
+      }
+    }
+    for (let i = rslot; i < this.netOtherRegionMeshes.length; i++) {
+      this.netOtherRegionMeshes[i].visible = false;
+      this.labelFor(`region:${i}`).style.display = "none";
+    }
+
+    // THE FOLLOW: hold the clicked mission's region facing the camera as the globe turns.
+    this.applyRegionFollow(ns, body);
 
     // R2e (SD-45) — the ground stations + the launch pad, visible + labeled ("you can't
     // see GROUND-0 properly"). Billboards sized to read at any framing; labels ride the
@@ -3495,6 +3598,70 @@ export class Orrery {
     this.camera.updateMatrixWorld();
   }
 
+  /**
+   * Paint a demand region's NAME beside its disc — the thing that turns "an amber blob at 6° W"
+   * into "coastal backhaul". Projected from the disc's own world matrix (the surface discs carry
+   * their placement in `matrix`, not `position` — matrixAutoUpdate is off), hidden when the point
+   * falls behind the camera, and coloured by the SERVED verdict with a redundant glyph so the
+   * carrying/dark/unsigned distinction survives colour-off (§8 CVD):
+   *   ▣ carrying   ▨ signed and dark   ▢ offered, unsigned
+   */
+  private paintRegionLabel(
+    key: string,
+    mesh: THREE.Mesh,
+    label: string,
+    served: boolean,
+    active: boolean,
+  ): void {
+    const el = this.labelFor(key);
+    this.tmpV.setFromMatrixPosition(mesh.matrix).project(this.camera);
+    if (this.tmpV.z > 1 || this.tmpV.z < -1) {
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "block";
+    el.style.left = `${(this.tmpV.x * 0.5 + 0.5) * this.w + 10}px`;
+    el.style.top = `${(-this.tmpV.y * 0.5 + 0.5) * this.h}px`;
+    el.style.color = !active ? "var(--fg-dim)" : served ? "#8dffc6" : "#f2993a";
+    el.textContent = `${!active ? "▢" : served ? "▣" : "▨"} ${label}`;
+  }
+
+  /**
+   * FOLLOW THE CLICKED MISSION. When the board hands the camera a region id, hold that region's
+   * surface point facing the lens: re-derive the (az, el) that frames it every frame and write it
+   * into the TARGET frame, so the existing exponential lerp glides there and then tracks the
+   * globe's own rotation instead of letting the region walk off the pane.
+   *
+   * Render-only, and yielded instantly: {@link Orrery.followRegion}(null) — which any camera drag
+   * calls — hands the frame back to the player mid-glide.
+   */
+  private applyRegionFollow(ns: NetRenderState, body: NetRenderState["body"]): void {
+    const id = this.netFollowRegionId;
+    if (id === null || body === null) return;
+    const hit =
+      ns.region !== null && ns.region.id === id
+        ? ns.region
+        : (ns.otherRegions ?? []).find((r) => r.id === id) ?? null;
+    if (hit === undefined || hit === null) return;
+    const a = aimAnglesForRelDir([
+      hit.centerPosM[0] - body.centerPosM[0],
+      hit.centerPosM[1] - body.centerPosM[1],
+      hit.centerPosM[2] - body.centerPosM[2],
+    ]);
+    if (a === null) return;
+    this.tgt.az = unwrapAz(this.cur.az, a.azRad);
+    this.tgt.el = a.elRad;
+  }
+
+  /**
+   * Point the camera at one demand region and KEEP it there (null = stop following). The id is a
+   * contract/region id from the live net slice; an id the slice does not carry is simply never
+   * matched, so a stale follow is inert rather than an error.
+   */
+  followRegion(id: string | null): void {
+    this.netFollowRegionId = id;
+  }
+
   private labelFor(id: string): HTMLElement {
     let el = this.labels.get(id);
     if (!el) {
@@ -3866,6 +4033,8 @@ export class Orrery {
       const dy = e.clientY - this.lastPtr.y;
       this.lastPtr = { x: e.clientX, y: e.clientY };
       this.dragTravelPx += Math.abs(dx) + Math.abs(dy);
+      // The player's hands win: dragging the camera drops any region follow mid-glide.
+      this.netFollowRegionId = null;
       this.tgt.az -= dx * 0.006;
       this.tgt.el = Math.max(-88 * DEG, Math.min(88 * DEG, this.tgt.el + dy * 0.006));
     });

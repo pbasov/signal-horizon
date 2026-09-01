@@ -1244,6 +1244,288 @@ regression gets hidden. Filed in the backlog.
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
+---
+
+### SD-58 — THE BOARD IS A MAP (2026-09-01)
+
+Reported: *"in M2 missions coastal backhaul in corridor metro are never shown in the orrery? I also
+want to be able to click on a mission and focus on the area it asks to cover + arm it in the Pad
+coverage analysis."*
+
+#### 1. One region drawn, four regions owed
+
+`NetRenderState.region` was singular — the teaching cursor's contract, `REGION-1` if live else
+`REGION-0`. Everything else on the board got a served-path beam if it happened to be carrying and
+nothing at all otherwise. So from act 3a onward the corridor metro and the coastal backhaul were
+signed, billed and breached while being, on the globe, nowhere.
+
+`otherRegions` carries the rest of the standing market (offered + active, filtered to the body being
+drawn, so the Mars tender is not painted onto Earth), rendered from a pooled set of surface discs at
+render orders below the primary's, each labelled. The label's glyph is the redundant colour-off
+channel: **▣ carrying · ▨ signed and dark · ▢ offered**. A region now has a name on the ball.
+
+#### 2. Clicking a tender is the gesture that connects the three surfaces
+
+One click TARGETS a tender and commits nothing:
+
+- the camera swings onto its region and **holds** it (`Orrery.followRegion` + `src/orrery/aim.ts`) —
+  a one-shot snap would slide off within seconds, because the toy globe turns once every 240 s. Any
+  camera drag drops the follow: the player's hands always win.
+- it becomes the globe's **primary** region, so the draft's coverage-gap overlay measures the thing
+  you are looking at.
+- the pad's **coverage analysis** — comb, compare table, FIT assist — designs against it.
+
+That last one had three separate inline copies of "the first offered Earth demand, else the first
+active one", which is how the pad ended up analysing REGION-0 while the player read the corridor
+metro's terms. They collapse into one `r1TargetContract()`.
+
+The selection is render-only — never folded, never logged. The globe's default stays the teaching
+cursor (not the pad's fallback) so an unclicked act 2 keeps drawing REGION-1's hand-off sawtooth,
+which is that act's entire lesson.
+
+#### 3. Three tenders, one dot — measured, then moved
+
+Asked immediately: *"are we serving the same place with 3 different missions? that's kinda dumb
+no?"* Correct, and worse than it looked. Every region disc had a **10° angular radius**; the
+equatorial centres were 0°, 3°E and 6°W. Three discs whose centres all fell inside one another —
+one 26°-wide smear carrying three separately-priced contracts with three different SLAs.
+
+The tight spacing bought nothing. Both mechanics need **co-visibility from one satellite**, not
+co-location, and the measured bands are an order of magnitude wider (probed against the real
+router/link budget, not estimated):
+
+| requirement | measured band | was |
+| --- | --- | --- |
+| corridor metro's 3 ms latency SLA on the equatorial ACCESS ring | 2.68 ms at 0° sep, still **2.99 ms at 50°** | pinned at 3°E |
+| coastal backhaul inside the parked GEO's broadcast pipe | GEO bridges **100% of the day out to 40°W**, 0% at 45°W | pinned at 6°W |
+
+**Decision (user): spread them out.** Corridor → **20°E**, backhaul → **35°W** (5° of margin before
+the reach cliff), disc radius **10° → 6°** so the nearest pair clears with 8° of open ocean between
+their rims. A test now guards the property directly: any two equatorial region rims must clear.
+
+The radius is **sim-inert** — the router bridges the region CENTRE, never samples the disc — and that
+was verified rather than assumed: 6° with the original longitudes reproduces the old hash bit-for-bit.
+The hash moves on the two longitudes alone.
+
+#### 4. The act-4 canon beats follow the act-3b gate
+
+The re-placement slid the act-3b gate by **one tick** (58104 → 58105). The canon's Mars beats were
+hardcoded literals, so the relay then launched one tick BEFORE act 4 emitted — into a beat that did
+not exist — which pushed the gate out a further 2,060 ticks, stranded `MARS-1` unaccepted and cost
+the arc €650. Retimed +1 tick, preserving the canon's real invariant: **relay at the gate tick,
+accept +1200, breadcrumb +2400**. That invariant is now written down where the literals live.
+
+#### 5. "ENDS SOLVENT and CLIMBING" was measuring sawtooth phase, not amortization
+
+The economy pin compared the wallet at t=1090 against t=1008 and t=988. But the act-3a corridor is
+*deliberately* squeezed, so the post-relay wallet sawtooths — ~200 s period, a few thousand euro of
+swing — **identically under the old and the new geometry** (verified by extending both runs to
+t=1400). The old pin passed only because t=1090 happened to sit on a rising edge; moving the
+corridor flipped it to a falling edge and failed an assertion nothing had regressed in.
+
+Replaced with a window that spans the sawtooth: after the last big commit the wallet holds well
+above the low-water mark that commit left, and ends above it. **Both bounds hold under the old
+geometry too** (mean−trough 828, final−trough 888), so this is a stricter reading of the same
+property, not a relaxed one — and the arc is richer at every comparable instant after the move
+(trough €3,488 → €4,100, mean €4,316 → €5,018, final €4,376 → €4,858).
+
+ONE golden re-pin → `10981192184426294200n`.
+
+#### 6. The debug screenshot seed now shows the whole board
+
+`?netact=3` seeded two regions, which could not demonstrate the bug it needed to demonstrate. It now
+also puts the corridor metro and coastal backhaul on the board, OFFERED — unsigned, because signing
+a latency SLA with no beam pointed at it would seed a fake breach. Same discipline as the rest of
+that function: a render seed on the live session, never a sim/action/replay path, so the goldens stay
+provably untouched.
+
+## CI is manual-only for the duration of the redesign (2026-09-01)
+
+`.github/workflows/ci.yml` no longer runs on `push` or `pull_request` — its only trigger is
+`workflow_dispatch`. The gates themselves (Vitest → `tsc --noEmit` → `vite build` → dev-server boot
+smoke → orrery screenshot) are unchanged and still the authority on "green"; they just have to be
+asked for now, via the Actions tab or `gh workflow run ci.yml`. Reason: during the from-scratch
+redesign every commit to main tripped a full 20-minute run, and the notification volume drowned out
+the signal. The push/pull_request block is kept commented in place directly above, so restoring
+automatic runs is uncommenting four lines — do that once the redesign settles and main is a branch
+worth gating again. Local `npm test` / `tools/smoke.mjs` remain the pre-commit check in the meantime.
+
+
+---
+
+### SD-59 — CONCURRENT WORKTREES STOP COLLIDING: a port per checkout, a lock per playtest (X-08, 2026-09-01)
+
+**Status:** ACCEPTED.
+
+**Context.** This repo is worked on by several agents at once, each in its own git worktree under
+`.claude/worktrees/` — ten of them on the day this was written. Every worktree is a complete
+checkout with its own `vite.config.ts`, and every one of them asked for **the same port**, `:5173`.
+
+Three things went wrong from that, in rising order of nastiness:
+
+1. **A dev server that would not start.** `strictPort: true` means the second tree to run
+   `npm run dev` fails outright. Loud, and the least of it.
+2. **A playtest that tested the wrong code.** `tools/playtest.mjs`, `tools/smoke.mjs`,
+   `tools/shoot.mjs` and every probe defaulted to a *literal* `http://localhost:5173`. Run from a
+   worktree while the main checkout served that port, they drove **someone else's app** and reported
+   GREEN — for code they had never loaded. This is the defect that matters: the harness lies, and it
+   lies in the passing direction.
+3. **Two playtests at once.** Chromium, the GPU and the wall clock are machine-wide. Two concurrent
+   playtests measure their contention with each other, not the game.
+
+SD-55/AE-06 had already met the same wall inside the agent-eval harness — a concurrent session's
+worktree made vite force-reload the shared server and re-booted the app mid-run — and solved it
+*locally* by giving each run its own port. That fix was right and too narrow: the rule "nothing may
+share a dev server" is not one harness's business.
+
+**Decision.** A port belongs to a **checkout**, not to the repo.
+
+- `tools/workspace.mjs` answers `devPort()`. The main checkout keeps `5173` — muscle memory and
+  AGENTS.md stay true. Each worktree is allocated its own port from `5174–5372`, recorded in a
+  registry inside the **main repo's `.git`**: the one directory every worktree shares, outside all of
+  them, so it can never be committed (the four accidental `.claude/worktrees` gitlink stubs of
+  2026-07-16 are a standing reminder of what "inside a tree" costs). Allocation reuses the gap a
+  deleted worktree left, so the range cannot drain away.
+- `vite.config.ts` asks for `devPort()`, and **keeps `strictPort`**. If the port is taken the right
+  answer is a loud failure, never a quiet slide onto a neighbour's number.
+- Every tool defaults to `devBase()` instead of a literal. Passing no url is now the *safe* option
+  rather than the dangerous one.
+- `tools/playtest.mjs` ensures a server for its own tree — reusing this tree's if it is up, else
+  starting and owning one — so it can no longer test a neighbour's code at all.
+- `tools/lock.mjs` is a repo-wide advisory mutex, held for the length of a playtest. Acquisition is
+  an atomic `O_EXCL` create: the filesystem arbitrates, not us. A holder that died is reaped (dead
+  pid, or older than a 45-minute stale window), so a crashed run never wedges the repo; a process
+  reaped as stale can never delete the lock its successor now owns, because release checks the token
+  first. `SH_NO_LOCK=1` opts out for anyone who knows they are alone.
+
+**Rationale for a lock rather than more parallelism.** Serialising playtests costs wall-clock and
+buys correctness: a lock is one number's worth of code, and the alternative (per-run GPU/display
+isolation) is a much larger machine to maintain for a benefit nobody asked for. The second runner
+waits and *says who it is waiting for*, which is the part that makes a queue tolerable.
+
+**What is deliberately NOT locked.** `agent-eval` runs. They already serve their own port
+(SD-55/AE-06, now `tools/serve.mjs`), they are long, and the harness explicitly supports running
+several at once — putting them behind the playtest lock would have taken away a capability to solve
+a problem they do not have.
+
+**Verified, not asserted.** With another tree holding `:5173`, this worktree's `npm run dev` came up
+on `:5174`; `npm run smoke` with no argument found it; `npm run playtest` with no server running
+started and tore down its own. Two playtests fired at the same instant serialised — the second sat
+blocked ~9 s, then ran its own 8.5 s, both GREEN. 17 new unit tests pin the lock's exclusion, its
+reaping of dead/stale/corrupt holders, the never-delete-a-successor's-lock rule and the port
+allocator. Full suite 977/977 green, `tsc --noEmit` clean, `npm run build` green.
+
+**Consequences.** `AGENTS.md` §3 no longer names a port; it names a *rule* (pass no url). `tools/`
+gains `workspace.mjs`, `lock.mjs` and `serve.mjs`; `tools/agent-eval/serve.mjs` becomes a re-export
+so its importers are untouched. `vite.config.ts` gained a `.mjs` import, which `npm run build`
+typechecks — hence `tools/workspace.d.mts`, the seam where the plain-ESM harness meets the typed
+side. **The fix only protects a tree that has this commit:** the nine worktrees that predate it
+still ask for `:5173` until they rebase.
+
+---
+
+
+---
+
+### SD-60 — THE SETTING AND THE BEATS: a story foundation, ruled, written, and (in part) built (2026-09-01)
+
+**Status: docs PROPOSED; the first three slices BUILT on `story-into-game`.**
+
+**BUILT (2026-09-01), verified by playing:**
+
+1. **The cast.** Contracts carry a folded `clientId`; the copy lives in `panels/clients.ts` and
+   is looked up at render, so the sim stays headless and every word stays under copy-lint. All
+   five authored tenders are cast BY ENFORCED AXIS — Halden Marine on Act 1's connectivity-only
+   opener, Thule Polar on Act 2's 62°N availability wall, Verity Wire on Act 3a's latency
+   corridor, Sable Line on the bulk backhaul that shares the pipe, Tharsis Survey on Act 4's
+   Mars teaser. Renewals inherit the client. Persist spreads the contract, so no golden re-pin.
+2. **The Registry.** B1 FIRST LIGHT (`LICENCE 4471-C ACTIVE. FIRST SERVICE RECORDED.`) on the
+   first service ever recorded, and B4 on the first contract to reach "failed" — both
+   licence-level, once per game, render-only edges in `drainMissionWire`. No new folded state.
+3. **The premise, in the cold open** — see the AS BUILT note in `signal-horizon-beats.md` §3.
+   The 84-word block had nowhere to live, so it compressed to two sentences, preceded by the
+   Registry issuing the licence. The intro is skippable three ways (any input with a visible
+   affordance, a persisted "never show this again", and `?intro=0`).
+
+The act1 playtest scene now pins B1 and the tender reason line, so the story layer is covered
+by the thing that actually plays the game. 958 tests green; smoke clean; 17/17 playtest.
+
+**Two defects found while building, both fixed here:**
+- `storePrefs` had **two call sites that rebuilt the prefs literal** instead of spreading the
+  stored one, so any pref they did not know about was silently wiped on a mono or mute toggle.
+  `skipIntro` was the first casualty; tsc caught it the moment the field was added. Both now
+  spread, and a test pins it.
+- A red playtest assertion for B1 turned out to be a **stale vite dev server**, not a defect:
+  its file watcher had silently stopped picking up edits, so it served pre-edit transforms of
+  `copy.ts` and `main.ts`. A red assertion against a stale server is indistinguishable from a
+  real bug — check what the server is actually serving (`curl` the module) before believing it.
+
+**STILL DOC-ONLY:** everything past Act 4 — Eras 2–4 (cislunar, Mars, Custody/0001-U) and the
+whole unlicensed P-thread, whose cheap tier needs an unlicensed-hop route option and an
+attestation-valid flag, and whose P1/P6 need an interference term GDD §3b defers past 1.0.
+
+---
+
+**The docs as proposed:** Two new docs, `signal-horizon-setting.md` (v0.4) and
+`signal-horizon-beats.md` (v0.2). The GDD is untouched; its version discipline bars new systems
+until the M1 gate runs, and nothing here asks it to change.
+
+**The load-bearing rule, in both docs:** the story never justifies a mechanic — physics does.
+Delete both files and every rule in the M1 family still stands on light-delay, link budgets, and
+geometry. A beat is a *label on pressure the simulation already produced*, never its source.
+
+**The premise.** Compute left Earth before people did — watts, cooling, and consent ran out before
+demand did. Load leaving pulled mass after it, making the Moon a supplier yard rather than a
+colony, and Mars the first place off Earth that cannot ask a question and get an answer in time.
+The agencies' one-dish-on-a-schedule model died on contact with forty operators, so the network was
+unbundled into licences, tenders, and penalties. The player holds one licence: a utility, not an
+explorer.
+
+**Why information is precious, in three legs that are each already a mechanic:** presence is
+impossible, so latency *is* presence; every off-Earth contract settles on a timestamped
+observation, so the market buys a reduction in staleness rather than bandwidth; sensors and power
+sit light-minutes apart, so compute placement is a routing decision.
+
+**Four rulings (user, 2026-09-01).** Earth is prosperous but capped, not collapsing. The player is
+a startup holding one licence, matching M1's thin wallet and PROBATION. People are customers and
+never characters. The player names the company at new-game, with a randomise button.
+
+**Ruling 3 grew a section (§4a): population follows the pipe.** A place you cannot reach reliably
+cannot hold people, so reach is the precondition for settlement rather than a reward for it. Human
+presence thickens where service hardens — research-station scale, then outpost, then settlements.
+That is GDD §3b generator 1 wearing a human face, and it escalates stakes with no scripted event:
+the same breach on the same link costs more because more depends on it.
+
+**§6a — the late-campaign turn (Ghost in the Shell, routed around three of our own rules).** The
+naive "an AI wakes up" breaks GDD §4.6's anti-AI commitment, the no-twist rule, and no-villain.
+What survives is closer to the source: the substrate (edge autonomy + stale models + predictive
+pre-staging + partition reconciliation + signed attestations) produces a standing wave in the
+store-and-forward buffers. Never resident on a node, never all in one place, so it cannot be
+seized — the sim's own physics forbids it. The word "AI" appears nowhere; the Registry opens a
+docket class it has never needed, UNATTRIBUTED ORIGINATION, entry 0001-U. It never converses, uses
+only the four player channels, and is a rival with a doctrine (it does not forecast, it remembers
+forward). Merger is priced in the parse's attribution — the one currency the mastery layer
+actually values. It ends because a maturing backbone closes the distance it was made of.
+
+**§3a — the unlicensed (the negative space of the licence).** Piracy is a symptom of the player's
+own coverage gaps: nets arise in unserved demand and collapse when it is served. Four verbs, none
+a fight — ignore, compete, petition, peer. The standing decision is grey transit: an unlicensed hop
+delivers but breaks the chain of custody, so **you can have the delivery or the proof, never both**.
+The Registry files 0001-U in the same class as a fishing-fleet mesh, because *unlicensed* is the
+only category it has.
+
+**Scoping, stated honestly.** Eras 1–4 (28 beats) add no systems — every trigger reads state the
+sim already keeps, and B1–B8 attach to the four acts in `m1-redesign.md` §2.6. **The P-thread does
+add systems.** Its cheap tier needs an unlicensed-hop route option, an attestation-valid flag, and
+nets as demand-driven actors. Its expensive tier (P1, P6) needs an interference term in the link
+budget, which GDD §3b defers past 1.0. **Recommendation: build the cheap tier, keep the
+interference model in the drawer** — the thread's best beat (P4) and best line (P8) are both cheap.
+
+**One test to run early.** GDD §4.6's litmus is that a player who hates "AI features" finishes
+without feeling sold a buzzword. Exit interviews ask players to describe the late campaign
+unprompted; if "AI companion" comes back, Era 4 failed its own rules and gets cut, not softened.
+There is no language model anywhere in it — every line is hand-written and the player never talks
+to it.
 
 ### SD-61 — THE CAMPAIGN SURVIVES THE TAB: resume-on-boot, a save-on-exit checkpoint, and a real migration ladder (X-04b, 2026-09-01)
 

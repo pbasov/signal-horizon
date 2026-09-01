@@ -4,8 +4,11 @@
 //   keys: comma-separated keypresses dispatched to the page before the shot,
 //         e.g. "2,o" to switch to OPS preset then the ORBITS camera.
 import { chromium } from "playwright-core";
+import { devBase } from "./workspace.mjs";
 
-const url = process.argv[2] ?? "http://localhost:5173";
+// Defaults to THIS checkout's dev server — each worktree owns a port (tools/workspace.mjs), so an
+// omitted url can never shoot a neighbouring tree's app.
+const url = process.argv[2] ?? devBase();
 const out = process.argv[3] ?? "shot.png";
 const waitMs = Number(process.argv[4] ?? 2500);
 const keys = (process.argv[5] ?? "").split(",").filter(Boolean);

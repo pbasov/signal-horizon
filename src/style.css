@@ -1066,9 +1066,15 @@ body {
 .mission-arm.active { color: var(--amber); outline: 1px solid var(--amber); }
 .mission-launch { opacity: 0.5; }
 .mission-launch.ready { opacity: 1; color: var(--cyan); outline: 1px solid var(--cyan); }
-.mission-tender { border-top: 1px dashed var(--line-dim); padding: 5px 0; }
+.mission-tender { border-top: 1px dashed var(--line-dim); padding: 5px 0 5px 4px; cursor: pointer; border-left: 2px solid transparent; }
+.mission-tender:hover { background: var(--bg-2); }
+/* TARGETED — the globe and the pad are pointed at this tender. The left rule + the row tint are
+   the colour channel; the ◉ marker in the head is the redundant shape (§8 CVD). */
+.mission-tender.sel { border-left-color: var(--cyan); background: var(--bg-2); }
 .mission-tender-head { display: flex; justify-content: space-between; gap: 8px; }
-.mission-tender-label { font-weight: 700; }
+.mission-tender-mark { color: var(--fg-dim); margin-right: 4px; }
+.mission-tender.sel .mission-tender-mark { color: var(--cyan); }
+.mission-tender-label { font-weight: 700; flex: 1; }
 .mission-tender-state.offered { color: var(--amber); }
 .mission-tender-state.active { color: var(--cyan); }
 .mission-tender-state.active.dark { color: var(--orange-red); }
@@ -1077,6 +1083,18 @@ body {
 .mission-pip { font-size: 9px; padding: 0 3px; border: 1px solid var(--line-dim); color: var(--grey); }
 .mission-pip.on { color: var(--cyan); border-color: var(--cyan); }
 .mission-terms { font-size: 10px; color: var(--fg-dim); margin-left: 6px; }
+/* SD-60 — the tender reason line: the customer's voice, subordinate to every number on the
+   row. Italic + dim so it reads as scenery the eye can skip; it carries no mechanical load. */
+/* SD-60 — the intro's skip affordances. Dim, small, bottom-right: discoverable without
+   competing with the console lines. The "never" control is a button so it is keyboard
+   reachable; both sit outside the typed-line flow so they are there from the first frame. */
+.boot-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 10px; }
+.boot-hint { font-size: 10px; color: var(--fg-dim); opacity: 0.6; }
+.boot-never { font: inherit; font-size: 10px; background: none; border: 1px solid var(--line-dim);
+  color: var(--fg-dim); opacity: 0.75; padding: 2px 7px; cursor: pointer; }
+.boot-never:hover, .boot-never:focus-visible { opacity: 1; border-color: var(--fg-dim); }
+.mission-tender-reason { font-size: 10px; color: var(--fg-dim); font-style: italic; margin: 2px 0 3px; line-height: 1.4; opacity: 0.85; }
+.mission-tender-reason:empty { display: none; }
 .mission-tender-bet { font-size: 10px; color: var(--fg-dim); }
 .mission-tender-served { font-size: 10px; color: var(--fg-dim); margin: 2px 0; }
 .mission-accept { margin-top: 3px; color: var(--cyan); }

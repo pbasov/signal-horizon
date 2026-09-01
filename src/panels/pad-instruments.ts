@@ -402,26 +402,9 @@ export class InclinationDial {
   }
 }
 
-/** One satellite already on the ring the draft is joining. */
-export interface RingMember {
-  id: string;
-  /** Position along the ring, degrees 0..360. */
-  phaseDeg: number;
-  /** True for the sats this launch would ADD (drawn bright), false for the fleet you own. */
-  draft: boolean;
-}
-
-export interface PhaseRingState {
-  members: RingMember[];
-  /** The largest gap on the ring, in degrees — the hole a replacement wants to fill. */
-  gapDeg: number;
-  /** Where that gap is centred (degrees). */
-  gapCentreDeg: number;
-  /** How many satellites this launch carries. */
-  count: number;
-  /** True when the fleet has no sat on this ring yet (nothing to fill). */
-  empty: boolean;
-}
+// The ring MODEL lives in pad-ring.ts (pure + tested) — this file only draws it.
+export type { RingMember, RingState as PhaseRingState } from "./pad-ring";
+import type { RingState as PhaseRingState } from "./pad-ring";
 
 /**
  * THE PHASE RING — the orbit seen from above, with the satellites you ALREADY OWN on it and
@@ -460,9 +443,9 @@ export class PhaseRing {
     this.root.appendChild(this.readout);
   }
 
-  private static pos(deg: number): { x: number; y: number } {
+  private static pos(deg: number, radius: number = PhaseRing.R): { x: number; y: number } {
     const a = (deg * Math.PI) / 180;
-    return { x: PhaseRing.CX + PhaseRing.R * Math.cos(a), y: PhaseRing.CY - PhaseRing.R * Math.sin(a) };
+    return { x: PhaseRing.CX + radius * Math.cos(a), y: PhaseRing.CY - radius * Math.sin(a) };
   }
 
   render(s: PhaseRingState): void {
@@ -481,19 +464,30 @@ export class PhaseRing {
 
     this.markers.textContent = "";
     for (const m of s.members) {
-      const p = PhaseRing.pos(m.phaseDeg);
+      // The draft rides a WIDER circle than the fleet. Drawn on the same radius, a draft
+      // satellite sits exactly on top of the flying one whose slot it copies — four dots
+      // render as two and you cannot tell what you own from what you are about to buy.
+      const p = PhaseRing.pos(m.phaseDeg, m.draft ? PhaseRing.R + 9 : PhaseRing.R);
       const dot = svg("circle", {
         class: m.draft ? "pad-ring-dot draft" : "pad-ring-dot",
         cx: p.x,
         cy: p.y,
-        r: m.draft ? 4.5 : 3.5,
+        r: m.draft ? 4 : 3.5,
       });
       this.markers.appendChild(dot);
     }
 
-    this.readout.textContent = s.empty
-      ? `${s.count} on a new ring`
-      : `${s.members.filter((m) => !m.draft).length} flying  ·  +${s.count} this launch  ·  widest gap ${Math.round(s.gapDeg)}°`;
+    const flying = s.members.filter((m) => !m.draft).length;
+    if (s.empty) {
+      this.readout.textContent = `${s.count} on a new ring`;
+    } else {
+      // Both numbers, because the question is "does this launch help?": the hole as it stands,
+      // and the hole this draft would leave behind.
+      const after = s.gapAfterDeg >= 359 ? "still open" : `${Math.round(s.gapAfterDeg)}°`;
+      this.readout.textContent =
+        `${flying} flying  ·  widest gap ${Math.round(s.gapDeg)}°  ·  ` +
+        `+${s.count} would leave ${after}`;
+    }
   }
 }
 

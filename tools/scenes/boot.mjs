@@ -6,7 +6,7 @@
 export default {
   name: "boot",
   async run(ctx) {
-    await ctx.page.goto(ctx.base ?? "http://localhost:5173", { waitUntil: "networkidle", timeout: 30000 });
+    await ctx.page.goto(ctx.base, { waitUntil: "networkidle", timeout: 30000 });
     await ctx.settle(2200);
 
     // The world is up.

@@ -244,9 +244,18 @@ export const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
 
 // ── ACT 4 (D1): the Mars frontier teaser ───────────────────────────────────────────
 
-export const TICK_MARS_RELAY = 58104;
-export const TICK_MARS_ACCEPT = 59304;
-export const TICK_PLACE_CACHE = 60504;
+// The act-4 beats FOLLOW THE ACT-4 GATE: the relay commits the instant act 4 opens, the accept
+// lands 20 s later and the breadcrumb 20 s after that (+1200 / +2400 ticks at DT = 1/60).
+//
+// They are pinned as literals because the golden must be a fixed action log, but the offsets are
+// the invariant — if the act-3b gate ever moves, these move WITH it or the arc silently derails:
+// a relay launched one tick BEFORE act 4 emits is a launch into a beat that does not exist yet,
+// which is exactly what happened when the equatorial regions were re-placed (the gate slid 58104 →
+// 58105 and the un-moved relay pushed the gate out by a further 2060 ticks, stranding MARS-1
+// unaccepted and the arc €650 poorer). Keep TICK_MARS_RELAY == the act-3b gate tick.
+export const TICK_MARS_RELAY = 58105;
+export const TICK_MARS_ACCEPT = 59305;
+export const TICK_PLACE_CACHE = 60505;
 
 /** The recorded ACT-1 → … → ACT-4 action sequence (the D1 golden driver). */
 export function act4Log(): SaveGame {

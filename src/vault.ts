@@ -132,20 +132,23 @@ export function clearVault(slot?: VaultSlot): void {
 export interface StoredPrefs {
   mono: boolean;
   muted: boolean;
+  /** SD-60 — the player asked never to see the intro console again. Defaults false. */
+  skipIntro: boolean;
 }
 
 const PREFS_KEY = "signalhorizon.prefs.v1";
 
 export function loadPrefs(): StoredPrefs {
   const store = storage();
-  if (!store) return { mono: false, muted: false };
+  if (!store) return { mono: false, muted: false, skipIntro: false };
   try {
     const raw = store.getItem(PREFS_KEY);
-    if (raw === null) return { mono: false, muted: false };
+    if (raw === null) return { mono: false, muted: false, skipIntro: false };
     const p = JSON.parse(raw) as Partial<StoredPrefs>;
-    return { mono: p.mono === true, muted: p.muted === true };
+    // Absent key reads false, so a v1 prefs blob written before SD-60 stays valid.
+    return { mono: p.mono === true, muted: p.muted === true, skipIntro: p.skipIntro === true };
   } catch {
-    return { mono: false, muted: false };
+    return { mono: false, muted: false, skipIntro: false };
   }
 }
 

@@ -42,9 +42,19 @@ export const MISSION_OBJECTIVES: readonly { title: string; detail: string }[] = 
   },
 ];
 
-/** The Act-1 cold-open line (one sentence, no lecture). */
+/**
+ * The Act-1 cold-open (SD-60: now carries the PREMISE, not just the mechanic).
+ *
+ * `docs/signal-horizon-beats.md` §3 asks for one ~84-word framing block, stated once. The
+ * build has no new-game screen to put it on: the boot console (panels/boot.ts) auto-fades in
+ * ~3.2 s and is dismissed by ANY input, and the Wire must stay causal and never literary. An
+ * 84-word paragraph fits none of those, so the premise COMPRESSES to the medium instead of
+ * the medium stretching to the paragraph. Two sentences carry three of the four rulings:
+ * Earth is prosperous but capped (§10.1), the player is a startup holding one licence
+ * (§10.2), and the existing mechanic line survives intact.
+ */
 export const MISSION_WELCOME =
-  "You run a satellite ISP. Dark regions pay when signal reaches them; hardware and physics decide whether it does.";
+  "Earth is rich and out of room, so the load went up. You hold a licence, a thin account, and one dish — and dark regions pay when signal reaches them, while hardware and physics decide whether it does.";
 
 /** Tender-row verdict fragments (facts about the OFFER, never solved answers). */
 export const TENDER_BET = (payPerHr: string, penaltyPerHr: string): string =>
@@ -60,6 +70,26 @@ export const WIRE_UNDERBURN = (satId: string): string =>
 export const WIRE_VEHICLE_LOST = (id: string): string => `${id} VEHICLE LOST — range safety`;
 export const WIRE_FIRST_SIGNAL = (satId: string, regionLabel: string): string =>
   `${satId} first signal — ${regionLabel} lit`;
+
+// ── SD-60 — THE REGISTRY (beats B1 / B4) ────────────────────────────────────────
+/**
+ * The Orbital Allocation Registry is the only formal voice in the game: passive, numbered,
+ * and entirely without opinion. It never praises and it never threatens. It records.
+ *
+ * These are LICENCE-level, once per game — distinct from the per-contract WIRE lines above.
+ * B1 is the one beat guaranteed to fire: the licence stops being a premise and becomes a
+ * record. B4's whole point is the indifference — nobody is disappointed in you, it is simply
+ * written down. Neither carries a verdict, an instruction, or a consequence the player must
+ * act on (`docs/signal-horizon-beats.md` §4, §5).
+ */
+export const NET_LICENCE_ID = "4471-C";
+/** The boot-console line that ISSUES the licence — the Registry establishes itself, and the
+ * player's standing, before the premise line lands. Zero reading cost; pure scene-setting. */
+export const REGISTRY_LICENCE_ISSUED = `LICENCE ${NET_LICENCE_ID} ISSUED · ORBITAL ALLOCATION REGISTRY`;
+/** B1 FIRST LIGHT — the first service ever recorded against the licence. */
+export const REGISTRY_FIRST_SERVICE = `LICENCE ${NET_LICENCE_ID} ACTIVE. FIRST SERVICE RECORDED.`;
+/** B4 THE FIRST BREACH — a contract fell past grace. Stated, not scolded. */
+export const REGISTRY_FIRST_BREACH = `BREACH RECORDED AGAINST LICENCE ${NET_LICENCE_ID}.`;
 
 // ── FL-02 copy surface (SD-46/47/49) — the fragments the verb rebuild renders. All
 // FACTS about terms/physics, never verdicts, never instructions (LAW 1 + LAW 2). ──

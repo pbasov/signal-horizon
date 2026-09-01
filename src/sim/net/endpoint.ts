@@ -29,11 +29,21 @@ import { MIN_ELEVATION_RAD } from "../coverage/field";
 
 const DEG_RAD = Math.PI / 180;
 
-/** Angular radius (radians) of the Act-1 equatorial region disc. 10° — the parked
- * equatorial GEO covers the whole disc at eirp 1.0 with large margin (worst-case edge
- * elevation ≈ 74° vs the 5° floor; received ≈ 8500× the budget). Re-derived + pinned
- * in A1 (the §5 WHOLE-DISC must-fix). */
-export const NET_ACT1_REGION_RADIUS_RAD = 10 * DEG_RAD;
+/**
+ * Angular radius (radians) of a demand region disc. 6°.
+ *
+ * Was 10°, from a time when the globe drew exactly ONE region. Once the whole board is drawn
+ * (the orrery paints every live tender), 10° discs MERGE: the equatorial tenders are 20° and
+ * 35° apart, and at 10° each they were one continuous smear of coastline instead of three
+ * places you can tell apart and aim at. 6° leaves a clear gap between the nearest pair
+ * (20° apart ⇒ 8° of empty ocean between their rims).
+ *
+ * The router never reads this: `served` is the bridge to the region CENTRE, so the radius sizes
+ * the drawn disc, the Fibonacci sample set and the coverage-gap overlay's covered fraction, and
+ * gates nothing. The parked equatorial GEO still covers the whole disc with enormous margin —
+ * shrinking it only widens that margin (the §5 WHOLE-DISC must-fix stays satisfied a fortiori).
+ */
+export const NET_ACT1_REGION_RADIUS_RAD = 6 * DEG_RAD;
 
 /**
  * Minimum elevation angle (radians) for a usable net link — the horizon mask.

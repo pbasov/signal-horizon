@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node tools/smoke.mjs http://localhost:5173",
+    "smoke": "node tools/smoke.mjs",
     "test:fast": "vitest run --exclude src/sim/net-replay.test.ts --exclude src/sim/m2/events.test.ts",
     "playtest": "node tools/playtest.mjs"
   },

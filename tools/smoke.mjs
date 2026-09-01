@@ -8,11 +8,13 @@
 // DEV server (unbundled native ESM), the one developers run, and catches that whole
 // class of dev-only module-init crashes.
 //
-// Usage: node tools/smoke.mjs <url> [waitMs]
-//   e.g. node tools/smoke.mjs http://localhost:5173 5000
+// Usage: node tools/smoke.mjs [url] [waitMs]
+//   The url defaults to THIS CHECKOUT's dev server (tools/workspace.mjs). Worktrees each own a
+//   port, so an omitted url can never smoke-test a neighbouring tree's app and pass.
 import { chromium } from "playwright-core";
+import { devBase } from "./workspace.mjs";
 
-const url = process.argv[2] ?? "http://localhost:5173";
+const url = process.argv[2] ?? devBase();
 const waitMs = Number(process.argv[3] ?? 5000);
 const EXEC = process.env.CHROMIUM_BIN ?? "/usr/bin/chromium";
 const HEADLESS = process.env.HEADLESS !== "0"; // headless by default (CI / no display)

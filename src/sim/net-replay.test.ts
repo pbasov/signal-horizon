@@ -226,7 +226,20 @@ const CANON_WASTE = 1;
 const OVER_BUILD_WASTE = 4;
 const CANON_ACT4_ROSTER = 15;
 
-const NET_REPLAY_GOLDEN = 16791777382910013853n;
+// SD-58 (2026-09-01) re-pin #4: THE EQUATORIAL BOARD BECOMES THREE PLACES. The corridor metro
+// moves 3°E → 20°E and the coastal backhaul 6°W → 35°W, and the region disc shrinks 10° → 6°.
+// Cause: with the orrery now drawing EVERY live tender, three 10° discs whose centres sat 3° and
+// 6° apart were one overlapping smear — three separately-priced contracts on one patch of ground.
+// The mechanics only ever needed CO-VISIBILITY, not co-location: the corridor's 3 ms bar still
+// clears at 2.73 ms on the same equatorial ACCESS ring, and the parked GEO still floodlights the
+// backhaul 100% of the day (its measured reach cliff is between 40° and 45° W).
+// The radius is sim-INERT (the router bridges the region CENTRE; verified: 6° alone reproduces the
+// old hash bit-for-bit) — the hash moves on the two longitudes. The act-4 canon beats shift +1
+// tick with the act-3b gate (58104 → 58105), which is what the gate slide actually demanded; left
+// un-retimed, the relay landed one tick BEFORE act 4 emitted and pushed the gate out 2,060 ticks.
+// Arc ends RICHER at every comparable instant: trough €3,488 → €4,100, mean €4,316 → €5,018,
+// final €4,376 → €4,858. Gates 1–3 unmoved; gate 4 +1 tick.
+const NET_REPLAY_GOLDEN = 10981192184426294200n;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {

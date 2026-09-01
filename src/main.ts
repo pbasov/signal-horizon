@@ -101,7 +101,19 @@ import { suggestPhasing, phasingLadder } from "./sim/net/phasing";
 // §7.3/§10 — the per-contract prefer slider mapping (the FIRST thing the player tunes): the pure
 // slider-position ↔ prefer-weights map (lat↔bw↔stab) the planner control rides.
 import { preferFromSliderPos, preferSliderPos, netRevenueRatePerSecond, decayedPayAtS, signOnBonusAtS, offerNetContract, type Contract } from "./sim/net/contract";
-import { ACT1_CONTRACT_ID, ACT2_CONTRACT_ID, ACT2_SLA_AVAIL, ACT2_ZERO_GAP_N, NET_ACT2_REGION } from "./sim/net/scenario";
+import {
+  ACT1_CONTRACT_ID,
+  ACT2_CONTRACT_ID,
+  ACT2_SLA_AVAIL,
+  ACT2_ZERO_GAP_N,
+  NET_ACT2_REGION,
+  ACT3A_CONTRACT_ID,
+  ACT3A_BACKHAUL_CONTRACT_ID,
+  NET_ACT3A_CORRIDOR_REGION,
+  NET_ACT3A_BACKHAUL_REGION,
+  NET_ACT3A_LOW_LATENCY_S,
+  NET_ACT3A_BACKHAUL_SLA_BW,
+} from "./sim/net/scenario";
 import {NET_LAUNCH_SITE, ACT4_MARS_CONTRACT_ID, NET_MIN_ELEVATION_RAD } from "./sim/net/endpoint";
 import { interBodyOneWayLatencyS } from "./sim/net/link-budget";
 // net/ Act-3b — the pure SYSTEM.LOG renderers for the fault SYSTEM.LOG lines + the predictability-
@@ -111,6 +123,7 @@ import { renderFaultLine, renderLossStamp, FIX_CLAUSE } from "./sim/net/trace";
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
 import { telegraphedCountdownRemainingS, faultRemovesSatAt, type ShortfallFixKind } from "./sim/net/fault-types";
 import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
+import { clientName, clientReason } from "./panels/clients";
 import { MissionTop, type MissionTopState, type PadDraftReadout } from "./panels/mission-top";
 import { LedgerFleet, type LedgerFleetState, type FleetChip } from "./panels/ledger-fleet";
 // SD-53 — THE ROUTING SCREEN (docs/routing-screen.md): the panel, and the pure arithmetic behind it.
@@ -130,6 +143,8 @@ import {
   WIRE_UNDERBURN,
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
+  REGISTRY_FIRST_SERVICE,
+  REGISTRY_FIRST_BREACH,
   NET_ACT_BEAT,
   PAD_AVAIL_FACT,
   PAD_RISK_BAND,
@@ -142,6 +157,7 @@ import {
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
 import type { CompareRow } from "./panels/pad-instruments";
+import { ringState } from "./panels/pad-ring";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
@@ -386,6 +402,18 @@ let r1Loadout: LoadoutState = fromCards("smallsat", ["BROADCAST"]);
 let r1Cards: string[] = cardsOf(r1Loadout);
 let r1Armed = false;
 let r1PhaseSpreadRad = 0;
+/**
+ * THE BOARD SELECTION — the tender the player CLICKED on the mission book, or null for
+ * "whatever the board would have picked".
+ *
+ * Render-only UI state: never folded into the snapshot, never logged as an action, so the
+ * replay golden does not move. It steers three reads that used to be decided FOR the player
+ * by list order — where the camera looks, which region the globe treats as primary (and so
+ * which one the draft's coverage-gap overlay is measured against), and which tender the pad's
+ * coverage analysis compares the design to. Cleared implicitly: a selection that lapses or
+ * completes stops validating and the fallbacks take over again (see r1SelectedContract).
+ */
+let r1TargetContractId: string | null = null;
 if (APP_MODE === "net") netDraft.subLonRad = -Math.PI / 2;
 
 /** FL-03 — after any bus/card edit: re-derive the flat card view AND sync the live draft
@@ -981,6 +1009,9 @@ function netContractRows(t: number): NetContractRow[] {
     return {
       id: c.id,
       label: c.label,
+      // SD-60 — the cast. Looked up panel-side; the sim folds only the stable clientId.
+      client: clientName(c.clientId),
+      reason: clientReason(c.clientId),
       state: c.state,
       terms: netContractTerms(c),
       rewardPerHr: c.payPerSecond * 3600,
@@ -1572,6 +1603,42 @@ function netCandidateArcsSlice(t: number, add: (rel: Vec3) => Vec3): { fromPosM:
   return out;
 }
 
+/**
+ * EVERY OTHER live demand on the board, as discs the globe can draw (the "coastal backhaul and
+ * corridor metro are never shown in the orrery" fix).
+ *
+ * The orrery drew exactly ONE region — the teaching cursor's — so from act 3a on, the corridor
+ * metro and the coastal backhaul were signed, billed and breached without ever being a place you
+ * could look at. This projects the rest of the standing market: offered + active tenders whose
+ * region sits on the body being drawn (a Mars tender is filtered out — its region is not on this
+ * sphere), each with its live SERVED verdict so a dark contract reads dark on the ball.
+ *
+ * Pure read of the session; the `served` verdict is the router's own last solve, never re-derived.
+ */
+function netOtherRegionsSlice(
+  primaryId: string | null,
+  bodyId: string | null,
+  t: number,
+  add: (rel: Vec3) => Vec3,
+): import("./orrery/orrery").NetRenderState["otherRegions"] {
+  if (bodyId === null) return [];
+  const out: import("./orrery/orrery").NetRenderState["otherRegions"] = [];
+  for (const c of netSession.contracts) {
+    if (c.id === primaryId) continue;
+    if (c.state !== "offered" && c.state !== "active") continue;
+    if (c.region.bodyId !== bodyId) continue;
+    out.push({
+      id: c.region.id,
+      label: c.label,
+      centerPosM: add(surfacePointRelative(c.region.latRad, c.region.lonRad, t)),
+      radiusRad: c.region.radiusRad,
+      served: c.state === "active" && (netSession.lastSolveFor(c.id)?.served ?? false),
+      active: c.state === "active",
+    });
+  }
+  return out;
+}
+
 function netRenderState(): import("./orrery/orrery").NetRenderState {
   const t = clock.seconds;
   const earth = eph.position("earth", t);
@@ -1579,7 +1646,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   // Act-2 — render the ACTIVE availability contract (REGION-1) when it is live, else the
   // Act-1 connectivity contract (REGION-0): the orrery shows whichever demand is the current
   // teaching beat, so the hand-off render + sawtooth meter track the act the player is on.
-  const c = currentNetContract();
+  const c = netPrimaryContract();
   // §3 — whether the LAUNCH PAD is open (drives the orrery's planner-focus close-up). R1
   // (SD-45): the pad is a MODE of the MISSION panel, not a desktop.
   const plannerActive = r1Mode === "pad";
@@ -1590,6 +1657,9 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
       // in the toy net frame but this reads whatever the camera focuses).
       body: netBodySlice(orrery.focusId, t, plannerActive),
       region: null,
+      // No teaching contract yet is not the same as no board: an offered tender must still be a
+      // place on the ball before you sign it.
+      otherRegions: netOtherRegionsSlice(null, orrery.focusId, t, add),
       footprints: [],
       availability: null,
       mars: netMarsSlice(t),
@@ -1619,6 +1689,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
     served,
     // R2 (SD-45): a SIGNED-and-dark region is bleeding — the orrery pulses its queue ring.
     active: c.state === "active",
+    label: c.label,
   };
   // THE HAND-OFF RENDER (design §6): one footprint disc per sat currently COVERING the region,
   // each parked over the sat's own nadir so the discs SWEEP with the constellation. With a lone
@@ -1648,6 +1719,7 @@ function netRenderState(): import("./orrery/orrery").NetRenderState {
   return {
     body,
     region,
+    otherRegions: netOtherRegionsSlice(c.region.id, body?.id ?? null, t, add),
     footprints,
     availability,
     focusBlob: netFocusBlobSlice(t, add),
@@ -2131,6 +2203,47 @@ const NET_MARS_BREADCRUMB_FLASH_S = 5.0;
 /** Act-2 — the current teaching contract for the render: the live availability demand (REGION-1)
  * once the scenario has emitted it, else REGION-0. So the orrery's hand-off render + sawtooth
  * meter follow the act the player is on. Pure read of the net session. */
+/**
+ * The player's board selection, VALIDATED against the live session: the clicked tender if it is
+ * still live (offered or active) and its region sits on a body the globe is drawing, else null.
+ * A tender that lapsed, completed or failed simply stops matching, so a stale click degrades to
+ * the old automatic pick instead of pinning the camera to a dead region.
+ */
+function r1SelectedContract(): ReturnType<NetSession["contractById"]> {
+  if (r1TargetContractId === null) return null;
+  const c = netSession.contractById(r1TargetContractId);
+  if (c === null) return null;
+  if (c.state !== "offered" && c.state !== "active") return null;
+  return c;
+}
+
+/**
+ * The tender the PAD is designing against — the selection, else the board's own pick (the first
+ * offered Earth demand, else the first active one). One function so the comb, the coverage-
+ * analysis table and the FIT assist can never disagree about what "the target" is; before this
+ * they each re-derived it inline, which is how the pad ended up analysing REGION-0 while the
+ * player was reading the corridor metro's terms.
+ */
+function r1TargetContract(): ReturnType<NetSession["contractById"]> {
+  const sel = r1SelectedContract();
+  if (sel !== null && sel.region.bodyId === "earth") return sel;
+  return (
+    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
+    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
+    null
+  );
+}
+
+/**
+ * The region the GLOBE treats as primary: the selection if the player made one, else the teaching
+ * cursor's contract ({@link currentNetContract}). The default is deliberately the teaching one and
+ * not the pad's fallback — an unclicked act 2 must keep drawing REGION-1's hand-off sawtooth, which
+ * is the whole lesson of that act.
+ */
+function netPrimaryContract(): ReturnType<NetSession["contractById"]> {
+  return r1SelectedContract() ?? currentNetContract();
+}
+
 function currentNetContract(): ReturnType<NetSession["contractById"]> {
   const r1 = netSession.contractById(ACT2_CONTRACT_ID);
   if (r1 !== null && r1.state !== "completed" && r1.state !== "failed") return r1;
@@ -2405,6 +2518,9 @@ function r1Circularize(satId: string): void {
 const wireSeen = new Set<string>();
 let wireWelcomed = false;
 const wireServedOnce = new Set<string>();
+/** SD-60 — the licence-level Registry edges (B1 / B4). Once per game, render-only. */
+let registryFirstService = false;
+let registryFirstBreach = false;
 function drainMissionWire(): void {
   const t = clock.seconds;
   if (!wireWelcomed) {
@@ -2435,6 +2551,21 @@ function drainMissionWire(): void {
     const satId = netSession.lastSolveFor(c.id)?.path?.[1] ?? "the network";
     log.append({ tSim: t, sev: "info", entity: "LINK", value: c.id, msg: WIRE_FIRST_SIGNAL(satId, c.label) });
     netAudio.play("serve_locked");
+    // SD-60 / B1 FIRST LIGHT — the LICENCE-level record, once per game. Distinct from the
+    // per-contract first signal above: this is the first service ever recorded against the
+    // licence, so the licence stops being a premise and becomes a record. No cue, no
+    // celebration — the Registry does not praise.
+    if (!registryFirstService) {
+      registryFirstService = true;
+      log.append({ tSim: t, sev: "info", entity: "REGISTRY", value: "NOTICE", msg: REGISTRY_FIRST_SERVICE });
+    }
+  }
+  // SD-60 / B4 THE FIRST BREACH — a signed contract fell past the shared grace. The Registry
+  // is indifferent, and that indifference IS the beat: nobody is disappointed in you, it is
+  // simply written down. Once per game; the per-contract failure already has its own surface.
+  if (!registryFirstBreach && netSession.contracts.some((c) => c.state === "failed")) {
+    registryFirstBreach = true;
+    log.append({ tSim: t, sev: "warn", entity: "REGISTRY", value: "NOTICE", msg: REGISTRY_FIRST_BREACH });
   }
 }
 
@@ -2566,6 +2697,28 @@ function seedNetLiveNetworkDebugView(): void {
   }
   applyNetAction(eph, netSession, netAcceptAction(ACT1_CONTRACT_ID, clock.tick), DT);
   applyNetAction(eph, netSession, netAcceptAction(ACT2_CONTRACT_ID, clock.tick), DT);
+  // (1b) THE FULL EQUATORIAL BOARD. The act-3a corridor metro + coastal backhaul go on the board
+  //      too, OFFERED (unsigned — no beams are pointed here, and signing a latency SLA nothing is
+  //      aimed at would seed a fake breach). They are the two tenders that used to arrive with
+  //      nowhere to look: this seed is how the whole standing market can be screenshotted at once,
+  //      which is the only way to see that four regions are four PLACES. Same discipline as the
+  //      rest of this function — a render seed on the live session, never a sim/action/replay path.
+  for (const [id, region, axes] of [
+    [ACT3A_CONTRACT_ID, NET_ACT3A_CORRIDOR_REGION, ["connectivity", "latency"]],
+    [ACT3A_BACKHAUL_CONTRACT_ID, NET_ACT3A_BACKHAUL_REGION, ["connectivity", "bandwidth"]],
+  ] as const) {
+    if (netSession.contractById(id) !== null) continue;
+    netSession.addContract(
+      offerNetContract(id, region, {
+        activeAxes: new Set(axes),
+        trafficClass: id === ACT3A_CONTRACT_ID ? "latency" : "bandwidth",
+        slaLatencyS: NET_ACT3A_LOW_LATENCY_S,
+        slaBandwidth: NET_ACT3A_BACKHAUL_SLA_BW,
+        offerWindowS: 1e9,
+        offeredAtS: clock.seconds,
+      }),
+    );
+  }
   netSession.enableEscalation();
   const t0 = clock.seconds;
   for (let i = 1; i < 7200; i++) netSession.step(eph, t0 + i * DT, DT);
@@ -2910,6 +3063,16 @@ const missionTopPanel = new MissionTop({
     r1Armed = false;
   },
   onAccept: (id) => netAccept(id),
+  // THE BOARD → THE BALL → THE PAD. Clicking a tender does three things and commits nothing:
+  // it becomes the pad's coverage-analysis target (comb, compare table, FIT, the draft's
+  // coverage-gap overlay), it becomes the globe's primary region, and the camera swings onto it
+  // and HOLDS it as the toy globe turns (dropped the moment the player drags the camera).
+  onSelectTender: (id) => {
+    r1TargetContractId = r1TargetContractId === id ? null : id;
+    orrery.followRegion(r1TargetContractId === null ? null : (netSession.contractById(id)?.region.id ?? null));
+    // A new target invalidates the armed launch: the design was armed AT a different region.
+    r1Armed = false;
+  },
   onBus: (b) => {
     r1Bus = b;
     r1Loadout = withBus(r1Loadout, b);
@@ -2928,10 +3091,7 @@ const missionTopPanel = new MissionTop({
     // FL-06 — FIT: the viable-but-imperfect suggestion for the TARGET tender's active axes
     // (latency ⇒ spot beam; bandwidth ⇒ upsized spot; else the floodlight). The player can
     // always do better — that's the design.
-    const target =
-      netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
-      netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
-      null;
+    const target = r1TargetContract();
     const axes = target?.activeAxes ?? new Set();
     r1Loadout = fromCards(
       r1Bus,
@@ -3022,12 +3182,10 @@ function netSatSubLonDeg(sat: (typeof netSession.sats)[number], t: number): numb
   return lon * (180 / Math.PI);
 }
 
-/** The comb/aim TARGET region: the first OFFERED Earth demand, else the first ACTIVE one. */
+/** The comb/aim TARGET region: the tender the player selected on the board, else the board's
+ * own pick. One source of truth — {@link r1TargetContract}. */
 function r1TargetRegion(): { region: import("./sim/net/endpoint").Region; label: string } | null {
-  const c =
-    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
-    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
-    null;
+  const c = r1TargetContract();
   return c ? { region: c.region, label: c.label } : null;
 }
 
@@ -3712,51 +3870,21 @@ function padInstrumentState(
   const band = { minKm: 10, maxKm: parkKm, parkKm };
 
   // ── THE RING: who is already on this orbit, and where the hole is ────────────────
-  // "Same ring" = same orbital plane and altitude, within a tolerance wide enough to survive
-  // an underburn that has been circularised back but narrow enough not to sweep in a GEO.
-  const planeMatches = (o: { aM: number; incRad: number }): boolean =>
-    Math.abs(o.aM - netDraft.semiMajorM) / Math.max(1, netDraft.semiMajorM) < 0.08 &&
-    Math.abs(o.incRad - netDraft.incRad) < 8 / DEG;
-  const phaseOf = (o: { aM: number; m0Rad: number; epochS: number }): number => {
-    const per = orbitPeriodSeconds(o as never);
-    const n = per > 0 ? (2 * Math.PI) / per : 0;
-    const m = o.m0Rad + n * (t - o.epochS);
-    return (((m * DEG) % 360) + 360) % 360;
-  };
-  const members: { id: string; phaseDeg: number; draft: boolean }[] = [];
-  for (const sat of netSession.sats) {
-    if (planeMatches(sat.orbit)) members.push({ id: sat.id, phaseDeg: phaseOf(sat.orbit), draft: false });
-  }
-  const fleetOnRing = members.length;
-  for (const m of draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0)) {
-    members.push({ id: m.id, phaseDeg: phaseOf(m.orbit), draft: true });
-  }
-  // The widest gap on the ring — the hole a replacement wants. Measured over the FLEET only:
-  // it is the hole you are aiming into, not the hole after you have aimed.
-  let gapDeg = 360;
-  let gapCentreDeg = 0;
-  const flying = members.filter((m) => !m.draft).map((m) => m.phaseDeg).sort((a, b) => a - b);
-  if (flying.length === 1) {
-    gapDeg = 360;
-    gapCentreDeg = (flying[0] + 180) % 360;
-  } else if (flying.length > 1) {
-    gapDeg = 0;
-    for (let i = 0; i < flying.length; i++) {
-      const a = flying[i];
-      const b = i === flying.length - 1 ? flying[0] + 360 : flying[i + 1];
-      if (b - a > gapDeg) {
-        gapDeg = b - a;
-        gapCentreDeg = ((a + (b - a) / 2) % 360 + 360) % 360;
-      }
-    }
-  }
-  const ring = { members, gapDeg, gapCentreDeg, count: netDraft.count, empty: fleetOnRing === 0 };
+  // The model (which fleet satellites share this exact plane, where they sit right now, and
+  // what hole the draft would leave) is pure and unit-tested in pad-ring.ts. It is a claim
+  // about live state, so it is checkable rather than eyeballed.
+  const ring = ringState(
+    netDraft,
+    netSession.sats,
+    draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0),
+    t,
+    netDraft.count,
+  );
 
   // ── THE TARGET + THE COMPARISON ──────────────────────────────────────────────────
-  const c =
-    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
-    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
-    null;
+  // The SAME target the comb measured (r1TargetContract) — the player's board selection when
+  // there is one. Analysing one tender while the comb combed another was the bug.
+  const c = r1TargetContract();
   if (c === null) {
     return { padTarget: null, compare: [], footprintDeg, band, ring };
   }
@@ -3900,6 +4028,9 @@ function missionTopState(): MissionTopState {
     comb,
     combFleet,
     combRegionLabel: target?.label ?? "no demand yet",
+    // The board selection, so the targeted row marks itself and the pad head can say whether
+    // the target was chosen or defaulted.
+    targetTenderId: r1SelectedContract()?.id ?? null,
     armed: r1Armed,
     problem: validateLoadout(r1Bus, r1Cards),
     padFact: r1PadFact() ?? (() => {
@@ -4355,7 +4486,7 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
   if (prefs.mono) document.documentElement.classList.add("cvd-mono");
   netAudio.setMuted(prefs.muted);
 }
-// ── X-04b — RESUME ON BOOT ────────────────────────────────────────────────────────────
+// ── SD-61 / X-04b — RESUME ON BOOT ────────────────────────────────────────────────────
 // The campaign outlives the tab. A browser refresh used to drop the player back at €75,000
 // tick 0 with the whole run gone; now the newest slot in the vault is restored BEFORE the
 // first sim tick, so reloading the page continues the run instead of ending it.
@@ -4376,16 +4507,26 @@ if (autoVaultEnabled) {
   }
 }
 
-if (!netDebugView && !netLiveDebugView) {
-  runBootSequence(app, {
-    version: "NET FLIGHTSOFT rev FIRST-LIGHT",
-    seed: String(NET_RNG_SEED),
-    // The boot console tells the truth about which world you're waking into: a resumed run
-    // says so (and where it left off) instead of pretending this is first light.
-    resumed: resumedAtBoot
-      ? `RUN RESTORED · act ${netSession.cursor + 1} · €${Math.round(netSession.balance).toLocaleString("en-US")}`
-      : null,
-  });
+// SD-60 — the intro console is OPT-OUT and the opt-out sticks. Three ways past it: any key or
+// click (visible affordance in the box), "never show this again" (persists to prefs), and
+// ?intro=0 for tooling and for anyone who wants it gone from the URL. Debug views never see it.
+{
+  const introSuppressed = loadPrefs().skipIntro || NET_QUERY.get("intro") === "0";
+  if (!netDebugView && !netLiveDebugView && !introSuppressed) {
+    runBootSequence(
+      app,
+      {
+        version: "NET FLIGHTSOFT rev FIRST-LIGHT",
+        seed: String(NET_RNG_SEED),
+        // SD-61 — the console tells the truth about which world you're waking into: a resumed
+        // run says so (and where it left off) instead of pretending this is first light.
+        resumed: resumedAtBoot
+          ? `RUN RESTORED · act ${netSession.cursor + 1} · €${Math.round(netSession.balance).toLocaleString("en-US")}`
+          : null,
+      },
+      { onNeverShowAgain: () => storePrefs({ ...loadPrefs(), skipIntro: true }) },
+    );
+  }
 }
 
 // initial boot: mission boot triplet + first demand evaluation (may launch a packet)
@@ -4484,7 +4625,9 @@ window.addEventListener("keydown", (e) => {
       // X-03 — the 1-bit purist monochrome toggle (colour-off fully playable, the exit check).
       const el = document.documentElement;
       el.classList.toggle("cvd-mono");
-      storePrefs({ mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
+      // SPREAD the stored prefs, never rebuild them: a literal here silently WIPES every
+      // pref this call site does not know about (SD-60's skipIntro was the first casualty).
+      storePrefs({ ...loadPrefs(), mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,
         sev: "info",
@@ -4495,7 +4638,8 @@ window.addEventListener("keydown", (e) => {
     } else if (k === "u" || k === "U") {
       // X-05 — hard mute (persists). No cross-typed cues to manage; the canary stays silent.
       netAudio.setMuted(!netAudio.isMuted);
-      storePrefs({ mono: document.documentElement.classList.contains("cvd-mono"), muted: netAudio.isMuted });
+      // Spread, don't rebuild — see the mono toggle above.
+      storePrefs({ ...loadPrefs(), mono: document.documentElement.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,
         sev: "info",

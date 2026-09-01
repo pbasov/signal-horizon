@@ -161,6 +161,10 @@ export interface Contract {
   id: string;
   /** Glanceable label (the region the contract sits over). */
   label: string;
+  /** WHO IS BUYING (SD-60) — a stable key into `panels/clients.ts`, never player-facing text.
+   * The sim stays headless: it folds this id, and the panel looks up the name + reason line.
+   * "" = no client of record (tests, ad-hoc offers); the UI then shows the region label alone. */
+  clientId: string;
   /** The endpoint GEOMETRY: a body-fixed geodesic disc — NOT m2 grid cells. The router
    * reads this; it makes the struct a structural supertype of the router's RoutableContract. */
   region: Region;
@@ -430,6 +434,8 @@ export function offerNetContract(
   region: Region,
   opts?: {
     label?: string;
+    /** SD-60 — the buying institution's key (see `panels/clients.ts`). Defaults to none. */
+    clientId?: string;
     activeAxes?: ReadonlySet<SlaAxis>;
     payPerSecond?: number;
     penaltyPerSecond?: number;
@@ -458,6 +464,7 @@ export function offerNetContract(
   return {
     id,
     label: opts?.label ?? region.label,
+    clientId: opts?.clientId ?? "",
     region,
     slaAvail: opts?.slaAvail ?? NET_DEFAULT_SLA_AVAIL,
     slaLatencyS: opts?.slaLatencyS ?? NET_DEFAULT_SLA_LATENCY_S,
@@ -512,6 +519,9 @@ export const NET_RENEWAL_OFFER_WINDOW_S = 1800;
 export function renewalOffer(completed: Contract, generation: number, nowS: number): Contract {
   const offer = offerNetContract(`${completed.id.split("+R")[0]}+R${generation}`, completed.region, {
     label: completed.label,
+    // SD-60: a renewal is the SAME customer on the SAME region — it keeps its client, so the
+    // recurrence that does the worldbuilding (setting §8) survives across generations.
+    clientId: completed.clientId,
     activeAxes: new Set(completed.activeAxes),
     payPerSecond: completed.payPerSecond * NET_RENEWAL_PAY_GROWTH,
     penaltyPerSecond: completed.penaltyPerSecond * NET_RENEWAL_PAY_GROWTH,
