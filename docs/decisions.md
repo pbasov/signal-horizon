@@ -1208,6 +1208,37 @@ user's call.
    `loadByPipeFromState` to attribute a contract's load to every pipe on its chain — a real change
    to a folded field, and therefore its own increment with its own re-pin.
 
+**RECONCILED WITH SD-56 (the coverage re-scale), same day.** The two landed in parallel and
+overlap in `router.ts` and `link-budget.ts`. Four reconciliations, none cosmetic:
+
+1. **PASS 2 is cone-gated exactly like PASS 1** — `beamAimFor` on the user side, feeder
+   ungated. Relaying extends where traffic can be LANDED; it must never widen the spot the
+   serving antenna paints. Pinned: with the beam aimed 60° off the region, a perfect spine
+   cannot rescue it and the reported cause is `outside_beam`.
+2. **My "PASS 1 is byte-identical including iteration order" rationale is withdrawn.**
+   SD-56's `CAUSE_DEPTH` / `noteCause` makes the reported cause a MAX over the candidate
+   set — order-independent by construction, and strictly better than the property I was
+   preserving by hand.
+3. **CROSSLINK takes no cone gate, and both sides now say why:** a relay terminal is steered
+   at its peer, so the peer is on boresight by construction. That is why `CONE_CROSSLINK`
+   stays inert even though the edge is now live.
+4. **A test that would have passed vacuously was fixed.** The spine fixture used ACCESS-L
+   (24°), but from the parked GEO the visible limb subtends only asin(300/835) ≈ 21°, so
+   that cone can never gate anything there. It now uses ACCESS-S (10°). Worth knowing when
+   tuning: **ACCESS-L is the one card the cone does not constrain from GEO.**
+
+Verified after the merge: 942 vitest green (80 files) with SD-56's re-pinned golden
+`16791777382910013853n` INTACT — the canonical hour reproduces SD-56's own numbers exactly
+(ends +€4,376, floor €3,488), so the routing graph remains neutral to it.
+
+**One pre-existing defect found and NOT fixed here.** The full `npm run playtest` is RED on
+`origin/main` at 158acd7 (121 assertions, 3 failed, all in the TRACE scene) and RED with the
+identical three failures after this merge; the scene passes GREEN 44/0 when run alone on
+both, and flips between failure sets across runs. This branch's own pre-merge tip was GREEN
+121/0 twice, so the instability arrived with SD-56, not with the routing graph. Left alone
+deliberately — loosening a flaky assertion while landing an unrelated change is how a real
+regression gets hidden. Filed in the backlog.
+
 **Consequences.** `docs/routing-screen.md` §4.0 and fences 11.1/11.6 are AMENDED, not reworded: the
 "always exactly three nodes" claim was false and is withdrawn with its reason. `net/purity.test.ts`
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
