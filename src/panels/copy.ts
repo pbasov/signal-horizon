@@ -61,6 +61,23 @@ export const WIRE_VEHICLE_LOST = (id: string): string => `${id} VEHICLE LOST —
 export const WIRE_FIRST_SIGNAL = (satId: string, regionLabel: string): string =>
   `${satId} first signal — ${regionLabel} lit`;
 
+// ── SD-58 — THE REGISTRY (beats B1 / B4) ────────────────────────────────────────
+/**
+ * The Orbital Allocation Registry is the only formal voice in the game: passive, numbered,
+ * and entirely without opinion. It never praises and it never threatens. It records.
+ *
+ * These are LICENCE-level, once per game — distinct from the per-contract WIRE lines above.
+ * B1 is the one beat guaranteed to fire: the licence stops being a premise and becomes a
+ * record. B4's whole point is the indifference — nobody is disappointed in you, it is simply
+ * written down. Neither carries a verdict, an instruction, or a consequence the player must
+ * act on (`docs/signal-horizon-beats.md` §4, §5).
+ */
+export const NET_LICENCE_ID = "4471-C";
+/** B1 FIRST LIGHT — the first service ever recorded against the licence. */
+export const REGISTRY_FIRST_SERVICE = `LICENCE ${NET_LICENCE_ID} ACTIVE. FIRST SERVICE RECORDED.`;
+/** B4 THE FIRST BREACH — a contract fell past grace. Stated, not scolded. */
+export const REGISTRY_FIRST_BREACH = `BREACH RECORDED AGAINST LICENCE ${NET_LICENCE_ID}.`;
+
 // ── FL-02 copy surface (SD-46/47/49) — the fragments the verb rebuild renders. All
 // FACTS about terms/physics, never verdicts, never instructions (LAW 1 + LAW 2). ──
 

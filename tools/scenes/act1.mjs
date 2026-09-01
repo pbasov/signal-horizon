@@ -76,7 +76,7 @@ export default {
     const state = await ctx.eval(() => ({
       objective: document.querySelector(".net-obj-title")?.textContent ?? "",
       served: document.querySelector(".mission-tender-served")?.textContent ?? "",
-      wire: [...document.querySelectorAll(".log-line .msg")].slice(-4).map((e) => e.textContent ?? ""),
+      wire: [...document.querySelectorAll(".log-line .msg")].slice(-14).map((e) => e.textContent ?? ""),
     }));
     ctx.ok(
       "REGION-0 completes its term WITH earnings (the history strip records it)",
@@ -92,6 +92,26 @@ export default {
       "the WIRE marks the transition beat",
       state.wire.some((w) => w.includes("polar metro")),
       state.wire.join(" | "),
+    );
+    // SD-58 / B1 FIRST LIGHT — the one beat guaranteed to fire. The licence stops being a
+    // premise and becomes a record, in the Registry's own flat voice.
+    ctx.ok(
+      "the REGISTRY records first service (B1)",
+      state.wire.some((w) => w.includes("FIRST SERVICE RECORDED")),
+      state.wire.filter((w) => w.includes("LICENCE")).join(" | "),
+    );
+    // SD-58 — the tender names WHO is buying and WHY: the primary narrative channel.
+    const cast = await ctx.eval(() => {
+      const row = document.querySelector(".mission-tender");
+      return {
+        head: row ? (row.querySelector(".mission-tender-label")?.textContent ?? "") : "",
+        reason: row ? (row.querySelector(".mission-tender-reason")?.textContent ?? "") : "",
+      };
+    });
+    ctx.ok(
+      "the tender carries its client and reason line",
+      cast.head.length > 0 && cast.reason.length > 0,
+      cast.head + " // " + cast.reason,
     );
     await ctx.shot("10-act2-arrives");
 

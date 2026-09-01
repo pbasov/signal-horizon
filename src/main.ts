@@ -133,6 +133,8 @@ import {
   WIRE_UNDERBURN,
   WIRE_VEHICLE_LOST,
   WIRE_FIRST_SIGNAL,
+  REGISTRY_FIRST_SERVICE,
+  REGISTRY_FIRST_BREACH,
   NET_ACT_BEAT,
   PAD_AVAIL_FACT,
   PAD_RISK_BAND,
@@ -2482,6 +2484,9 @@ function r1Circularize(satId: string): void {
 const wireSeen = new Set<string>();
 let wireWelcomed = false;
 const wireServedOnce = new Set<string>();
+/** SD-58 — the licence-level Registry edges (B1 / B4). Once per game, render-only. */
+let registryFirstService = false;
+let registryFirstBreach = false;
 function drainMissionWire(): void {
   const t = clock.seconds;
   if (!wireWelcomed) {
@@ -2512,6 +2517,21 @@ function drainMissionWire(): void {
     const satId = netSession.lastSolveFor(c.id)?.path?.[1] ?? "the network";
     log.append({ tSim: t, sev: "info", entity: "LINK", value: c.id, msg: WIRE_FIRST_SIGNAL(satId, c.label) });
     netAudio.play("serve_locked");
+    // SD-58 / B1 FIRST LIGHT — the LICENCE-level record, once per game. Distinct from the
+    // per-contract first signal above: this is the first service ever recorded against the
+    // licence, so the licence stops being a premise and becomes a record. No cue, no
+    // celebration — the Registry does not praise.
+    if (!registryFirstService) {
+      registryFirstService = true;
+      log.append({ tSim: t, sev: "info", entity: "REGISTRY", value: "NOTICE", msg: REGISTRY_FIRST_SERVICE });
+    }
+  }
+  // SD-58 / B4 THE FIRST BREACH — a signed contract fell past the shared grace. The Registry
+  // is indifferent, and that indifference IS the beat: nobody is disappointed in you, it is
+  // simply written down. Once per game; the per-contract failure already has its own surface.
+  if (!registryFirstBreach && netSession.contracts.some((c) => c.state === "failed")) {
+    registryFirstBreach = true;
+    log.append({ tSim: t, sev: "warn", entity: "REGISTRY", value: "NOTICE", msg: REGISTRY_FIRST_BREACH });
   }
 }
 
