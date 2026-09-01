@@ -412,6 +412,36 @@ All 7 findings fixed:
 
 ---
 
+### EPIC — SD-58 · THE OVERLAY LAYER + the open pad takes its whole column · **SHIPPED 2026-09-01**
+
+> Owner, after live play: *"tiling WM is cool, but cumbersome sometimes … add overlay modals for
+> important pieces of gameplay to pop up on top of the main screen, also when using pad it should
+> take the whole right side of the interface, not just top right, so user doesn't have to scroll."*
+> Decision + rationale: `docs/decisions.md` SD-58 (amends DD-10).
+
+- [x] **OV-01** The overlay layer — *M* · `src/wm/modal.ts`: ONE panel at a time raised on top of
+      the wall in the same 1-bit chrome; content BORROWED and returned to its exact parent; Esc / ✕ /
+      backdrop lowers it; never gates the sim. `Shell.openModal/toggleModal/closeModal` +
+      `shownHosts()` (tiled ∪ raised) for the per-frame gates. · Verify: `wm/modal.test.ts` + played
+      headless — raise, toggle, Esc, wall unchanged, zero console errors.
+- [x] **OV-02** Three ways in — *S* · the **⛶** in any panel titlebar, the **⛶** on any rail row
+      (hover-expanded), and the keys **T** (TRACE) / **G** (the run record); the shortfall line's
+      hand-off raises TRACE instead of evicting a tile. Orrery is `poppable: false`. · Verify: all
+      three paths exercised in the headless play-through.
+- [x] **OV-03** SOLO — the open pad takes its whole column — *M* · `zonegrid.soloInColumn`, a pure
+      DERIVATION over an unmutated grid, driven by `setR1Mode`. Closing the pad restores the
+      player's dragged row split exactly; a rail summon of a solo-hidden panel drops the solo. ·
+      Verify: `wm/solo.test.ts` + a real gutter drag to 701/225 surviving an open→close cycle.
+- [x] **OV-04** The instrument pairs — *S* · the four pad picture-instruments go two-across
+      (`.pad-pair` / `.roomy` from `MissionTop.onResize`) once the pad owns the column. Measured:
+      **1092px of content in a 505px tile → 768px in a 906px body. No scrolling.** · Verify: DOM
+      scrollHeight/clientHeight probe on the running app, before and after.
+
+- ⬜ **OV-05** *(P2)* A `compact` overlay for a decision-shaped confirm (the size exists in
+      `modal.ts` and is currently unused) — build it when a beat actually needs one, not before.
+
+---
+
 ### EPIC — SD-53 · THE ROUTING SCREEN (TRACE) · closes M1-SLV-3 / M1-SLV-4 / M1-SLV-5
 
 > Spec: `docs/routing-screen.md`. Builds §5 primary view #4 as a two-level FLOWS/PIPES table plus its

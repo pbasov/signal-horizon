@@ -133,6 +133,11 @@ export class StatusStrip {
       keys.append(" system ");
       appendKeys(keys, "E");
       keys.append(" home");
+      // The overlay keys — raise a big read ON TOP of the wall (Esc returns it).
+      appendKeys(keys, "T");
+      keys.append(" trace ");
+      appendKeys(keys, "G");
+      keys.append(" record");
       // X-04 — the vault keys.
       appendKeys(keys, "V");
       keys.append(" vault ");

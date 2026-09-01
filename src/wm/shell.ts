@@ -18,9 +18,11 @@ import {
   computeLayout,
   swap,
   summonInto,
+  soloInColumn,
   setColumnSplit,
   setRowSplit,
 } from "./zonegrid";
+import { ModalLayer, type ModalSize } from "./modal";
 
 export interface PanelHandle {
   title: string;
@@ -28,6 +30,11 @@ export interface PanelHandle {
   status?(): "ok" | "warn" | "crit" | "idle";
   subtitle?(): string;
   onResize?(w: number, h: number): void;
+  /** Overlay size when this panel is raised on top of the wall (default "wide"). */
+  modalSize?: ModalSize;
+  /** Set false for a panel that must never leave the wall (the orrery's camera gestures are
+   * calibrated to its tile). Defaults to true — every panel is raisable. */
+  poppable?: boolean;
 }
 
 interface PanelView {
@@ -67,6 +74,12 @@ export class Shell {
    * so the tiles never sit under its collapsed strip. The rail's hover-expand overlays on
    * top (transient). Set by main.ts after the rail is built; relayout() honours it. */
   private reservedRightPx = 0;
+  /** THE OVERLAY LAYER — one panel at a time raised on top of the wall (see modal.ts). */
+  readonly modal: ModalLayer;
+  /** SOLO — the host currently given its whole column (the open pad). A DERIVED display
+   * state: {@link grid} still holds the player's real row weights, so closing the pad
+   * restores them exactly. Null = the wall is shown as authored. */
+  private soloHost: string | null = null;
 
   constructor(
     private canvas: HTMLElement,
@@ -77,11 +90,26 @@ export class Shell {
     this.baseGrid = { columns: [] };
     for (const [host, handle] of registry) this.createPanel(host, handle);
     window.addEventListener("resize", this.onWindowResize);
+    this.modal = new ModalLayer(canvas);
+    // A raised/lowered panel changes the SET of panels on screen, so the rail repaints and
+    // the lender's tile is re-measured (its content left/returned — the shell's cached size
+    // for it is stale either way).
+    this.modal.onOpen = () => this.onActivePanelsChange?.();
+    this.modal.onClose = (host) => {
+      const view = this.views.get(host);
+      if (view) {
+        view.lastW = -1;
+        view.lastH = -1;
+      }
+      this.relayout();
+      this.onActivePanelsChange?.();
+    };
   }
 
   /** Tear down global listeners — the class is otherwise reusable. */
   destroy(): void {
     window.removeEventListener("resize", this.onWindowResize);
+    this.modal.destroy();
   }
 
   setPreset(name: string, grid: ZoneGrid): void {
@@ -102,12 +130,86 @@ export class Shell {
     this.onActivePanelsChange?.();
   }
 
-  /** The hosts currently shown in the grid (one per zone's active tab). The rail reads
-   * this to light the visible panels. */
+  /** The hosts currently shown ON THE WALL (one per zone's active tab, SOLO applied). The
+   * rail reads this to light the visible panels. A host the solo is hiding is genuinely not
+   * on screen, so it reads as off — see {@link gridHosts} for what the real grid holds. */
   visibleHosts(): string[] {
-    const out: string[] = [];
-    for (const c of this.grid.columns) for (const r of c.rows) out.push(r.zone.hosts[r.zone.active]);
+    return hostsOf(this.displayGrid());
+  }
+
+  /** The hosts the REAL grid holds — including any the solo is currently suppressing. */
+  private gridHosts(): string[] {
+    return hostsOf(this.grid);
+  }
+
+  /** The hosts on screen anywhere: tiled OR raised as an overlay. Callers that keep a panel's
+   * content live while it is shown (THE PARSE re-folds its record) read this, not the tiled
+   * set — a raised panel is very much on screen. */
+  shownHosts(): string[] {
+    const out = this.visibleHosts();
+    const m = this.modal.host;
+    if (m !== null && !out.includes(m)) out.push(m);
     return out;
+  }
+
+  /**
+   * SOLO — give `host` its whole column (the open pad), or `null` to restore the wall. A
+   * DISPLAY state derived per layout from the untouched real grid, so closing the pad puts
+   * the row split back exactly where the player dragged it. A host that isn't on this
+   * desktop is remembered but has no effect until it is.
+   */
+  setSolo(host: string | null): void {
+    if (this.soloHost === host) return;
+    this.soloHost = host;
+    this.relayout();
+    this.ensureFocus();
+    this.onLayoutChange?.();
+    this.onActivePanelsChange?.();
+  }
+
+  /** The solo host, or null. */
+  get solo(): string | null {
+    return this.soloHost;
+  }
+
+  /** The grid AS SHOWN: the player's grid with the solo derivation applied. */
+  private displayGrid(): ZoneGrid {
+    return this.soloHost === null ? this.grid : soloInColumn(this.grid, this.soloHost);
+  }
+
+  // --- the overlay layer --------------------------------------------------
+  /** Raise a registered panel on top of the wall. Returns false for an unknown or
+   * non-poppable host. */
+  openModal(host: string): boolean {
+    const view = this.views.get(host);
+    if (!view || view.handle.poppable === false) return false;
+    this.modal.open({
+      host,
+      title: view.handle.title,
+      content: view.handle.content,
+      size: view.handle.modalSize,
+      subtitle: view.handle.subtitle?.bind(view.handle),
+      onResize: view.handle.onResize?.bind(view.handle),
+    });
+    return true;
+  }
+
+  /** Raise the panel if it is down, lower it if this one is up. The key-press contract. */
+  toggleModal(host: string): boolean {
+    if (this.modal.host === host) {
+      this.modal.close();
+      return false;
+    }
+    return this.openModal(host);
+  }
+
+  closeModal(): void {
+    this.modal.close();
+  }
+
+  /** The raised host, or null. */
+  get modalHost(): string | null {
+    return this.modal.host;
   }
 
   /**
@@ -121,10 +223,19 @@ export class Shell {
    */
   summonPanel(host: string): boolean {
     if (!this.views.has(host)) return false;
+    // Raised on top? The player is asking for it ON THE WALL — lower it first, then place it.
+    if (this.modal.host === host) this.modal.close();
     // Already on screen → focus it, no layout change (no duplication).
     if (this.visibleHosts().includes(host)) {
       this.setFocus(host);
       return false;
+    }
+    // In the grid but hidden by a SOLO (the open pad ate its column): the ask is to see it,
+    // so drop the solo rather than fail silently — the pad shrinks back to its zone.
+    if (this.gridHosts().includes(host)) {
+      this.setSolo(null);
+      this.setFocus(host);
+      return true;
     }
     const target = this.resolveTargetHost();
     if (target === null) return false;
@@ -190,8 +301,25 @@ export class Shell {
     subEl.className = "sub";
     const grow = document.createElement("span");
     grow.className = "grow";
-    // 15c (SD): the static ⛶ ✕ glyphs were affordance lies (zero handlers) — dropped.
     bar.append(dot, titleEl, subEl, grow);
+    // 15c (SD) dropped the static ⛶ ✕ glyphs as affordance LIES (zero handlers). ⛶ is back
+    // because it now DOES something: raise this panel on top of the wall (modal.ts), the way
+    // out of "the tiling WM is cumbersome sometimes" for a panel too big for its tile. It is
+    // a real button with a real handler, and it stops the pointer so it never starts a
+    // title-bar swap drag.
+    if (handle.poppable !== false) {
+      const pop = document.createElement("button");
+      pop.className = "panel-pop";
+      pop.type = "button";
+      pop.title = "raise on top (Esc to return it)";
+      pop.textContent = "⛶";
+      pop.addEventListener("pointerdown", (e) => e.stopPropagation());
+      pop.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.toggleModal(host);
+      });
+      bar.appendChild(pop);
+    }
 
     const body = document.createElement("div");
     body.className = "panel-body";
@@ -235,7 +363,7 @@ export class Shell {
   private currentLayout(): Layout {
     const r = this.canvas.getBoundingClientRect();
     const w = Math.max(0, r.width - this.reservedRightPx);
-    return computeLayout(this.grid, w, r.height, GUTTER);
+    return computeLayout(this.displayGrid(), w, r.height, GUTTER);
   }
 
   relayout(): void {
@@ -298,6 +426,7 @@ export class Shell {
 
   // --- chrome refresh (status dots / subtitles) ---------------------------
   tickChrome(): void {
+    this.modal.tickChrome();
     for (const view of this.views.values()) {
       if (!view.visible) continue;
       const s = view.handle.status?.() ?? "idle";
@@ -420,4 +549,11 @@ export class Shell {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
+}
+
+/** The active host of every zone, in column-major order. */
+function hostsOf(g: ZoneGrid): string[] {
+  const out: string[] = [];
+  for (const c of g.columns) for (const r of c.rows) out.push(r.zone.hosts[r.zone.active]);
+  return out;
 }

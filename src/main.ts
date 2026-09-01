@@ -456,6 +456,21 @@ let netDraft: LaunchDraft = cloneDraft(NET_PLANNER_PRESETS[0].draft);
 // footprint visibly misses until the player aims it home. Presets are LOADOUT/regime
 // starting points; aim is never preset.
 let r1Mode: "book" | "pad" = "book";
+/**
+ * Flip the MISSION panel's face, and give the PAD THE WHOLE RIGHT COLUMN while it is open
+ * (owner, 2026-09-01: "when using pad it should take the whole right side of the interface,
+ * not just top right, so user doesn't have to scroll"). The pad is a tall instrument — bus,
+ * slots, altitude, inclination, phase ring, comb, cost, ARM → LAUNCH — and in the top-right
+ * zone it was cut off mid-INCLINATION while LEDGER·FLEET sat half-empty underneath it.
+ *
+ * The shell's SOLO is a DERIVED display state, so the ledger's row weight is not lost: close
+ * the pad and the column comes back exactly as the player left it.
+ */
+function setR1Mode(m: "book" | "pad"): void {
+  r1Mode = m;
+  r1Armed = false;
+  shellRef?.setSolo(m === "pad" ? "mission-top" : null);
+}
 let r1Bus: BusTier = "smallsat";
 // FL-03 (SD-46): the sat fit is SLOT-INDEXED state (panels/loadout-state.ts — G slots then
 // S slots, duplicates legal, bus switches re-slot + truncate legally); r1Cards is the flat
@@ -3354,10 +3369,7 @@ const CONJ_EPOCH_SECONDS = ((): number => {
 
 // ── R1 (SD-45) — THE MISSION PANELS + their per-frame state builders ────────────
 const missionTopPanel = new MissionTop({
-  onMode: (m) => {
-    r1Mode = m;
-    r1Armed = false;
-  },
+  onMode: (m) => setR1Mode(m),
   onAccept: (id) => netAccept(id),
   // THE BOARD → THE BALL → THE PAD. Clicking a tender does three things and commits nothing:
   // it becomes the pad's coverage-analysis target (comb, compare table, FIT, the draft's
@@ -3413,7 +3425,9 @@ const missionTopPanel = new MissionTop({
   // SD-53 — THE PULL (docs/routing-screen.md §3.3). The shortfall line on MISSION is the hand-off
   // from "a red thing appeared" to "here is why": clicking it summons TRACE into the focused tile.
   // Without a path to the screen the whole surface's behavioural falsifier is unmeasurable.
-  onOpenTrace: () => windowRailRef?.summon("trace"),
+  // The shortfall's hand-off RAISES the routing screen ON TOP of the wall instead of evicting
+  // a tile: "why did it go red" is a read you take and put down, not a workspace you rebuild.
+  onOpenTrace: () => shellRef?.openModal("trace"),
   onLaunch: () => {
     if (!r1Armed || validateLoadout(r1Bus, r1Cards) !== null) return;
     netLaunch();
@@ -3575,7 +3589,7 @@ function traceElevationDeg(t: number, sat: NetSat, latRad: number, lonRad: numbe
 
 /** THE PROJECTION. */
 function traceState(): TraceState {
-  const mounted = shellRef !== null && shellRef.visibleHosts().includes("trace");
+  const mounted = shellRef !== null && shellRef.shownHosts().includes("trace");
   const t = clock.seconds;
   const elapsed = netMissionElapsedS(t);
   if (!mounted) {
@@ -4991,6 +5005,10 @@ const orreryHandle: PanelHandle = {
   subtitle: () => `· ${orrery.subtitle()}`,
   status: () => (lastBlackedOut ? "crit" : "ok"),
   onResize: (w, h) => orrery.resize(w, h),
+  // The globe is the WALL, never an overlay: its camera framing (the hero-fill dolly) and its
+  // drag/wheel gestures are calibrated to its tile, and raising the thing everything else
+  // annotates on top of everything else is backwards. Use the MAP desktop for a big globe.
+  poppable: false,
 };
 
 // net/ M1 (SD-44 PHASE 1) — the host registry the Shell mounts presets from. In NET mode it carries the
@@ -5331,8 +5349,17 @@ window.addEventListener("keydown", (e) => {
     } else if (k === "l" || k === "L") {
       // R1 (SD-45): L opens/closes the PAD — the commit is the two-step ARM → LAUNCH on the
       // pad itself (no one-key launches; the design/aim/commit sequence is the game).
-      r1Mode = r1Mode === "pad" ? "book" : "pad";
-      r1Armed = false;
+      // The open pad takes the whole right column (setR1Mode).
+      setR1Mode(r1Mode === "pad" ? "book" : "pad");
+    } else if (k === "t" || k === "T") {
+      // THE OVERLAY KEYS (2026-09-01). T raises the ROUTING screen and G the RUN RECORD on
+      // TOP of the wall — the two reads that are too big for a third of a column and that you
+      // take and put down. Raising costs you no tile: the workspace you were working in is
+      // still there underneath, and Esc gives it straight back. Before this, either read meant
+      // evicting MISSION or the globe and then rebuilding the desktop by hand.
+      windowRailRef?.raise("trace");
+    } else if (k === "g" || k === "G") {
+      windowRailRef?.raise("parse");
     } else if (k === "r" || k === "R") {
       orrery.resetCamera();
     } else if (k === "s" || k === "S") {
@@ -5757,7 +5784,7 @@ function frame(now: number): void {
   // E10c — while THE PARSE panel is VISIBLE (the REVIEW preset, or summoned into any tile
   // via the rail), keep the reviewable record live (a read-only re-fold of the truthful
   // log; it never mutates sim state). Dirty-checked, so it costs nothing when not shown.
-  if (shell.visibleHosts().includes("parse")) refreshParse();
+  if (shell.shownHosts().includes("parse")) refreshParse();
   // Feed the glanceable readout (M1-10) + freshness-as-saturation, then render.
   m = perfMark("netSlices", m);
   // X-05 — tender lapses are an edge event (the board owes you the word the offer window

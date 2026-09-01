@@ -238,3 +238,27 @@ export function computeLayout(g: ZoneGrid, W: number, H: number, gut: number): L
   });
   return { placements, dividers };
 }
+
+/**
+ * SOLO — derive a DISPLAY grid in which `host` owns its whole column (full height),
+ * the column's other zones stepping aside. The pad ask (2026-09-01): "when using pad it
+ * should take the whole right side of the interface, not just top right, so user doesn't
+ * have to scroll" — a tall instrument needs the column, not a third of it.
+ *
+ * This is a pure DERIVATION, never a mutation of the player's grid: the caller keeps the
+ * real grid and re-derives per layout, so closing the pad restores the exact row weights
+ * the player dragged — no save/restore bookkeeping, nothing to get out of sync. Columns
+ * (and therefore column dividers) are untouched, so every gesture index still maps.
+ *
+ * Returns the grid UNCHANGED when `host` is not an active host in it (e.g. the pad's panel
+ * isn't mounted on this desktop) or when the result would fail the invariant.
+ */
+export function soloInColumn(g: ZoneGrid, host: string): ZoneGrid {
+  const ci = g.columns.findIndex((c) => c.rows.some((r) => r.zone.hosts[r.zone.active] === host));
+  if (ci < 0) return g;
+  // Already alone in its column — nothing to derive (keeps the identity fast-path).
+  if (g.columns[ci].rows.length === 1) return g;
+  const ng = cloneGrid(g);
+  ng.columns[ci].rows = [{ weight: 1, zone: { hosts: [host], active: 0 } }];
+  return validate(ng) ? ng : g;
+}

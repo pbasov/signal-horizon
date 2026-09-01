@@ -341,6 +341,16 @@ export class MissionTop implements PanelHandle {
     busGroup.appendChild(this.slotChooser);
     padScroll.appendChild(busGroup);
 
+    // THE INSTRUMENT PAIRS. The four picture-instruments are stacked one-per-row in a narrow
+    // pad and go TWO-ACROSS once the pad is tall and wide enough to hold them (the `.roomy`
+    // class, set from onResize). Each is a 250×150 viewBox drawn at a pinned 132px height, so
+    // a half-width cell just centres the same drawing at the same type size — nothing shrinks.
+    // Pairing is what makes the open pad fit WITHOUT scrolling once it owns the whole column
+    // (the owner's ask): the stack is ~1090px tall, the column ~930, and the two pairs give
+    // back the ~300px difference.
+    const aimPair = el("div", "pad-pair");
+    const placePair = el("div", "pad-pair");
+
     // ── HOW HIGH — the altitude profile: a side-on cut with the beam drawn onto the
     // surface, so the footprint visibly opens out as the orbit climbs.
     const altGroup = el("div", "group pad-instrument");
@@ -360,7 +370,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("altKm", altScrub);
     altGroup.appendChild(altScrub.root);
-    padScroll.appendChild(altGroup);
+    aimPair.appendChild(altGroup);
 
     // ── HOW FAR NORTH — the inclination dial, marked with the customer's latitude.
     const incGroup = el("div", "group pad-instrument");
@@ -380,7 +390,8 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("incDeg", incScrub);
     incGroup.appendChild(incScrub.root);
-    padScroll.appendChild(incGroup);
+    aimPair.appendChild(incGroup);
+    padScroll.appendChild(aimPair);
 
     // ── WHERE — the aim. The globe is the primary control (click a place); the number is
     // the exact readout you can also scrub.
@@ -414,7 +425,7 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("raanDeg", raanScrub);
     whereGroup.appendChild(raanScrub.root);
-    padScroll.appendChild(whereGroup);
+    placePair.appendChild(whereGroup);
 
     // ── THE RING — what you already fly on this orbit, what this launch adds, and the hole
     // between them. This is the answer to "one of my three died, where does the new one go".
@@ -444,7 +455,8 @@ export class MissionTop implements PanelHandle {
     });
     this.scrubs.set("phaseSpreadDeg", spreadScrub);
     ringGroup.appendChild(spreadScrub.root);
-    padScroll.appendChild(ringGroup);
+    placePair.appendChild(ringGroup);
+    padScroll.appendChild(placePair);
 
     const combGroup = el("div", "group");
     this.vCombLabel = el("div", "legend", "COVERAGE COMB");
@@ -492,6 +504,17 @@ export class MissionTop implements PanelHandle {
   }
 
   private lastMode: "book" | "pad" = "book";
+
+  /**
+   * The pad goes TWO-ACROSS when its tile can hold it (the shell calls this on every
+   * relayout — event-driven, never a per-frame layout read). The thresholds are the geometry
+   * of the thing: a `.pad-pair` cell needs ~290px to draw a 250-wide instrument without the
+   * scale going width-limited, and the pairs only BUY anything when the column is tall enough
+   * to show the result — which is exactly the open pad's whole-column solo.
+   */
+  onResize(w: number, h: number): void {
+    this.padFace.classList.toggle("roomy", w >= 580 && h >= 700);
+  }
 
   /** FL-04 — (de)select a slot: reselect closes the chooser; select opens its class menu.
    * UI-only state; the slot write goes through actions.onSlotCard. */

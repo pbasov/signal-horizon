@@ -399,7 +399,7 @@ Two C# porting traps still hold for SaveGame/replay: (1) `dt = 1/60` is stored a
 **Status: ACCEPTED.** In the web stack: CSS `image-rendering: pixelated`, `-webkit-font-smoothing: none`, viewport-driven scaling. The 2560×1440 design-density reference still applies as a CSS baseline.
 
 ### DD-10 — Tiling WM model (constrained zone-grid)
-**Status: ACCEPTED.** 1–3 cols × 1–3 rows, one-panel-or-tab-group per zone, mouse-driven zone-snapping, presets-as-data, always-tiled invariant. Full spec in `tiling-wm-spec.md`.
+**Status: ACCEPTED.** 1–3 cols × 1–3 rows, one-panel-or-tab-group per zone, mouse-driven zone-snapping, presets-as-data, always-tiled invariant. Full spec in `tiling-wm-spec.md`. **Amended by SD-58 (2026-09-01):** the invariant governs the WALL. A panel may be RAISED on top of it as a single overlay (`wm/modal.ts`) without the grid changing shape, and a panel may be given its whole COLUMN (`zonegrid.soloInColumn`) as a pure display derivation over an unmutated grid. Neither adds a floating tile, an occluded tile, or a gap.
 
 ### DD-15 — Orrery is 3D + body-anchored orbit camera + curated preset framings
 **Status: ACCEPTED.** 3D is non-negotiable (orbital planes must read). Body-anchored orbit camera with rotate/zoom/reset. Curated presets (CISLUNAR/ORBITS/SYSTEM/TOP-DOWN) with animated transitions.
@@ -1244,6 +1244,7 @@ regression gets hidden. Filed in the backlog.
 gains `graph.ts`. The stale "CROSSLINK is inert" headers in `sat.ts`, `beams.ts` and `router.ts` are
 corrected. `M1-SAT-3` and `M1-SLV-1` move to done in the backlog; the M1 §7.3 CEILING (the visual
 constructor) remains unbuilt and is now the largest open piece of the §7 epic.
+<<<<<<< HEAD
 ---
 
 ### SD-58 — THE BOARD IS A MAP (2026-09-01)
@@ -2408,3 +2409,76 @@ sightseeing, not driving, and it wants one switch, not six clicks.
 **Known, not fixed:** `ACT1B_CONTRACT_ID` (`"REGION-C"`, the FL-07 second Act-1 tender) is declared in
 `scenario.ts` and emitted by nothing. The derived catalogue makes this visible and its test pins the
 live set at five contracts. Wiring or deleting it is a design call, not a debug-tool one.
+=======
+
+### SD-58 — THE OVERLAY LAYER + the open pad takes its whole column (2026-09-01)
+
+**Status: ACCEPTED (user, after live play: "tiling WM is cool, but cumbersome sometimes, i think we
+have to add overlay modals for important pieces of gameplay to pop up on top of the main screen,
+also when using pad it should take the whole right side of the interface, not just top right, so
+user doesn't have to scroll").** Two changes, one complaint: the wall is the right home for the
+game, and it is the wrong home for two specific things — a read you take and put down, and an
+instrument taller than any zone.
+
+**(1) THE OVERLAY LAYER (`src/wm/modal.ts`).** One panel at a time raised ON TOP of the wall, in the
+same 1-bit panel chrome the tiles use. `Shell.openModal/toggleModal/closeModal`; Esc, the ✕, or the
+backdrop lowers it. Three ways in: the **⛶ in any panel's titlebar**, the **⛶ on any rail row**
+(hover-expanded), and the keys **T** (TRACE) / **G** (the run record). The shortfall line's
+`onOpenTrace` hand-off now raises TRACE instead of evicting a tile.
+
+**This does NOT break DD-10's always-tiled invariant, and the distinction is the whole design.** The
+invariant governs the WALL: no floating tiles, no occlusion, no gaps, every pixel of the grid
+occupied. An overlay is not a tile — the grid underneath keeps its exact shape, is never mutated,
+and is handed back untouched. What the wall cannot give is a screen-sized reading surface for a
+panel WITHOUT evicting the panel you were working in, and before this, reading TRACE or THE PARSE
+meant displacing MISSION or the globe and then rebuilding the desktop by hand. Deliberately narrow
+so it never becomes a floating-window manager: one at a time, no stack, no drag, no resize, no
+window list.
+
+**It never gates the sim.** The clock keeps running and the wall keeps painting underneath — the
+same contract the onboarding briefing cards already hold.
+
+**The content is BORROWED, not rebuilt.** The panel's content element is re-parented into the
+overlay and returned to its exact original parent (same discipline that lets the shell re-tile the
+orrery's WebGL canvas without destroying it), so a raised panel keeps its live state. A tile that
+lends its content shows a **stub label** saying where the content went — a LABEL, not a button:
+the overlay covers the wall, so a click target there could never be reached, and a control you
+cannot click is exactly the affordance lie 15c deleted. `Shell.shownHosts()` (tiled ∪ raised) is
+what the per-frame gates read, so THE PARSE keeps re-folding and TRACE keeps accruing while raised.
+The orrery is `poppable: false` — its camera framing and drag gestures are calibrated to its tile,
+and raising the thing everything else annotates on top of everything else is backwards.
+
+**(2) THE OPEN PAD TAKES ITS WHOLE COLUMN.** Measured on the running app before touching anything:
+the pad's content is **1092px tall in a 505px tile** — it was cut off mid-INCLINATION, with the
+whole aim-and-commit half (phase ring, comb, cost, ARM → LAUNCH) below the fold, while LEDGER·FLEET
+sat half-empty underneath it. Two moves close that:
+
+- **SOLO (`zonegrid.soloInColumn`)** — a new pure op that DERIVES a display grid where one host owns
+  its column. `Shell.setSolo(host|null)`, driven by `setR1Mode` in main.ts. It is a derivation, not
+  a mutation: the player's grid keeps its real row weights, so closing the pad restores the split
+  exactly where they dragged it, with no save/restore bookkeeping to get out of sync. Columns are
+  untouched, so every gesture index still maps and the globe beside it does not move. A rail summon
+  of a solo-hidden panel drops the solo rather than failing silently.
+- **THE INSTRUMENT PAIRS** — full column height is 930px, so the solo alone still left ~186px
+  scrolling. The four picture-instruments now go two-across (`.pad-pair`, `.roomy` from
+  `MissionTop.onResize` — event-driven off the shell's relayout, never a per-frame layout read).
+  They are 250×150 viewBox drawings pinned to 132px tall, so a half-width cell centres the SAME
+  picture at the SAME type size — nothing shrinks. **1092 → 768px in a 906px body: no scrolling.**
+
+**Verification.** New pure tests: `wm/solo.test.ts` (full column height, column width + the other
+column's boxes byte-identical, purity/no mutation, dragged weights restored, DD-10 validate, no-op
+for an absent or already-solo host) and `wm/modal.test.ts` (centred, wall visible on every edge,
+genuinely bigger than the tile it came from, capped on big screens, contained in a small window).
+**Played headless end-to-end**, every claim checked against the running app: L solos the pad and
+nothing on the wall scrolls; T/G raise and toggle; Esc lowers and the wall is unchanged; a gutter
+drag to 701/225 survives an open→close pad cycle exactly; the titlebar ⛶ and the rail ⛶ both raise
+with a stub in the lender's tile; a rail summon of a raised panel puts it back in the wall. Zero
+console errors throughout.
+
+**One thing worth knowing for anyone doing frontend work in a worktree:** `vite.config.ts` ignores
+`**/.claude/worktrees/**` in `server.watch` (a deliberate SD-55 fix so a worktree cannot force-reload
+the :5173 session). When the dev-server ROOT *is* a worktree, that ignore kills HMR entirely and the
+server silently serves the first transform forever — restart vite for each verification round.
+
+---
+>>>>>>> 8fe97bb (SD-58: overlay modals raise a panel over the wall, and the open pad takes its whole column)
