@@ -1,6 +1,6 @@
 # Signal Horizon — The Setting
 
-### Story foundation — v0.1 DRAFT (proposed, not yet accepted)
+### Story foundation — v0.2 (§10 ruled 2026-09-01; the four open choices are now settled)
 
 > **This document is scenery, not design.** It answers two questions and no others: *why is anyone
 > at the Moon and Mars*, and *why does anyone pay for information*. It has no authority over
@@ -94,6 +94,41 @@ reactor is. Raw is enormous, the answer is small, and hauling raw across the gap
 industry pushes refineries out to the data.
 → *This is ship-raw versus edge, and it is why a datacenter is a network asset and not a building.*
 
+### 4a. Who is out there — and why their number grows
+
+Ruling 3 settles the tone: **people are customers, never characters.** No named colonist has a
+face, a subplot, or a line of dialogue. But the *scale* of human presence is not fixed — it is the
+setting's one moving part, and it moves for a reason the player causes.
+
+**The rule: population follows the pipe.** A place you cannot reach reliably cannot hold people.
+Medicine, industrial safety, schooling, an exchange, a legal system — none of it runs on a link
+that drops. Reach is the precondition for settlement, not a reward for it. So as the player's
+network hardens over a region, that region's human presence thickens: an outpost becomes a station,
+a station becomes a settlement, a settlement becomes settlements.
+
+This is not a designer-placed tier ladder with bigger numbers. **It is the escalation engine
+(GDD §3b, generator 1) wearing a human face.** Demand grows where you serve; here, the growth is
+literally people arriving because you made the place liveable. And it is the monument (GDD §1)
+paying off twice: the coverage web thickens, and *people appear underneath it*.
+
+**The arc, and what it does to the stakes:**
+
+| Your service | What's there | What a breach costs |
+|---|---|---|
+| Intermittent, best-effort | Machines, and a rotating handful of specialists. A polar research station, in space. | A dataset is lost. Somebody re-flies a survey. |
+| Reliable, contracted | A working outpost. Crews on rotation, industrial safety, a clinic. | An industrial process trips. A crew shelters. Somebody is hurt. |
+| Redundant, load-bearing | A settlement with its own public works, exchange, and law. | A community is cut off. During conjunction, that is weeks. |
+
+The stakes escalate without a single scripted event: the same breach, on the same link, means more
+because more depends on it. The player earns the higher stakes by succeeding.
+
+**Two clamps.**
+- **This is business, not rescue** (§9). Settlements grow because they are economically viable and
+  now reachable — never because Earth is failing and people are fleeing.
+- **Institutions, not individuals, all the way up.** A settlement is still a customer: its public
+  works authority, its clinic, its exchange. The moment a colonist gets a name and a storyline, the
+  story has escaped its cage (§8).
+
 ## 5. The tiers, as story
 
 Each tier's story beat must kill a habit, matching the GDD's across-tier rule (§3b). If a tier's
@@ -175,21 +210,36 @@ ever stops being true, the story has escaped its cage.
 - **No lore that a mechanic depends on.** See the rule at the top.
 - **No literary voice anywhere in the machine.** The instruments are instruments.
 
-## 10. Open choices — recommendations, for a ruling
+## 10. Rulings (2026-09-01)
 
-1. **Is Earth prosperous or strained?** *Recommend prosperous but capped.* The expansion is growth
-   hitting a physical ceiling, not escape. A strained Earth drags the tone toward survival drama
-   and undermines "you are a utility." Easy default: prosperous.
-2. **Is the player a startup or a spun-off arm of an incumbent?** *Recommend a startup holding one
-   licence.* It matches what M1 already built — a thin wallet, PROBATION, baseline offers — and it
-   makes the first tender matter.
-3. **Are there people at Mars, or mostly machines?** *Recommend few people, and they are customers,
-   not characters.* Life-safety stakes need someone to be at risk in a conjunction; a populated
-   colony story would pull focus off the network.
-4. **Does the player's company get a name?** *Recommend the player names it once, at new-game, and
-   the world uses it.* One free line of ownership at zero narrative cost.
+**1. Earth is prosperous but capped.** The expansion is growth meeting a physical ceiling, not
+escape from a dying world. Earth is rich, busy, and out of watts, cooling, and consent. This is the
+root of the anti-charity clamp in §9 — it is why the player is a contractor rather than a saviour.
+
+**2. The player is a startup holding one licence.** Not a spun-off arm of an incumbent. This is
+what M1 already built: a thin wallet, PROBATION, guaranteed-but-poor baseline offers. It makes the
+first tender matter, and it makes the incumbent rival (§7) an obstacle with a real advantage rather
+than a peer.
+
+**3. People are customers, never characters — and their number grows with your network.** Early,
+human presence is polar-research-station scale: a rotating handful of specialists among machines.
+As the player's service hardens, outposts thicken into settlements and the game moves on to serving
+colonies. The mechanism, the stakes ladder, and the two clamps are §4a. The growth is endogenous —
+population follows the pipe — never a scripted tier unlock.
+
+**4. The player names the company once, at new-game, with a randomise button.** The world then uses
+that name — the regulator's licence line, rival correspondence, breach records. Free ownership at
+zero narrative cost.
+
+*Random-name rules:* the generator produces **dry utility names, never space opera.** It reads like
+a telecoms registry, not a starship. Roughly `[geographic / mythological-but-boring / initials] +
+[Relay | Signal | Link | Networks | Communications | Transit | Orbital | Telemetry]`, with an
+occasional bare initialism. Good: *Meridian Relay*, *Kestrel Signal*, *Tarn Orbital Networks*,
+*BCT Communications*. Banned: anything with Star, Nova, Galactic, Infinity, Dyn-, -Corp, or an X.
+The player's own field accepts anything; the generator sets the tone for what a company here is
+*supposed* to sound like, which is the actual worldbuilding job it does.
 
 ---
 
-*v0.1 DRAFT. Proposed as scenery for GDD §1, §3, §3b, §4.8, and §4.10. No mechanic in the M1 family
-changes if this is rejected.*
+*v0.2. Scenery for GDD §1, §3, §3b, §4.8, and §4.10. No mechanic in the M1 family changes if this
+is rejected. §10 ruled 2026-09-01; §4a added by ruling 3.*
