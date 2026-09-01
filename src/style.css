@@ -1077,6 +1077,10 @@ body {
 .mission-pip { font-size: 9px; padding: 0 3px; border: 1px solid var(--line-dim); color: var(--grey); }
 .mission-pip.on { color: var(--cyan); border-color: var(--cyan); }
 .mission-terms { font-size: 10px; color: var(--fg-dim); margin-left: 6px; }
+/* SD-58 — the tender reason line: the customer's voice, subordinate to every number on the
+   row. Italic + dim so it reads as scenery the eye can skip; it carries no mechanical load. */
+.mission-tender-reason { font-size: 10px; color: var(--fg-dim); font-style: italic; margin: 2px 0 3px; line-height: 1.4; opacity: 0.85; }
+.mission-tender-reason:empty { display: none; }
 .mission-tender-bet { font-size: 10px; color: var(--fg-dim); }
 .mission-tender-served { font-size: 10px; color: var(--fg-dim); margin: 2px 0; }
 .mission-accept { margin-top: 3px; color: var(--cyan); }

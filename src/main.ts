@@ -101,6 +101,7 @@ import { renderFaultLine, renderLossStamp, FIX_CLAUSE } from "./sim/net/trace";
 // act readout). Pure time reads of the sim's folded fault state; render-only (no golden).
 import { telegraphedCountdownRemainingS, faultRemovesSatAt, type ShortfallFixKind } from "./sim/net/fault-types";
 import { NetPlanner, type NetPlannerRenderState, type NetObjective, type NetContractRow } from "./panels/net-planner";
+import { clientName, clientReason } from "./panels/clients";
 import { MissionTop, type MissionTopState, type PadDraftReadout } from "./panels/mission-top";
 import { LedgerFleet, type LedgerFleetState, type FleetChip } from "./panels/ledger-fleet";
 // SD-53 — THE ROUTING SCREEN (docs/routing-screen.md): the panel, and the pure arithmetic behind it.
@@ -947,6 +948,9 @@ function netContractRows(t: number): NetContractRow[] {
     return {
       id: c.id,
       label: c.label,
+      // SD-58 — the cast. Looked up panel-side; the sim folds only the stable clientId.
+      client: clientName(c.clientId),
+      reason: clientReason(c.clientId),
       state: c.state,
       terms: netContractTerms(c),
       rewardPerHr: c.payPerSecond * 3600,

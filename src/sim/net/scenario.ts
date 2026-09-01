@@ -244,6 +244,7 @@ const ACT1: Beat = {
     // REGION-0 — the opener: flat pay + a sign-on bonus with a 15-minute clock.
     session.addContract(
       offerNetContract(ACT1_CONTRACT_ID, NET_ACT1_REGION, {
+        clientId: "halden",
         activeAxes: new Set<SlaAxis>(["connectivity"]),
         // §7.2 — the equatorial trunk is LATENCY-class (lat-only default weights = the byte-identical
         // pre-P3 default). It routes the SHORT way; the player later OVERRIDES it to bandwidth-share-
@@ -314,6 +315,7 @@ const ACT2: Beat = {
     // exists on the contract. Idempotent (the session de-dupes by id).
     session.addContract(
       offerNetContract(ACT2_CONTRACT_ID, NET_ACT2_REGION, {
+        clientId: "thule",
         activeAxes: new Set<SlaAxis>(["connectivity", "availability"]),
         slaAvail: ACT2_SLA_AVAIL,
         offerWindowS: NET_OFFER_WINDOW_S,
@@ -396,6 +398,7 @@ const ACT3A: Beat = {
     // (the §4.4 "one at a time": latency = authored arrival; bandwidth = escalation-triggered).
     session.addContract(
       offerNetContract(ACT3A_CONTRACT_ID, NET_ACT3A_CORRIDOR_REGION, {
+        clientId: "verity",
         activeAxes: new Set<SlaAxis>(["connectivity", "latency"]),
         slaLatencyS: NET_ACT3A_LOW_LATENCY_S,
         offerWindowS: NET_OFFER_WINDOW_S,
@@ -417,6 +420,7 @@ const ACT3A: Beat = {
     // until an asymmetric peak window cuts REGION-0's fair share below its 0.6 floor.
     session.addContract(
       offerNetContract(ACT3A_BACKHAUL_CONTRACT_ID, NET_ACT3A_BACKHAUL_REGION, {
+        clientId: "sable",
         activeAxes: new Set<SlaAxis>(["connectivity"]),
         offerWindowS: NET_OFFER_WINDOW_S,
         offeredAtS: t,
@@ -565,6 +569,7 @@ const ACT4: Beat = {
     // session de-dupes by id, so a re-emit is a no-op.
     session.addContract(
       offerNetContract(ACT4_MARS_CONTRACT_ID, NET_ACT4_MARS_REGION, {
+        clientId: "tharsis",
         activeAxes: new Set<SlaAxis>(["connectivity"]),
       }),
     );

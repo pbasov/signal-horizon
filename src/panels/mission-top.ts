@@ -563,10 +563,19 @@ export class MissionTop implements PanelHandle {
       for (const t of liveRows) {
         const row = el("div", "mission-tender");
         const head = el("div", "mission-tender-head");
-        head.appendChild(el("span", "mission-tender-label", t.label));
+        // SD-58 — WHO is buying leads the row; the region is the qualifier after it. A
+        // client-less contract (tests, ad-hoc offers) degrades to the bare region label.
+        head.appendChild(el("span", "mission-tender-label", t.client ? `${t.client} · ${t.label}` : t.label));
         const state = el("span", "mission-tender-state", t.state.toUpperCase());
         head.appendChild(state);
         row.appendChild(head);
+        // SD-58 — THE REASON LINE. The primary narrative channel (beats §8): one line, in the
+        // customer's voice, saying why the number matters. It never states the number, never
+        // advises, and a player who ignores it loses nothing mechanical.
+        if (t.reason) {
+          const reason = el("div", "mission-tender-reason", t.reason);
+          row.appendChild(reason);
+        }
         const pips = el("div", "mission-pips");
         pips.title = "SLA axes this tender enforces: LAT = a latency ceiling · AVL = held continuously as sats move · BW = a committed bandwidth floor on a shared pipe.";
         for (const p of AXIS_PIPS) {
