@@ -43,6 +43,9 @@ import {
   NET_ACT2_REGION_LON_RAD,
   NET_ACT4_MARS_REGION,
   ACT4_MARS_CONTRACT_ID,
+  NET_ACT3C_FARSIDE_REGION,
+  ACT3C_LUNA_CONTRACT_ID,
+  NET_ACT3C_GATE_ID_STEM,
   type Region,
 } from "./endpoint";
 import { A1_LEO_PERIOD_S } from "./world";
@@ -563,6 +566,107 @@ const ACT3B: Beat = {
   },
 };
 
+// --- ACT 3c tuning (the CISLUNAR on-ramp) -------------------------------------------
+
+/** The HOLD the act3c gate requires (served-seconds on LUNA-1). The deep-space ground segment
+ * is three dishes 120° apart and the toy Earth turns in 240 s, so a downlink hand-off happens
+ * every ~80 s. 160 s is therefore TWO full hand-offs: enough that holding the farside is
+ * demonstrably a rotating segment doing its job rather than one dish getting a lucky pass,
+ * without extending the canonical replay (and every golden that walks it) by a whole extra
+ * rotation. Expressed in SERVED-seconds, not elapsed: a link that keeps dropping never gets
+ * here, so this is a state gate like every other beat's. TUNABLE. */
+export const NET_ACT3C_HOLD_S = 160;
+
+/** LUNA-1's pay (€/sim-second) — a FRONTIER PREMIUM, 2.25× the €20 Earth-metro default.
+ *
+ * It is not arbitrary generosity. Nobody else can carry farside traffic — the contract exists
+ * precisely because the geometry excludes every conventional operator — and a monopoly on an
+ * impossible route prices accordingly. It also has to be true economically: by the time act3c
+ * opens the canonical network is running a small net LOSS (a large fleet's opex against mature
+ * contracts), so a merely-average contract would leave the arc unable to fund the Mars relay
+ * that follows, and the cislunar rung would read as a punishment for progressing. TUNABLE. */
+export const NET_ACT3C_PAY_PER_SECOND = 45.0;
+
+/**
+ * act3c — "Some places can never see you." (the CISLUNAR ON-RAMP; GDD §2 tier 2.)
+ *
+ * THE RUNG THE ARC WAS MISSING. Before this beat the game stepped from Earth's millisecond
+ * latencies straight to Act 4's eight-minute Mars vertigo, which is the exact failure the
+ * GDD's own risk register (#7, "the onboarding wall") says to avoid: it prescribes teaching
+ * light-delay BY SIGHT at cislunar's ~1.3 s *before* Mars makes it bite. Act 3c is that rung.
+ *
+ * WHY IT IS NOT MORE CONTENT-TIERING. The lesson is NOT a bigger number — that would be the
+ * same act with the dial turned, and it is explicitly not what this is. It is a NEW KIND of
+ * shortfall. Every Earth act is solved by scheduling: the geometry opens and closes as the
+ * body turns, so more satellites, better phasing, or a different aim always eventually wins.
+ * The lunar farside is tidally locked away from Earth — it has NO line of sight, ever, and
+ * `cislunar.test.ts` proves it across a full lunar month and over a wide shell of Earth
+ * orbital positions. For the first time the player's entire playbook is not merely
+ * insufficient, it is inapplicable. The answer is a node placed where NEITHER endpoint is:
+ * the Earth–Moon L2 gateway. That is GDD tier 2's named constraint, "relay placement".
+ *
+ * emit: offer the ONE farside contract (NET_ACT3C_FARSIDE_REGION, bodyId "moon",
+ *       activeAxes={connectivity}). Latency is deliberately NOT an enforced axis: 1.8 s is a
+ *       fact of the universe, and breaching the player over physics they cannot engineer away
+ *       would teach helplessness instead of placement. The delay is a READOUT — felt, not
+ *       punished. No escalation, no faults, no mask flip; a pure demand arrival.
+ * gate: LUNA-1 held for one full rotation of the deep-space ground segment
+ *       ({@link NET_ACT3C_HOLD_S} served-seconds) — the concept is FELT once the player has
+ *       actually run a cislunar link through every dish hand-off, not merely signed it. Opens
+ *       act4, so the Mars frontier now arrives AFTER a light-delay the player has already lived
+ *       with, which is precisely the on-ramp the GDD asks for.
+ * fallback: name the structural fact and point at the gateway — never place it for them.
+ */
+const ACT3C: Beat = {
+  id: "act3c",
+  emit(session: NetSession): void {
+    // Connectivity-only, and no lapse clock. Acts 1–2's tenders lapse because they are
+    // competitive market deals; a frontier OPENING is not one, and a lapsing offer here could
+    // dead-end the arc (the cursor never advances past a beat whose contract expired unsigned).
+    // Act 4 makes the same call for the same reason. The session de-dupes by id.
+    session.addContract(
+      offerNetContract(ACT3C_LUNA_CONTRACT_ID, NET_ACT3C_FARSIDE_REGION, {
+        activeAxes: new Set<SlaAxis>(["connectivity"]),
+        payPerSecond: NET_ACT3C_PAY_PER_SECOND,
+        clientId: "korolev",
+      }),
+    );
+  },
+  gate(session: NetSession): boolean {
+    const c = session.contractById(ACT3C_LUNA_CONTRACT_ID);
+    if (c === null || c.state !== "active") return false;
+    // Served-seconds, not elapsed: a link that keeps dropping never gets here.
+    return c.servedSecondsAccum >= NET_ACT3C_HOLD_S;
+  },
+  fallback(session: NetSession): Shortfall | null {
+    const c = session.contractById(ACT3C_LUNA_CONTRACT_ID);
+    if (c === null || c.state !== "active") return null;
+    if (c.servedSecondsAccum >= NET_ACT3C_HOLD_S) return null;
+    const hasGate = session.sats.some((s) => s.id.startsWith(NET_ACT3C_GATE_ID_STEM));
+    if (!hasGate) {
+      return {
+        subjectId: c.id,
+        message:
+          `${c.label} sits on the Moon's far side, and the Moon keeps one face to Earth forever — ` +
+          `so Earth is not below its horizon SOMETIMES, it is below it ALWAYS. No orbit you can fly ` +
+          `around this planet will ever see it; more satellites is not a smaller version of the answer. ` +
+          `The link has to be relayed by something standing where it can see BOTH — out past the far ` +
+          `limb, at Earth–Moon L2.`,
+        suggestPresetId: "LUNA_GATE",
+      };
+    }
+    // A gateway exists but the hold has not accumulated: the link is real but intermittent.
+    return {
+      subjectId: c.id,
+      message:
+        `The farside link is closing but not HOLDING — ${c.servedSecondsAccum.toFixed(0)}s of the ` +
+        `${NET_ACT3C_HOLD_S}s it needs. Signal round-trip out there is about 3.5 seconds, so give it ` +
+        `time to run: the gateway hands its downlink between the deep-space dishes as Earth turns.`,
+      suggestPresetId: "LUNA_GATE",
+    };
+  },
+};
+
 /**
  * act4 — "Distance changes everything." (the Mars frontier TEASER — vertigo, FENCED, by sight).
  * The player has a mature Earth network (acts 1-3 done) and feels they have got this; act4 is the
@@ -599,9 +703,13 @@ const ACT4: Beat = {
 };
 
 /**
- * THE M1 ARRIVAL SEQUENCE (design §3). One game, four gated beats, with act3 split into
- * act3a (escalation) and act3b (faults, fenced behind act3a) so the granularity is real
- * from the start. The session steps the cursor act1 → act2 → act3a → act3b → act4. In
- * Phase A only act1 is live; the rest are structural placeholders (empty emit, false gate).
+ * THE M1 ARRIVAL SEQUENCE (design §3). One game, gated beats, with act3 split into act3a
+ * (escalation), act3b (faults, fenced behind act3a) and act3c (the cislunar on-ramp) so the
+ * granularity is real. The session steps the cursor act1 → act2 → act3a → act3b → act3c → act4.
+ *
+ * act3c is APPENDED at index 4, immediately before act4, deliberately: every earlier index is
+ * unchanged, so the cursor values that existing state, saves and tests reason about (act1=0 …
+ * act3b=3) all still mean what they meant. Only Mars moves — from 4 to 5 — which is the whole
+ * point of the change, since the GDD requires the cislunar rung to come BEFORE it.
  */
-export const M1_SCENARIO: Beat[] = [ACT1, ACT2, ACT3A, ACT3B, ACT4];
+export const M1_SCENARIO: Beat[] = [ACT1, ACT2, ACT3A, ACT3B, ACT3C, ACT4];

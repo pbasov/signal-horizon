@@ -1622,3 +1622,85 @@ its vault is empty, the boot resume is a no-op, and nothing new executes on thei
 `hour` was NOT re-run on baseline — the comparison was interrupted by the merge instruction, and
 it is the one loose end to reconcile. This matches the pre-existing playtest instability already
 recorded under SD-57.
+### SD-62 — The cislunar on-ramp (Act 3c): the rung the GDD asked for and the build had skipped
+
+**Status: ACCEPTED** (user: *"do we have missions on the moon before we go to mars? if not — we should do it"*).
+
+**Context — this was a defect against the GDD, not a new feature.** The arrival arc ran
+`act1 → act2 → act3a → act3b → act4`, stepping from Earth's ~3 ms latencies straight to Mars's
+8+ minutes in one beat. The GDD calls for a cislunar tier BEFORE Mars in three separate places:
+the §2 tier table (*"Cislunar (Moon, Lagrange points) — First real light-delay (~1.3 s). Relay
+placement. The gentle on-ramp where the game teaches light-delay before it bites"*), milestone 3
+(*"the on-ramp that teaches the concept before Mars makes it bite"*), and — most pointedly — the
+risk register, whose mitigation for risk #7 *"Onboarding wall: light-delay is unintuitive"* is
+literally *"Teach light-delay by sight at cislunar's ~1.3 s before Mars bites."* The Moon was
+already a full ephemeris body (`data/system.json`, real elements) and was already rendered; the
+game simply never routed to it. `BodyId` was `"earth" | "mars"`.
+
+**The lesson is a new KIND of shortfall, not a bigger number.** The explicit non-goal was
+content-tiering — "Mars but nearer", another act whose only novelty is a dial turned. Every Earth
+act is ultimately a SCHEDULING problem: the geometry opens and closes as the body turns, so more
+satellites, better phasing, or a different aim always eventually wins. The lunar FARSIDE is the
+first demand where that is not merely insufficient but INAPPLICABLE: the Moon is tidally locked,
+so a station at lunar longitude 180° has Earth below its horizon permanently, by geometry rather
+than by timing. The answer is the one move the player has never made — put a node where NEITHER
+endpoint is: the Earth–Moon L2 gateway. That is GDD tier-2's named constraint, "relay placement",
+as a physical fact. The ~1.3 s light-delay rides along honestly and is the GDD's on-ramp.
+
+**The claims are ASSERTED, not asserted-in-prose** (`cislunar.test.ts`, 20 tests): the farside is
+invisible from Earth at every sample across a full lunar month AND from a wide shell of Earth
+orbital positions (so "launch more" is provably not an answer); the nearside by contrast IS
+visible (the frame is not just always-dark); and the L2 HALO is load-bearing — the bare collinear
+L2 point cannot see Earth at all (it sits in the Moon's shadow), which is exactly why the real
+Queqiao relay flies a halo rather than occupying the point. An earlier draft parked the station on
+the point and would have shipped a relay that physically could not close its own downlink.
+
+**Implementation.** New pure `net/cislunar.ts` owns the tidally-locked lunar frame (built from the
+Earth→Moon direction each tick, so tidal lock is structural rather than a rotation constant that
+could drift), the L2 halo station, and lunar occlusion. `BodyId` gains `"moon"`. The router gains
+`solveLunarLeg` — and unlike the presence-based Mars leg it runs REAL occlusion + inverse-square
+physics, because the act's lesson is geometric and a presence test would assert the lesson instead
+of enforcing it. `satPositionRelative` dispatches cislunar nodes ahead of Kepler propagation.
+Latency is a READOUT, never an enforced axis: 1.8 s is a fact of the universe and breaching the
+player over physics they cannot engineer away would teach helplessness, not placement.
+
+**The deep-space ground segment.** The gateway holds the farside continuously, but the leg must
+come DOWN, and the toy Earth turns in 240 s — a single station loses the Moon for half of every
+day, and Acts 1–2's two stations share a meridian so they set together. Three equatorial dishes at
+120° spacing (`NET_DEEP_SPACE_GROUND`) put the sub-lunar meridian within 60° of one at all times.
+This is not a contrivance: it is why the real DSN is Goldstone/Madrid/Canberra. They are a SEPARATE
+asset class from `groundNets` — a 70 m dish tracking one distant target is not a teleport landing
+LEO metro traffic — which is also precisely why no Earth-act route changed.
+
+**Consequences — the canonical arc had to grow, and that is the point.** Inserting a gated beat
+before act4 meant the scripted "good playthrough" no longer reached Mars at all: it stopped at
+act3c, because the canon never launched a gateway. The canon now climbs the rung (gateway at
+t=975, LUNA-1 signed at t=995, gate fires t=1155, Mars relay t=1330) and runs to t=1460 instead of
+1090. **`NET_REPLAY_GOLDEN` re-pinned `16791777382910013853n` → `5151969548480093925n`.** Two
+second-order effects were found by measurement, not by reasoning: (1) the extra launch SHIFTED THE
+SEEDED RNG STREAM, so the Mars relay drew a `no_sep` at its old tick — charged and lost — and its
+instant had to move (accepts draw no RNG, so only launches can do this); (2) the longer arc lets a
+second REGION-0 renewal fall due, which the canon now signs, while REGION-1's renewal is
+deliberately DECLINED because by then the fault-attrited polar ring holds it only ~20% of the time
+and signing would book €5,182 of penalties — declining a deal you cannot serve is the correct play
+and the canon should model the correct play.
+
+**Pricing was measured, not guessed, and is OWED A PROPER PASS.** A first draft priced the gateway
+at €18,000 base; measurement showed that made it €30,247 against a ≈€15,000 wallet at the only
+moment it can be bought — flatly unaffordable. It is now a €1,500 premium on the deep-space stack
+(€13,747 total, the most expensive object in the game), and LUNA-1 pays a €45/s frontier premium
+(2.25× the Earth metro) because a monopoly on an impossible route prices that way AND because the
+act-3 network is running a small net loss by then. The arc now ends at €12,183 having never gone
+red (min €1,730). **Flagged honestly: the R3 economy pass predates cislunar, and these numbers are
+tuned against a single scripted run. A real balance pass with the new tier in it is owed** — see
+the backlog. The `act3c` beat sits at cursor index 4 so every pre-existing index (act1=0 … act3b=3)
+still means what it meant; only Mars moves, 4 → 5, which is the whole point of the change.
+
+**Deferred deliberately.** A LUNAR-ORBIT relay family (cheap orbiters + crosslinks as an
+alternative to the halo) is NOT built: real lunar orbital periods are ~2.1 h against a 240 s toy
+Earth day, so within one session such a relay is quasi-static and cannot demonstrate the
+constellation tradeoff it would be there to teach. A player-BUILT ground segment is likewise
+deferred — the act's one decision is where the relay goes, and making the ground a second
+placement puzzle would teach the same lesson twice. Render work (a farside marker, the gateway
+node, the cislunar camera framing) is not in this increment; the Moon itself already renders at its
+honest distance.

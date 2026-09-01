@@ -588,9 +588,18 @@ export class NetSession {
   }
 
   /** CONSUME the next sat id (advances the monotonic counter) — the applier calls this
-   * per batch member at COMMIT, so ids are stable across deploy outcomes. */
-  consumeSatId(isRelay = false): string {
-    const id = isRelay ? this.nextRelaySatId() : this.nextSatId();
+   * per batch member at COMMIT, so ids are stable across deploy outcomes.
+   *
+   * `stem` names a node CLASS whose id the router recognises geometrically (the Act-3c L2
+   * gateway). It shares the ONE monotonic counter with every other launch, so ids stay
+   * globally unique and replay-stable no matter what mix of classes a session launches. */
+  consumeSatId(isRelay = false, stem?: string): string {
+    const id =
+      stem !== undefined
+        ? `${stem}-${this.launchedCount}`
+        : isRelay
+          ? this.nextRelaySatId()
+          : this.nextSatId();
     this.launchedCount++;
     return id;
   }

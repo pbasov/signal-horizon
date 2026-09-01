@@ -33,8 +33,16 @@ import type { NetSession } from "./session";
 import { NET_CIRCULARIZE_COST_EUR } from "./session";
 import type { NetSat, BusTier } from "./sat";
 import { resolveLoadout, validateLoadout, DEFAULT_LOADOUT_CARD_IDS } from "./sat";
-import { resolveOrbit, MARS_RELAY, launchStackCost } from "./world";
+import {
+  resolveOrbit,
+  MARS_RELAY,
+  launchStackCost,
+  isCislunarPresetId,
+  NET_CISLUNAR_REF_LINK_DISTANCE_M,
+} from "./world";
 import { NET_REF_LINK_DISTANCE_M } from "./link-budget";
+import { NET_ACT3C_GATE_ID_STEM } from "./endpoint";
+import { eml2StationOrbit } from "./cislunar";
 
 /** The outcome of applying a net action (for the live caller's feedback + log). */
 export interface NetActionResult {
@@ -89,6 +97,10 @@ export function applyNetAction(
     const count = Math.max(1, Math.trunc(num(action.payload.count) || 1));
     const phaseSpreadRad = num(action.payload.phaseSpreadRad);
     const isRelay = action.payload.presetId === MARS_RELAY.id;
+    // ACT 3c: a cislunar launch is resolved in the lunar frame, not the Earth one — it gets
+    // an L2 station record instead of a Kepler orbit, deep-space terminals instead of
+    // Earth-orbit ones, and the L2 gateway id stem the router's lunar leg recognises.
+    const isCislunar = isCislunarPresetId(action.payload.presetId);
     const t = action.atTick * dt;
 
     // R0 (SD-45): the sat DESIGN on the wire. Absent/empty bus/loadout ⇒ the standard
@@ -106,18 +118,27 @@ export function applyNetAction(
 
     // THE COST (m1-redesign §2.5): one vehicle (base + bus-tier lift to the target
     // altitude) + count × (bus + cards) hardware — the SAME function the builder previews.
-    const costEur = launchStackCost(bus, cardIds, semiMajorM, count);
+    const costEur = launchStackCost(bus, cardIds, semiMajorM, count, isCislunar);
 
     // Build the batch members (epoch-correct orbits; ids consumed at commit).
     const members: NetSat[] = [];
     for (let i = 0; i < count; i++) {
-      const orbit = resolveOrbit({ semiMajorM, incRad, subLonRad, raanRad }, t);
-      orbit.m0Rad += i * phaseSpreadRad;
+      // A cislunar node records the L2 station's lunar-parented elements; its POSITION is
+      // always taken from the halo (cislunar.ts), never propagated from this record, so the
+      // phase spread that fans an Earth batch is inert here — every gateway holds the same
+      // station. That is correct: L2 is a place, not an orbital slot you can fan out along.
+      const orbit = isCislunar
+        ? eml2StationOrbit(eph, t)
+        : resolveOrbit({ semiMajorM, incRad, subLonRad, raanRad }, t);
+      if (!isCislunar) orbit.m0Rad += i * phaseSpreadRad;
       members.push({
-        id: session.consumeSatId(isRelay),
+        id: session.consumeSatId(isRelay, isCislunar ? NET_ACT3C_GATE_ID_STEM : undefined),
         orbit,
         bus,
-        loadout: resolveLoadout(cardIds, NET_REF_LINK_DISTANCE_M),
+        loadout: resolveLoadout(
+          cardIds,
+          isCislunar ? NET_CISLUNAR_REF_LINK_DISTANCE_M : NET_REF_LINK_DISTANCE_M,
+        ),
       });
     }
 

@@ -35,7 +35,17 @@ import {
   surfaceNormalRelative,
   interBodyOneWayLatencyS,
 } from "./link-budget";
-import { NET_ACT4_RELAY_ID_STEM } from "./endpoint";
+import {
+  NET_ACT4_RELAY_ID_STEM,
+  NET_ACT3C_GATE_ID_STEM,
+  NET_DEEP_SPACE_GROUND,
+} from "./endpoint";
+import {
+  cislunarNodePosition,
+  lunarSurfacePointRelative,
+  lunarSurfaceNormal,
+  segmentOccludedByMoon,
+} from "./cislunar";
 import type { PreferWeights } from "./contract";
 import {
   type BeamMap,
@@ -109,9 +119,16 @@ export interface PipeContext {
 
 const EMPTY_BEAMS: BeamMap = new Map();
 
-/** Earth-relative world position (metres) of a launched sat at sim-time t. */
+/** Earth-relative world position (metres) of a launched sat at sim-time t.
+ *
+ * CISLUNAR nodes are resolved first: an L2 gateway flies a halo about a point that is not
+ * an orbit of anything, and a lunar orbiter's Kepler elements are about the MOON, so
+ * neither can come from a plain earth-parented propagation. Everything else — every Earth
+ * asset in Acts 1–3 — takes the unchanged path, so this dispatch adds nothing to the hot
+ * loop for the rosters that dominate it. */
 export function satPositionRelative(eph: Ephemeris, sat: NetSat, t: number): Vec3 {
-  void eph;
+  const cis = cislunarNodePosition(eph, sat, t);
+  if (cis !== null) return cis;
   return solveOrbit(sat.orbit, t);
 }
 
@@ -497,6 +514,10 @@ export function solve(
   loadByPipe?: ReadonlyMap<string, number>,
   beams?: BeamMap,
 ): SolveResult {
+  // ACT 3c (the cislunar on-ramp) — REAL geometry: occlusion + inverse-square, no presence.
+  if (contract.region.bodyId === "moon") {
+    return solveLunarLeg(eph, contract, sats, groundNets, t, faults);
+  }
   // ACT 4 (the Mars frontier teaser) — presence-based, unchanged.
   if (contract.region.bodyId === "mars") {
     return solveMarsLeg(eph, contract, sats, groundNets, t, faults);
@@ -595,6 +616,164 @@ export function solve(
     path: [contract.region.id, ...bridge.satPath, bridge.groundId],
     pipe: bridge.pipe,
     latencyS: bridge.latencyS,
+    bindingConstraint: null,
+    losses,
+  };
+}
+
+/**
+ * ACT 3c — THE CISLUNAR LEG. Unlike the Mars leg, this one is NOT presence-based: it runs
+ * the same real occlusion + inverse-square physics the Earth acts do, just over the lunar
+ * frame. That is deliberate — the act's whole lesson is a GEOMETRIC fact (the farside can
+ * never see Earth), and a presence test would assert that lesson instead of enforcing it.
+ *
+ * The path is the familiar bent pipe, one body further out: `region → gateway → ground`.
+ *   1. THE ACCESS HOP. The lunar surface point must see the gateway above its LOCAL lunar
+ *      horizon, with the Moon itself not cutting the chord, and the budget must close.
+ *      For a farside region this is the hop no Earth-orbit asset can ever supply.
+ *   2. THE LANDING HOP. The gateway must be above an Earth ground station's horizon, with
+ *      NEITHER the Earth nor the Moon occluding the segment, and the budget must close.
+ *      This is what makes the leg breathe: the toy Earth turns once every 240 s, so a given
+ *      station holds the Moon for roughly half of that, and a second station widens it.
+ * Latency is the honest sum of the two segment light-times (≈1.8 s one way — MORE than the
+ * 1.33 s centre-to-centre, because reaching the far face means going around the Moon).
+ *
+ * Candidates are compared on latency and tie-broken on id, so the result never depends on
+ * roster order. Only gateway-stemmed nodes are eligible: a lunar orbiter could serve the
+ * access hop but cannot hold the Earth link, and offering it as a near-miss would teach the
+ * wrong lesson at the exact moment the act is trying to teach placement.
+ */
+function solveLunarLeg(
+  eph: Ephemeris,
+  contract: RoutableContract,
+  sats: NetSat[],
+  groundNets: GroundNet[],
+  t: number,
+  faults?: ReadonlySet<string>,
+): SolveResult {
+  const losses: LinkLossStamp[] = [];
+  const region = contract.region;
+  const groundFallbackId = groundNets.length > 0 ? groundNets[0].id : "GROUND-0";
+  // The cislunar leg lands on the DEEP-SPACE ground segment, never on the Act-1–3 metro
+  // stations: a 70 m dish tracking the Moon and a teleport landing LEO traffic are
+  // different assets. Keeping the two lists disjoint is why no Earth-act route changes.
+  const landing = NET_DEEP_SPACE_GROUND;
+
+  const gates = sats.filter(
+    (s) => s.id.startsWith(NET_ACT3C_GATE_ID_STEM) && !(faults?.has(s.id) ?? false),
+  );
+  if (gates.length === 0 || landing.length === 0) {
+    // No gateway at all: the farside is dark. "set_below_horizon" is the honest cause —
+    // Earth is, permanently, below that station's horizon.
+    losses.push({
+      aId: region.id,
+      bId: groundFallbackId,
+      cause: "set_below_horizon",
+      atS: t,
+    });
+    return {
+      served: false,
+      path: null,
+      pipe: null,
+      latencyS: Infinity,
+      bindingConstraint: "connectivity",
+      losses,
+    };
+  }
+
+  const from = lunarSurfacePointRelative(eph, region.latRad, region.lonRad, t);
+  const normal = lunarSurfaceNormal(eph, region.latRad, region.lonRad, t);
+
+  let worstCause: Exclude<LinkCause, "ok"> = "set_below_horizon";
+  const noteCause = (c: Exclude<LinkCause, "ok">): void => {
+    if (CAUSE_DEPTH[c] > CAUSE_DEPTH[worstCause]) worstCause = c;
+  };
+
+  let best: { gateId: string; pipe: string; groundId: string; latencyS: number } | null = null;
+  const better = (latencyS: number, gateId: string, groundId: string): boolean => {
+    if (best === null) return true;
+    if (latencyS !== best.latencyS) return latencyS < best.latencyS;
+    if (gateId !== best.gateId) return gateId < best.gateId;
+    return groundId < best.groundId;
+  };
+
+  for (const gate of gates) {
+    const gatePos = satPositionRelative(eph, gate, t);
+    const pipes = candidatePipes(gate, undefined);
+    if (pipes.length === 0) continue;
+
+    for (const { slotIdx, antenna } of pipes) {
+      // 1. THE ACCESS HOP — lunar surface → gateway. `evaluateLink` gates on the local
+      // horizon and the inverse-square budget; the Moon's own sphere is tested separately
+      // because that helper only knows about the body at the earth-relative origin.
+      const up = evaluateLink(from, normal, gatePos, antenna.eirp, antenna.rangeRefM);
+      if (!up.closes) {
+        if (up.cause !== "ok") noteCause(up.cause);
+        continue;
+      }
+      if (segmentOccludedByMoon(eph, from, gatePos, t)) {
+        noteCause("occluded");
+        continue;
+      }
+
+      // 2. THE LANDING HOP — gateway → a deep-space ground station.
+      for (const groundNet of landing) {
+        const groundR = groundRadiusM(groundNet);
+        const gd = surfaceNormalRelative(groundNet.latRad, groundNet.lonRad, t);
+        const gto: Vec3 = [gd[0] * groundR, gd[1] * groundR, gd[2] * groundR];
+        const down = evaluateLink(gto, gd, gatePos, antenna.eirp, antenna.rangeRefM);
+        if (!down.closes) {
+          if (down.cause !== "ok") noteCause(down.cause);
+          continue;
+        }
+        // The Moon can eclipse the downlink too — that is exactly what puts the bare L2
+        // point out of business and is the reason the station flies a halo.
+        if (segmentOccludedByMoon(eph, gto, gatePos, t)) {
+          noteCause("occluded");
+          continue;
+        }
+        const latencyS = up.latencyS + down.latencyS;
+        if (better(latencyS, gate.id, groundNet.id)) {
+          best = { gateId: gate.id, pipe: pipeKey(gate.id, slotIdx), groundId: groundNet.id, latencyS };
+        }
+      }
+    }
+  }
+
+  if (best === null) {
+    losses.push({ aId: region.id, bId: groundFallbackId, cause: worstCause, atS: t });
+    const enforcesAvail = contract.activeAxes?.has("availability") ?? false;
+    return {
+      served: false,
+      path: null,
+      pipe: null,
+      latencyS: Infinity,
+      bindingConstraint: enforcesAvail ? "availability" : "connectivity",
+      losses,
+    };
+  }
+
+  // LATENCY is a READOUT on the cislunar leg unless the contract explicitly enforces it.
+  // Act 3c never does: 1.8 s is a fact of the universe, not a shortfall the player can
+  // engineer away, and breaching them on it would be punishing them for physics.
+  const slaLatencyS = contract.slaLatencyS ?? Infinity;
+  if ((contract.activeAxes?.has("latency") ?? false) && best.latencyS > slaLatencyS) {
+    losses.push({ aId: region.id, bId: best.gateId, cause: "out_of_budget", atS: t });
+    return {
+      served: false,
+      path: [region.id, best.gateId, best.groundId],
+      pipe: best.pipe,
+      latencyS: best.latencyS,
+      bindingConstraint: "latency",
+      losses,
+    };
+  }
+
+  return {
+    served: true,
+    path: [region.id, best.gateId, best.groundId],
+    pipe: best.pipe,
+    latencyS: best.latencyS,
     bindingConstraint: null,
     losses,
   };
@@ -745,6 +924,13 @@ function isRegionServed(
     return sats.some(
       (s) => s.id.startsWith(NET_ACT4_RELAY_ID_STEM) && !(faults?.has(s.id) ?? false),
     );
+  }
+  // The cislunar leg has no cheap presence shortcut — its whole point is that the geometry,
+  // not the roster, decides. It is cheap anyway (a handful of gateways × ground stations),
+  // and running the same solver here keeps the fast re-eval and the full solve from ever
+  // disagreeing about whether the farside is up.
+  if (contract.region.bodyId === "moon") {
+    return solveLunarLeg(eph, contract, sats, groundNets, t, faults).served;
   }
   const ctx: PipeContext = {
     regionId: contract.region.id,

@@ -19,6 +19,7 @@ import {
   TICK_LAUNCH,
   TICK_ACCEPT,
   TICK_MARS_RELAY,
+  NET_CANON_GOLDEN,
 } from "./canon";
 import { saveGame, addAction } from "../save";
 import { netLaunch, netAccept } from "../action";
@@ -37,26 +38,32 @@ describe("R3 — the canonical-hour economy (measurement + pins)", () => {
   const r = replayCanon(act4Log(), MAX_TICK_ACT4, true);
   const trace = r.balanceTrace!;
   const gateT = r.gateTicks.map((tk) => tk * GOLDEN_DT);
-  // gateTicks[0] = act1 gate, [1] = act2, [2] = act3a, [3] = act3b.
-  const [act1T, act2T, act3aT, act3bT] = gateT;
+  // gateTicks[0] = act1 gate, [1] = act2, [2] = act3a, [3] = act3b, [4] = act3c (cislunar).
+  // There is no act4 gate — the frontier beat is a read, not a gate, so the cursor stops there.
+  const [act1T, act2T, act3aT, act3bT, act3cT] = gateT;
 
   it("the golden is UNTOUCHED by the canon extraction (the pin bites both ways)", () => {
-    expect(netStateHash(r.session)).toBe(10981192184426294200n);
-    expect(r.hash).toBe(10981192184426294200n);
+    expect(netStateHash(r.session)).toBe(NET_CANON_GOLDEN);
+    expect(r.hash).toBe(NET_CANON_GOLDEN);
   });
 
-  it("the four act gates fire in order at sane times", () => {
-    expect(gateT.length).toBeGreaterThanOrEqual(4);
+  it("the five act gates fire in order at sane times", () => {
+    expect(gateT.length).toBeGreaterThanOrEqual(5);
     expect(act1T).toBeGreaterThan(0);
     expect(act1T).toBeLessThan(act2T);
     expect(act2T).toBeLessThan(act3aT);
     expect(act3aT).toBeLessThan(act3bT);
+    // The cislunar rung clears LAST of the gated beats, so Mars can only arrive after the
+    // player has already lived with a ~1.8 s round trip (GDD risk #7's on-ramp ordering).
+    expect(act3bT).toBeLessThan(act3cT);
   });
 
   it("the wallet NEVER dips below a survivable floor (the act-2 commitment can be afforded)", () => {
     const min = Math.min(...trace);
-    // R3 retune target: the deepest point (the act-4 Mars relay commit) stays within ONE
-    // bad stack of zero — a red wallet is a readout, never a death spiral.
+    // R3 retune target: the deepest point stays within ONE bad stack of zero — a red wallet
+    // is a readout, never a death spiral. With the cislunar rung the arc actually never goes
+    // red at all: the L2 gateway is committed while the act-3 network is still fat, and the
+    // farside contract then funds the Mars relay outright.
     expect(min).toBeGreaterThan(-5000);
   });
 

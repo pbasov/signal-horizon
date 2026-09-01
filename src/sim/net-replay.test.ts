@@ -73,6 +73,7 @@ import {
   TICK_MARS_RELAY,
   TICK_PLACE_CACHE,
   TAU2,
+  NET_CANON_GOLDEN,
 } from "./net/canon";
 
 const TAU = TAU2;
@@ -224,7 +225,7 @@ const replay = (sg: ReturnType<typeof saveGame>): ReplayResult => replayCanon(sg
  * arc and for a deliberate over-build, and the roster the canonical arc lands at act 4. */
 const CANON_WASTE = 1;
 const OVER_BUILD_WASTE = 4;
-const CANON_ACT4_ROSTER = 15;
+const CANON_ACT4_ROSTER = 16;
 
 // SD-58 (2026-09-01) re-pin #4: THE EQUATORIAL BOARD BECOMES THREE PLACES. The corridor metro
 // moves 3°E → 20°E and the coastal backhaul 6°W → 35°W, and the region disc shrinks 10° → 6°.
@@ -239,7 +240,15 @@ const CANON_ACT4_ROSTER = 15;
 // un-retimed, the relay landed one tick BEFORE act 4 emitted and pushed the gate out 2,060 ticks.
 // Arc ends RICHER at every comparable instant: trough €3,488 → €4,100, mean €4,316 → €5,018,
 // final €4,376 → €4,858. Gates 1–3 unmoved; gate 4 +1 tick.
-const NET_REPLAY_GOLDEN = 10981192184426294200n;
+//
+// SD-62 (2026-09-01) re-pin #5: THE CISLUNAR RUNG ARRIVES BEFORE MARS. A new gated beat (act3c,
+// the lunar farside) sits at cursor index 4, so the canon no longer reaches act 4 without first
+// placing an Earth–Moon L2 gateway and HOLDING the farside for 160 served-seconds. The arc grows
+// from t=1090 to t=1460 and gains three actions (the gateway launch, the LUNA-1 accept, and a
+// second REGION-0 renewal that only now falls due inside the session). The value lives in
+// {@link NET_CANON_GOLDEN} (canon.ts) so the replay golden and the economy measurement can never
+// again drift onto two different pins — which is exactly what the previous duplication risked.
+const NET_REPLAY_GOLDEN = NET_CANON_GOLDEN;
 
 describe("net/ A3+B3+C1b+C2+D1 — M1 arrival-sequence replay golden (act1 GEO + act2 N=4 + act3a escalation/re-tame + act3b faults mild-first + act4 Mars teaser)", () => {
   it("pins the net-session replay state hash for the act1→act2→act3a→act3b→act4 action log (regression guard)", () => {

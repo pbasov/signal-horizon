@@ -30,7 +30,7 @@ import {
 import { loadEphemeris } from "../system-data";
 import { NetSession, NET_RNG_SEED } from "./session";
 import { applyNetAction } from "./apply-action";
-import { GEO_PARK, LEO_SWEEP, MARS_RELAY, A1_GEO_PERIOD_S, A1_LEO_PERIOD_S } from "./world";
+import { GEO_PARK, LEO_SWEEP, MARS_RELAY, LUNA_GATE, A1_GEO_PERIOD_S, A1_LEO_PERIOD_S } from "./world";
 
 import {
   ACT1_CONTRACT_ID,
@@ -39,7 +39,7 @@ import {
   ACT3A_BACKHAUL_CONTRACT_ID,
   ACT2_ZERO_GAP_N,
 } from "./scenario";
-import { ACT4_MARS_CONTRACT_ID } from "./endpoint";
+import { ACT4_MARS_CONTRACT_ID, ACT3C_LUNA_CONTRACT_ID } from "./endpoint";
 
 export const TAU2 = Math.PI * 2;
 export const GOLDEN_DT = 1 / 60;
@@ -242,24 +242,81 @@ export const act3bLog = act3aLog;
 export const MAX_T_ACT3B_SECONDS = 985;
 export const MAX_TICK_ACT3B = Math.round(MAX_T_ACT3B_SECONDS / GOLDEN_DT);
 
+// ── ACT 3c: the cislunar on-ramp ───────────────────────────────────────────────────
+
+/** LAUNCH the Earth–Moon L2 gateway. act3b gates at t≈968.4, which is when act3c emits and
+ * LUNA-1 lands on the board; the canonical operator commits within a few seconds. */
+export const TICK_LUNA_GATE = 58500; // t = 975 s.
+/** ACCEPT LUNA-1 once the gateway has cleared its ~18 s deploy pipeline and the farside link
+ * is actually up (signing before the relay exists would just start the clock on a dark link). */
+export const TICK_LUNA_ACCEPT = 59700; // t = 995 s.
+/** The renewals that fall due inside the LENGTHENED arc. Accepts draw no RNG, so adding these
+ * cannot disturb any launch's seeded deploy roll — only launches can, which is why the Mars
+ * relay's tick had to move (see TICK_MARS_RELAY). */
+export const TICK_ACCEPT_R0_R2 = 72000; // t = 1200 s.
+
+/** The recorded ACT-1 → … → ACT-3c action sequence. */
+export function act3cLog(): SaveGame {
+  const sg = act3bLog();
+  addAction(
+    sg,
+    netLaunch(
+      {
+        presetId: LUNA_GATE.id,
+        semiMajorM: LUNA_GATE.semiMajorM,
+        incRad: LUNA_GATE.incRad,
+        subLonRad: LUNA_GATE.subLonRad,
+        count: 1,
+      },
+      TICK_LUNA_GATE,
+    ),
+  );
+  addAction(sg, netAccept(ACT3C_LUNA_CONTRACT_ID, TICK_LUNA_ACCEPT));
+  // REGION-0's FIRST renewal (signed t=520) runs its 480 s term out at t≈1000. The arc now
+  // extends well past that, so the canonical operator signs the SECOND renewal rather than
+  // letting their oldest earner lapse — "renewals are the margin" is the economy lesson the
+  // canon is supposed to demonstrate, and before the cislunar rung lengthened the arc there
+  // simply was no session left in which a second one could fall due.
+  addAction(sg, netAccept("REGION-0+R2", TICK_ACCEPT_R0_R2));
+  // REGION-1's renewal is deliberately NOT signed. Measured: by t≈1200 the polar ring has
+  // taken its act3b fault attrition and holds REGION-1 only ~20% of the time, so signing the
+  // renewal books €5,182 of penalties for a promise the network can no longer keep. Declining
+  // a deal you cannot serve is the correct play, and the canon should model the correct play.
+  return sg;
+}
+
+/** The act3c replay runs past the 160 served-second hold so the cislunar gate fires. */
+export const MAX_T_ACT3C_SECONDS = 1170;
+export const MAX_TICK_ACT3C = Math.round(MAX_T_ACT3C_SECONDS / GOLDEN_DT);
+
 // ── ACT 4 (D1): the Mars frontier teaser ───────────────────────────────────────────
 
-// The act-4 beats FOLLOW THE ACT-4 GATE: the relay commits the instant act 4 opens, the accept
-// lands 20 s later and the breadcrumb 20 s after that (+1200 / +2400 ticks at DT = 1/60).
+// The act-4 beats FOLLOW THE GATE THAT OPENS ACT 4: the relay commits the instant act 4 opens,
+// the accept lands 20 s later and the breadcrumb 20 s after that (+1200 / +2400 ticks at
+// DT = 1/60).
 //
 // They are pinned as literals because the golden must be a fixed action log, but the offsets are
-// the invariant — if the act-3b gate ever moves, these move WITH it or the arc silently derails:
-// a relay launched one tick BEFORE act 4 emits is a launch into a beat that does not exist yet,
-// which is exactly what happened when the equatorial regions were re-placed (the gate slid 58104 →
-// 58105 and the un-moved relay pushed the gate out by a further 2060 ticks, stranding MARS-1
-// unaccepted and the arc €650 poorer). Keep TICK_MARS_RELAY == the act-3b gate tick.
-export const TICK_MARS_RELAY = 58105;
-export const TICK_MARS_ACCEPT = 59305;
-export const TICK_PLACE_CACHE = 60505;
+// the invariant — if the gate ahead of them ever moves, these move WITH it or the arc silently
+// derails: a relay launched one tick BEFORE act 4 emits is a launch into a beat that does not
+// exist yet, which is exactly what happened when the equatorial regions were re-placed (the gate
+// slid 58104 → 58105 and the un-moved relay pushed the gate out by a further 2060 ticks,
+// stranding MARS-1 unaccepted and the arc €650 poorer).
+//
+// SD-62 MOVED THE GATE THEY FOLLOW. Act 4 now opens on the ACT-3C (cislunar) gate rather than
+// act3b's, because the GDD puts the cislunar rung before Mars — so the invariant is unchanged in
+// form but re-anchored: keep TICK_MARS_RELAY == the act-3c gate tick. Two further facts, both
+// found by measurement rather than reasoning: the gateway spend leaves the wallet thin, so the
+// relay is only affordable once the farside contract has been paying for a while (the act-3c
+// hold covers exactly that), and adding the gateway launch SHIFTED THE SEEDED RNG STREAM, so the
+// relay drew a `no_sep` at its old instant — charged, and lost. Fault rolls advance the stream
+// over time, so the launch instant selects the draw.
+export const TICK_MARS_RELAY = 75600;
+export const TICK_MARS_ACCEPT = 76800;
+export const TICK_PLACE_CACHE = 78000;
 
 /** The recorded ACT-1 → … → ACT-4 action sequence (the D1 golden driver). */
 export function act4Log(): SaveGame {
-  const sg = act3bLog();
+  const sg = act3cLog();
   addAction(
     sg,
     netLaunch(
@@ -272,9 +329,19 @@ export function act4Log(): SaveGame {
   return sg;
 }
 
-/** The act4 replay runs past the relay + accept + breadcrumb: t = 1090 s. */
-export const MAX_T_ACT4_SECONDS = 1090;
+/** The act4 replay runs past the relay + accept + breadcrumb, and far enough past the relay's
+ * €12,247 dip for the Mars revenue to carry the arc back into the black: t = 1380 s. */
+export const MAX_T_ACT4_SECONDS = 1390;
 export const MAX_TICK_ACT4 = Math.round(MAX_T_ACT4_SECONDS / GOLDEN_DT);
+
+/**
+ * THE STATE-HASH GOLDEN for the full canonical arc (`act4Log()` replayed to
+ * {@link MAX_TICK_ACT4}). Lives HERE, next to the log it pins, because two consumers assert it —
+ * the replay golden (`net-replay.test.ts`) and the economy measurement (`canon-balance.test.ts`)
+ * — and holding the literal in both is how they drift onto different pins. Re-pin DELIBERATELY,
+ * with the reason recorded in the re-pin log above `NET_REPLAY_GOLDEN`.
+ */
+export const NET_CANON_GOLDEN = 13498174276749145205n;
 
 // ── the replay driver ─────────────────────────────────────────────────────────────
 

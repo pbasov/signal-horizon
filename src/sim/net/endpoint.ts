@@ -59,10 +59,11 @@ export const NET_ACT1_REGION_RADIUS_RAD = 6 * DEG_RAD;
 export const NET_MIN_ELEVATION_RAD = 10 * DEG_RAD;
 void MIN_ELEVATION_RAD; // field.ts's 5° stays the M2 grid's floor — deliberately not shared.
 
-/** The body a net endpoint rides. Acts 1–3 are all `"earth"` (the toy frame); Act 4 (the
- * Mars teaser) adds `"mars"` — the ONE region that lives on another body, served over the
- * REAL interplanetary hop (router solveMarsLeg), never the toy inverse-square budget. */
-export type BodyId = "earth" | "mars";
+/** The body a net endpoint rides. Acts 1–3 are all `"earth"` (the toy frame); Act 3c (the
+ * cislunar on-ramp) adds `"moon"`, read in the TIDALLY-LOCKED lunar frame (cislunar.ts);
+ * Act 4 (the Mars teaser) adds `"mars"` — served over the REAL interplanetary hop (router
+ * solveMarsLeg), never the toy inverse-square budget. */
+export type BodyId = "earth" | "moon" | "mars";
 
 /** A target region: a geodesic disc on the toy body, body-fixed (rides θ(t)). */
 export interface Region {
@@ -74,7 +75,9 @@ export interface Region {
   lonRad: number;
   /** Angular radius of the disc (radians). */
   radiusRad: number;
-  /** The body the region rides ("earth" for Acts 1–3; "mars" for the Act-4 teaser). */
+  /** The body the region rides ("earth" for Acts 1–3; "moon" for the Act-3c cislunar
+   * on-ramp; "mars" for the Act-4 teaser). For "moon" the (lat,lon) are read in the
+   * TIDALLY-LOCKED lunar frame (cislunar.ts): lon 0 faces Earth, lon π is the farside. */
   bodyId: BodyId;
 }
 
@@ -163,6 +166,71 @@ export const NET_ACT2_GROUND: GroundNet = {
   lonRad: NET_ACT2_REGION_LON_RAD,
   altitudeM: 0,
   bodyId: "earth",
+};
+
+// ── ACT 3c (the CISLUNAR on-ramp — "some places can never see you") ──────────────
+
+/** The Act-3c contract id — the lunar FARSIDE station. The replay action log accepts THIS
+ * id (net_accept + the L2 gateway launch). */
+export const ACT3C_LUNA_CONTRACT_ID = "LUNA-1";
+
+/** The EARTH–MOON L2 GATEWAY id stem the Act-3c relay launch commits (mirrors the Act-4
+ * Mars relay stem). The router's lunar leg recognises a node by THIS stem, and cislunar.ts
+ * resolves its position to the halo station rather than a Kepler propagation. */
+export const NET_ACT3C_GATE_ID_STEM = "LUNA-GATE";
+
+/** Angular radius (radians) of the lunar farside station's disc. Deliberately SMALL (4°):
+ * a farside research outpost is a pinpoint, not a metro, and the whole disc sits far inside
+ * the gateway's overhead footprint — so the act never turns on disc-edge margin, which is
+ * an Act-1/2 concern already taught and not what this one is about. */
+export const NET_ACT3C_REGION_RADIUS_RAD = 4 * DEG_RAD;
+
+/**
+ * THE DEEP-SPACE GROUND SEGMENT — three equatorial 70 m-class dishes at 120° longitude
+ * spacing, the Earth-side half of reaching another body.
+ *
+ * WHY IT EXISTS. The gateway can hold the farside continuously, but the leg still has to
+ * come DOWN, and the toy Earth turns once every 240 s: a single station has the Moon below
+ * its horizon for roughly half of every day, and Acts 1–2's two stations sit on nearly the
+ * same meridian so they rise and set together. Three stations 120° apart put the sub-lunar
+ * meridian within 60° of one of them at ALL times, which (the Moon never straying more than
+ * ~5° off this frame's equator) means at least 30° elevation always. That is not a
+ * contrivance: it is exactly why the real Deep Space Network is three complexes at Goldstone,
+ * Madrid and Canberra, spaced the same way, for the same reason.
+ *
+ * WHY THEY ARE A SEPARATE CLASS, not additions to `groundNets`. A deep-space dish tracks one
+ * distant target across the sky; it is not a comms teleport that can land LEO metro traffic.
+ * Keeping them out of the Act-1–3 ground list is therefore both honest AND the reason the
+ * Earth acts are untouched by this work — no new landing sites appear under the Earth
+ * regions, so their routing (and the replay golden) is byte-identical.
+ *
+ * They ARRIVE with the Act-3c contract rather than being placed by the player: the act's ONE
+ * decision is where the relay goes, and making the ground segment a second placement puzzle
+ * would teach the same lesson twice. A player-built ground segment is a real future verb; it
+ * is deliberately not this increment's.
+ */
+export const NET_DEEP_SPACE_GROUND: readonly GroundNet[] = [
+  { id: "DSN-0", latRad: 0, lonRad: 0, altitudeM: 0, bodyId: "earth" },
+  { id: "DSN-1", latRad: 0, lonRad: (120 * Math.PI) / 180, altitudeM: 0, bodyId: "earth" },
+  { id: "DSN-2", latRad: 0, lonRad: (240 * Math.PI) / 180, altitudeM: 0, bodyId: "earth" },
+];
+
+/** NET_ACT3C_FARSIDE_REGION — the Act-3c data source on the LUNAR FARSIDE (bodyId "moon",
+ * lat 0, lon 180°: the anti-Earth point, dead centre of the face Earth never sees).
+ *
+ * This is the ONE region in the game no Earth-orbit topology can reach at ANY time, by
+ * tidal lock rather than by tuning — `cislunar.test.ts` asserts that invariant across a
+ * full lunar month AND over a wide shell of Earth orbital positions, so "launch more" is
+ * provably not an answer. Reaching it needs a node where NEITHER endpoint is: the Earth–Moon
+ * L2 gateway. That is GDD §2 tier-2's "relay placement"; the ~1.3 s light-delay the leg
+ * stamps is GDD risk #7's on-ramp — light-delay taught by sight BEFORE Mars makes it bite. */
+export const NET_ACT3C_FARSIDE_REGION: Region = {
+  id: ACT3C_LUNA_CONTRACT_ID,
+  label: "farside station",
+  latRad: 0,
+  lonRad: Math.PI,
+  radiusRad: NET_ACT3C_REGION_RADIUS_RAD,
+  bodyId: "moon",
 };
 
 // ── ACT 4 (the Mars frontier teaser — "distance changes everything") ──────────────

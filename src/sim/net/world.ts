@@ -150,7 +150,57 @@ export const MARS_RELAY: NetPreset = {
   costBaseEur: 1500,
 };
 
-export const NET_PRESETS: NetPreset[] = [GEO_PARK, LEO_SWEEP, MARS_RELAY];
+/** LUNA GATE — the Act-3c EARTH–MOON L2 GATEWAY: the first node the player ever places that
+ * orbits NEITHER endpoint. Launched with the SAME net_launch verb (only the preset differs),
+ * it flies a Queqiao-class halo about the L2 point beyond the Moon's far limb, where it holds
+ * continuous line of sight to the lunar farside AND to Earth at once.
+ *
+ * Unlike MARS_RELAY, this relay is NOT presence-based: the router's lunar leg runs the real
+ * inverse-square budget and real occlusion tests over cislunar.ts geometry, so the gateway
+ * genuinely has to be able to see both ends. The `semiMajorM`/`incRad`/`subLonRad` below are
+ * the LAUNCH-planner record only (the station's position comes from `eml2Relative`); the
+ * GEO-class value keeps the planner's altitude/lift pricing on a scale it understands.
+ *
+ * PRICING — measured against the real canonical arc, not guessed. When act3b gates (t≈968 s)
+ * the canonical wallet holds ≈€15,000 and an ordinary deep-space launch stack already costs
+ * €12,247, so the cislunar premium has to be a MARK, not a mountain: €1,500 on top makes the
+ * gateway the single most expensive object in the game (€13,747) while still leaving the arc
+ * able to fund the Mars relay that follows it. An earlier draft priced this at €18,000 base,
+ * which measurement showed would have made the gateway cost €30,247 — flatly unaffordable at
+ * the only point in the arc where it can be bought. TUNABLE, and see the note in
+ * `docs/decisions.md`: the R3 economy pass predates cislunar and is owed a re-tune. */
+export const LUNA_GATE: NetPreset = {
+  id: "LUNA_GATE",
+  label: "LUNA L2 GATE",
+  semiMajorM: A1_GEO_SEMI_MAJOR_M,
+  incRad: 0,
+  subLonRad: 0,
+  eirp: 1.0,
+  coneHalfAngleRad: 30 * (Math.PI / 180),
+  costBaseEur: 1500,
+};
+
+/**
+ * THE DEEP-SPACE TERMINAL RANGE (metres) — the reference distance a CISLUNAR-class bus's
+ * antennas are built to, replacing the Earth-orbit {@link NET_REF_LINK_DISTANCE_M} (5e7) for
+ * nodes launched on a cislunar preset. A link closes at `received = eirp·(ref/d)² ≥ 1`, so
+ * this is the range at which a unit-eirp deep-space dish still closes.
+ *
+ * 6e8 m sizes it honestly against the two hops the gateway actually flies: L2→Earth is
+ * ~4.6e8 m (closes with ~1.7× margin) and L2→farside is ~6.5e7 m (closes with enormous
+ * margin). It is deliberately NOT a skeleton key — the Earth↔Mars separation is 5.5e10 m at
+ * its very closest, ~90× beyond this dish, so a cislunar terminal cannot quietly trivialise
+ * the Act-4 frontier. The cislunar rung is a rung, not a ladder. TUNABLE.
+ */
+export const NET_CISLUNAR_REF_LINK_DISTANCE_M = 6.0e8;
+
+/** True iff `presetId` names a CISLUNAR-class launch (one whose sats are fitted with
+ * deep-space terminals and resolved in the cislunar frame). */
+export function isCislunarPresetId(presetId: unknown): boolean {
+  return presetId === LUNA_GATE.id;
+}
+
+export const NET_PRESETS: NetPreset[] = [GEO_PARK, LEO_SWEEP, LUNA_GATE, MARS_RELAY];
 
 // ── epoch-correct sub-longitude → orbit ─────────────────────────────────────────
 
@@ -224,18 +274,36 @@ export function launchVehicleCost(bus: BusTier, semiMajorM: number): number {
  * only viable play unaffordable. This is the economy catching up with the geometry. TUNABLE. */
 export const NET_BATCH_MEMBER_DISCOUNT = 0.45;
 
+/** The CISLUNAR STACK surcharge (€) added per member of a cislunar launch: the deep-space
+ * bus, the terminals sized for {@link NET_CISLUNAR_REF_LINK_DISTANCE_M}, and the injection
+ * stage that actually gets it out to L2. The altitude-driven `launchVehicleCost` cannot price
+ * this on its own — a cislunar launch's planner record carries a GEO-class semi-major axis,
+ * so without an explicit surcharge the gateway would cost about what a comsat does. Sourced
+ * from {@link LUNA_GATE}'s own base so the preset stays the single place the price lives. */
+export const NET_CISLUNAR_STACK_EUR = LUNA_GATE.costBaseEur;
+
 /** The full committed cost (€) of a launch: one vehicle + `count` × (bus + antenna
- * cards), members 2+ at the manifest discount. The SAME function the builder previews and
- * the applier charges. Pure. */
+ * cards), members 2+ at the manifest discount, plus the cislunar stack surcharge when the
+ * launch is a deep-space one. The SAME function the builder previews and the applier
+ * charges. Pure. */
 export function launchStackCost(
   bus: BusTier,
   cardIds: readonly string[],
   semiMajorM: number,
   count: number,
+  cislunar = false,
 ): number {
   const n = Math.max(1, Math.trunc(count));
   const hw = hardwarePriceEur(bus, cardIds);
-  return launchVehicleCost(bus, semiMajorM) + hw * (1 + (n - 1) * (1 - NET_BATCH_MEMBER_DISCOUNT));
+  // The manifest discount deliberately does NOT apply to the cislunar surcharge: the saving
+  // on member 2+ comes from mass-producing identical units, and a deep-space injection is
+  // bought per node however many you order.
+  const deepSpace = cislunar ? NET_CISLUNAR_STACK_EUR * n : 0;
+  return (
+    launchVehicleCost(bus, semiMajorM) +
+    hw * (1 + (n - 1) * (1 - NET_BATCH_MEMBER_DISCOUNT)) +
+    deepSpace
+  );
 }
 
 /**
@@ -323,9 +391,17 @@ export function presetToPreset(p: NetPreset): Preset {
  * default that already mostly works) and LEO SWEEP (the non-covering fallback case). */
 export const GEO_PARK_PRESET: Preset = presetToPreset(GEO_PARK);
 export const LEO_SWEEP_PRESET: Preset = presetToPreset(LEO_SWEEP);
+/** The Act-3c cislunar planner preset (the "place a gateway at Earth–Moon L2" verb is the
+ * SAME net_launch — only where it ends up is new). */
+export const LUNA_GATE_PRESET: Preset = presetToPreset(LUNA_GATE);
 /** The Act-4 Mars-relay planner preset (the "launch toward Mars" verb is the SAME net_launch). */
 export const MARS_RELAY_PRESET: Preset = presetToPreset(MARS_RELAY);
-export const NET_PLANNER_PRESETS: Preset[] = [GEO_PARK_PRESET, LEO_SWEEP_PRESET, MARS_RELAY_PRESET];
+export const NET_PLANNER_PRESETS: Preset[] = [
+  GEO_PARK_PRESET,
+  LEO_SWEEP_PRESET,
+  LUNA_GATE_PRESET,
+  MARS_RELAY_PRESET,
+];
 
 /** The launch cost (€) of a {@link LaunchDraft}: the base cost (from the seeding preset)
  * + the altitude term, ×`count`. An overload of {@link launchCost} over a full draft so

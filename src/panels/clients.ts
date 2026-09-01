@@ -49,6 +49,13 @@ export const CLIENTS: Readonly<Record<string, ClientVoice>> = {
     name: "SABLE LINE",
     reason: "Fourteen hulls, and none of them in the same place twice. We buy continuity, not coverage.",
   },
+  /** Act 3c — the lunar farside. Connectivity-only, like Act 1, but for a reason no Earth
+   * tender has ever had: their sky structurally does not contain Earth. The line says the
+   * geometry without teaching it — the customer states their situation, not the mechanic. */
+  korolev: {
+    name: "KOROLEV BASIN ARRAY",
+    reason: "We chose this crater because Earth is never in our sky. That is what makes the data worth buying, and it is why you cannot simply point at us.",
+  },
   /** Act 4 — the Mars teaser. Eleven people and four hundred instruments. */
   tharsis: {
     name: "THARSIS SURVEY OFFICE",
