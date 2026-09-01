@@ -937,3 +937,109 @@ so the recorded `SimAction` log — already written by `applyAndRecordNetAction`
 unreachable from the page — becomes the metric substrate. `tools/ctx.mjs` is extracted from
 `playtest.mjs` unchanged in behaviour. Vitest's include widens to cover `tools/**/*.test.mjs` so the
 pure metric extractor is tested like any sim module.
+
+---
+
+### SD-56 — THE COVERAGE RE-SCALE + the launch interface as instruments (2026-09-01)
+
+**Status: ACCEPTED, built.** User-driven, in this order: *"i want to rewrite the launch interface,
+right now it's really confusing"*, then five sharpened points (failure recovery, ugly spinner
+boxes, "the whole UX needs to be way more visual", "imagine the user understands nothing about
+orbital mechanics", and *"i think right now the coverage is way overexxagerated — i can launch like
+10 sats and cover the whole globe easily, trivializing the game"*), then the ordering call:
+**re-scale first, interface second, so the UX is designed against the real world.**
+
+#### 1. Coverage was trivial because the beam cone was decorative
+
+Measured, not guessed. The router gated a link on ELEVATION and INVERSE-SQUARE only;
+`coneHalfAngleRad` existed on every antenna and was read by nobody. On a 300 km toy body both
+gates are nearly free, so every antenna floodlit its whole visible hemisphere:
+
+| | footprint half-angle | share of globe | sats to blanket |
+|---|---|---|---|
+| toy GEO (535 km) | 64.0° | 28% | 4 |
+| toy "LEO SWEEP" (600 km) | 65.6° | 29% | 4 |
+| toy low orbit (150 km) | 43.4° | 14% | 8 |
+| *real GEO* | *76.3°* | *38%* | — |
+| *real LEO (550 km)* | *18.5°* | *2.6%* | *~40* |
+
+Across the ENTIRE usable altitude band the footprint moved only 43° → 64°. Altitude barely
+changed what you covered, so *where* you put a satellite hardly mattered — which is also why
+aiming felt inconsequential and the pad's numbers felt arbitrary.
+
+**The fix:** the cone becomes physics. `evaluateLink` takes a `BeamAim` (axis + half-angle) and
+reports a new `outside_beam` cause; BROADCAST points nadir, ACCESS/GATEWAY steer at the region
+their beam is assigned to. `coneReachRad` projects a cone half-angle (an angle at the SATELLITE)
+into a central angle (an angle at the BODY) — conflating those two is what let a "spot beam" cover
+a third of a planet. Card cones: ACCESS-S 10°, GATEWAY 14°, BROADCAST 18°, ACCESS-L 24°. The
+horizon mask forks from field.ts's 5° to a net-local 10°. The LEO family moves 310 → 400 km so the
+tighter spots still make a buildable constellation while keeping act 2's latency wall intact
+(~2.7 ms two-hop against a 3 ms SLA; the parked GEO sits above it at ~3.6 ms).
+
+**Consequence:** the measured zero-gap minimum for REGION-1 goes **4 → 9 satellites**. Holding a
+moving region is now a real constellation, and altitude is a real lever (the same antenna paints
+~11° of ground from a low pass and ~19° from a parked GEO).
+
+#### 2. Four bugs the re-scale exposed in the canonical hour
+
+The old arc did not survive first contact, and each failure was worth naming:
+
+1. **It signed REGION-1 the moment the batch separated.** Availability is a ROLLING window, so it
+   still remembered the empty sky before the constellation existed — an instant breach for a
+   network that was already holding.
+2. **It never circularised the underburned bird before measuring.** Until that burn NET-SAT-4
+   flies a lower, faster orbit: not a ring member, a drifting hole.
+3. **Its fill batch compensated for the body's rotation alone.** Co-phasing a later launch with an
+   existing ring must undo BOTH clocks — the spin ω AND the ring's own mean motion n — over the
+   gap between launches: `subLon_fill = subLon_ring + offset − (ω − n)·Δt`. Under the old wide
+   floodlights the error was invisible; with real cones every replacement landed in the wrong
+   place and the ring read 87% held forever.
+4. **Act 3 pointed its corridor beams at hard-coded satellite ids** (`NET-SAT-9/10/11`), which
+   silently became act-2 polar birds when the batch size changed. REGION-2 went dark and bled
+   €16k. Ids now derive from launch order, and `escalation.test` imports the canon constants
+   instead of keeping its own drifting copy.
+
+Point 3 is also the design argument for the new pad: **no player should ever be asked to do that
+arithmetic in their head.**
+
+**Economy:** manifest discount 15% → 45%. Constellations went from a nicety to the only way to
+hold a region; pricing the tenth identical mass-produced unit like a bespoke first one made the
+only viable play unaffordable. The arc ends solvent (€4,376), never dips below €3,488, and all
+four act gates fire in order (24s / 670s / 938s / 968s). ONE deliberate golden re-pin →
+`16791777382910013853n`.
+
+#### 3. The launch interface
+
+Kept from the old pad: the real vocabulary. ALTITUDE / INCLINATION / RAAN keep their names — the
+terms are part of the fantasy and worth learning (user's call: *"real terms with tooltips"*). What
+changed is that you can now SEE what each one does.
+
+- **The tender is pinned to the pad.** Opening the pad used to REPLACE the tender board, hiding the
+  requirement while you designed against it. It now sits across the top for the whole aim, with a
+  comparison table under it: your number, a shared bar, their number, and a threshold tick. Still
+  no verdict printed — the player does the comparing (LAW 1 holds).
+- **Three instruments** (`src/panels/pad-instruments.ts`): a side-on ALTITUDE horizon with the beam
+  drawn as a wedge onto the ground; an INCLINATION dial showing the latitude belt against the
+  customer's latitude; and THE RING, drawing the satellites already on this orbit, the ones this
+  launch adds, and the widest hole between them — the answer to *"1 fails, how do i phase the new
+  launch to fill in the gap?"*
+- **Controls that cannot do anything say so.** On a single equatorial satellite — everyone's first
+  launch — RAAN and PHASE SPREAD are both inert. That was a third of the old pad's controls
+  sitting there looking like numbers you had got wrong. They grey out and explain why.
+- **Drag-scrub numbers** replace `<input type=number>`; the spinner arrows are gone and typing an
+  exact value still works, so the keyboard/bot path stays first-class.
+
+**Deferred, deliberately:** the full-screen launch view (user: *"maybe skip the launch screen for
+now"*). The pad stays in the MISSION rail.
+
+#### 4. M1 is not an hour — measured
+
+Asked directly (*"how is M1 an HOUR? it's two missions solveable in 3 minutes tops"*), the
+canonical arc answers: **~18 minutes of sim time and 20 recorded player actions**, with the act-1
+gate at t=24s. The hour was a design target, never built content. The design's answer for "what do
+you do afterwards" is the sustain loop — renewals at grown demand, escalation congesting what
+success built, faults aimed at the busiest satellite — which largely runs in the sim but barely
+exists in the interface. **Decision (user): move on rather than pad the clock.** The acts are an
+on-ramp; M1's gate criterion should stop claiming the hour, and the treadmill is what the player
+moves on TO. Not rebuilt here; recorded so the gate is not run against a number the build never
+had.
