@@ -2198,3 +2198,51 @@ the deferred M1-A3C-8/9. The seed advances the clock TICK BY TICK through the de
 than jumping it, because a 30-second jump with a single `step` spawned three satellites from a
 `count: 1` launch — the pipeline advances per step, not per elapsed second. That is a sharp edge in
 the seeding surface, not in play, and it is noted here so the next seed author does not rediscover it.
+
+---
+
+### SD-67 — THE TRACE SCENE STOPS WAITING ON THE WALL CLOCK (2026-09-02)
+
+**Status:** ACCEPTED, and deliberately PARTIAL — the catastrophic failure mode is gone, the residue is
+measured and still open.
+
+**Context.** SD-66 re-opened the TRACE instability after correcting SD-65's "byte-identical green"
+claim, which had been measured with the scene running ALONE. Under the full 14-scene playtest the
+scene took 173 s instead of 37 s and act 3 never opened at all: `0 flows`, `widest=[]`, `no repoint
+button at all`.
+
+**The cause: the scene waited on the WALL CLOCK while the sim advances PER FRAME.** `simSleep` and
+`untilCursor` both gave up after a fixed number of wall milliseconds. By the time TRACE runs, thirteen
+other scenes have already run in the same browser; the frame rate falls, far less sim-time passes per
+wall-second, and the budget expired before the world arrived. The scene then asserted against an act
+that had never opened. On an idle machine, alone, the identical code was reliably green — which is
+exactly how this hid through SD-65's three runs.
+
+The load-independent question is not *"has enough wall time passed?"* but *"is the sim still moving?"*.
+Both waits now give up only when sim-time has STOPPED ADVANCING for 25 s — a genuinely stuck or paused
+world — with a generous absolute backstop so a wedged run still terminates. The REPOINT picker is
+waited for the same way (poll until it appears, and until it closes) rather than assumed to render
+inside a fixed 350 ms, which is a UI wait and correctly bounded by wall time.
+
+**Result, measured over two full runs rather than one.** The catastrophic mode is gone: act 3 opens,
+and the scene is back to ~37 s instead of 173 s. The first full run after the fix was **51 ok / 0
+failed** — a completely green 14-scene playtest, 180 assertions. The second was **48 ok / 4 failed**.
+So the scene is BETTER and still FLAKY, and this entry says so rather than quoting the green one. The
+residue is the REPOINT picker reporting `0 options` even behind an 8 s poll, plus the DOM-churn
+assertion (13–32 rebuilds where it wants none) — both load-sensitive, neither understood yet.
+
+**A rule this session paid for twice, written down so nobody pays again.** *A wall-clock poll inside
+these scenes burns SIM time at the current rate.* Two separate attempted fixes here — polling for the
+corridor beam controls, and retrying the beam sweep until a beam read REGION-2 — each ran a few
+seconds of wall-clock polling while the clock was at 1000×, consumed tens of thousands of sim-seconds,
+blew straight past the act-3 window, and made the scene WORSE (9 failures, 203 s and 291 s
+respectively). Both were reverted. **Poll only with the clock held, or poll on sim-time.** The one
+place a bare wall poll is right is a pure UI wait like the picker, where no sim state is at stake.
+
+**Three fixes tried and reverted in SD-66/67, recorded so they are not retried blind:** committing the
+corridor batch with the clock held (principled — `resolveOrbit`'s `m0Rad = subLonRad + ω·t` really does
+make phase depend on the commit tick — and it moved 6 failures to 3, but on n=1 samples that is not
+evidence); pointing the beams with the clock held (no measurable effect); and the two polling attempts
+above (actively harmful). The scene's act-3 setup still wants a real pass that holds the clock across
+the whole sequence and steps it deliberately, rather than interleaving wall-paced UI work with a world
+running at 1000×.

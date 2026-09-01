@@ -153,6 +153,25 @@ The honest next step is not another guess: it is to make the scene's act-3 setup
 SIM time (or hold the clock across the whole setup and step it deliberately), so the world it asserts
 against is the same on a loaded machine and an idle one. That is a rewrite of the scene's pacing, not
 a patch, and it wants doing before any more assertions are hung off it.
+
+**SD-67 (2026-09-02) did the first half of that, and the catastrophic mode is gone.** `simSleep` and
+`untilCursor` no longer give up after a fixed WALL time — the sim advances per FRAME, and by the time
+TRACE runs the frame rate has fallen far enough under thirteen scenes of load that the old budgets
+expired before the world arrived. They now give up only when sim-time has STOPPED ADVANCING (25 s of
+no progress), with an absolute backstop. The REPOINT picker is polled for rather than assumed inside a
+fixed 350 ms. Act 3 now opens reliably and the scene is back to ~37 s from 173 s.
+
+**STILL FLAKY, measured over two full runs and reported as such.** Run 1: 51 ok / 0 failed (a fully
+green 14-scene playtest, 180 assertions). Run 2: 48 ok / 4 failed — the REPOINT picker reporting
+`0 options` even behind an 8 s poll, and the DOM-churn assertion at 13–32 rebuilds where it wants
+none. Better, not fixed.
+
+**A RULE THIS COST TWO REVERTED ATTEMPTS TO LEARN: a wall-clock poll inside these scenes burns SIM
+time at the current rate.** Polling for the beam controls, and retrying the beam sweep until one read
+REGION-2, each spent a few wall-seconds polling at 1000× — tens of thousands of sim-seconds — sailed
+past the act-3 window and made the scene WORSE (9 failures, 203 s / 291 s). Both reverted. Poll only
+with the clock HELD, or poll on sim-time; a bare wall poll is right only for a pure UI wait like the
+picker, where no sim state is at stake.
 - [ ] **OWED from SD-56** — the full-screen LAUNCH view (deferred by the user, "maybe skip the launch screen for now"); globe click-to-aim is wired but its FEEL is unverified by hand; M1's gate criterion still claims an hour the build does not have (measured: ~18 min, 20 actions) — restate it or build the sustain loop.
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, DEFERRED to M2 per user 2026-08-08 — massKg is the anchor, not dead code); WM minimize/collapse op.
 > - **Verification method:** every phase gated by the Playwright playtest loop (see memory `playwright-playtest-loop`) + 725 tests / tsc / build / boot smoke. NOTE: the MCP-driven Chromium pins its viewport at 1920×1080 — "GUI doesn't fill the window" while looking at THAT window is the pinned viewport, not the app (resolved 2026-07-02).

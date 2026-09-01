@@ -29,26 +29,51 @@ async function fast(ctx, steps = 6) {
   await ctx.settle(120);
 }
 
-async function simSleep(ctx, targetSimT, capMs = 180000) {
+/**
+ * WAIT ON THE SIM, NOT ON THE WALL CLOCK (SD-67).
+ *
+ * Both waits below used to give up after a fixed number of WALL milliseconds. The sim advances PER
+ * FRAME, so under load — thirteen other scenes have already run in this browser by the time TRACE
+ * starts — the frame rate falls and far less sim-time passes per wall-second. The budget then expired
+ * before the world arrived, and the scene asserted against an act that had never opened: `0 flows`,
+ * `no repoint button at all`, 173 s instead of 37 s. Alone, on an idle machine, the same code was
+ * reliably green, which is exactly how this hid through SD-65's three "byte-identical" runs.
+ *
+ * The load-independent question is not "has enough wall time passed?" but "is the sim still moving?".
+ * These give up only when sim-time has STOPPED ADVANCING for a while — a genuinely stuck or paused
+ * world — with a generous absolute backstop so a wedged run still ends.
+ */
+const SIM_STALL_MS = 25000; // no sim-time progress for this long ⇒ the world is stuck, not slow.
+const SIM_ABS_CAP_MS = 420000; // backstop so a wedged scene still terminates.
+
+/** Poll `read(state)` until it returns a value, patiently. Null when the sim stalls or the cap hits. */
+async function untilSim(ctx, read) {
   const t0 = Date.now();
+  let lastT = null;
+  let lastProgressAt = Date.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const s = await ctx.eval(() => window.__netState?.());
-    if (s && s.tSim >= targetSimT) return s;
-    if (Date.now() - t0 > capMs) return null;
+    if (s) {
+      const got = read(s);
+      if (got !== null && got !== undefined && got !== false) return s;
+      if (lastT === null || s.tSim > lastT) {
+        lastT = s.tSim;
+        lastProgressAt = Date.now();
+      }
+    }
+    if (Date.now() - lastProgressAt > SIM_STALL_MS) return null; // the sim is not moving.
+    if (Date.now() - t0 > SIM_ABS_CAP_MS) return null;
     await ctx.wait(150);
   }
 }
 
-async function untilCursor(ctx, minCursor, timeoutMs = 180000) {
-  const t0 = Date.now();
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const s = await ctx.eval(() => window.__netState?.());
-    if (s && s.cursor >= minCursor) return s;
-    if (Date.now() - t0 > timeoutMs) return null;
-    await ctx.wait(200);
-  }
+async function simSleep(ctx, targetSimT) {
+  return untilSim(ctx, (s) => (s.tSim >= targetSimT ? true : null));
+}
+
+async function untilCursor(ctx, minCursor) {
+  return untilSim(ctx, (s) => (s.cursor >= minCursor ? true : null));
 }
 
 async function sign(ctx, contractId) {
@@ -200,7 +225,7 @@ export default {
         await ctx.wait(200);
       }
     }
-    await untilCursor(ctx, 1, 90000);
+    await untilCursor(ctx, 1);
     // REGION-1 IS SIGNED LAST, once the ring is whole (SD-64). It used to be signed here, before a
     // single member flew, and availability is a ROLLING WINDOW — a contract accepted over an empty
     // sky keeps remembering that empty sky, so REGION-1 could not climb to its 99 % bar and the
@@ -208,7 +233,7 @@ export default {
     // read "0 flows" and half its assertions were vacuous. canon.ts puts its accept after the fill
     // for exactly this reason.
     await ctx.key("c"); // the act-2 constellation batch (N measured live by suggestPhasing)
-    await simSleep(ctx, 290, 120000);
+    await simSleep(ctx, 290);
     await ctx.eval(() => [...document.querySelectorAll("[data-net=circularize]")].forEach((f) => f.click()));
     // Every number in the fill is read off the ring that is actually flying — tools/ring-fill.mjs.
     await fillRingHole(ctx, { incDeg: 90, launch: (p) => launchDraft(ctx, p) });
@@ -220,7 +245,7 @@ export default {
       (await ctx.eval(() => window.__netState?.()?.contracts.find((c) => c.id === "REGION-1")?.state)) === "active",
       "active",
     );
-    await untilCursor(ctx, 2, 150000);
+    await untilCursor(ctx, 2);
     await slow(ctx);
     await summonTrace(ctx);
     await ctx.settle(500);
@@ -228,13 +253,13 @@ export default {
     await fast(ctx);
 
     // Act 3a: the corridor + backhaul share a pipe — the whole reason this screen exists.
-    await simSleep(ctx, 661, 150000);
+    await simSleep(ctx, 661);
     // The corridor LEOs are the SAME LEO family as the ring (canon flies them at
     // `LEO_SWEEP.semiMajorM`), so they take the ring's exact altitude too — 310 km was the
     // pre-SD-56 number and put them in a different orbit entirely (SD-64).
     const corridorAltKm = await exactRingAltKm(ctx);
     await launchDraft(ctx, { altKm: corridorAltKm, incDeg: 0, subLonDeg: 1.5, count: 3, spreadDeg: 120, fit: true });
-    await simSleep(ctx, 686, 120000);
+    await simSleep(ctx, 686);
     await ctx.eval(async () => {
       const btns = [...document.querySelectorAll("[data-net=beam]")];
       for (const b of btns) {
@@ -244,7 +269,7 @@ export default {
         }
       }
     });
-    await simSleep(ctx, 690, 120000);
+    await simSleep(ctx, 690);
     await slow(ctx);
     await sign(ctx, "REGION-2");
     await sign(ctx, "BACKHAUL-3");
@@ -484,7 +509,20 @@ export default {
         opened !== null && opened.steerable === true,
         opened === null ? "no repoint button at all" : `${opened.sat}:${opened.slot} of ${opened.of} pipes`,
       );
-      await ctx.settle(350);
+      // WAIT FOR THE PICKER, do not assume it renders inside a fixed 350 ms (SD-67). Under full-run
+      // load the panel had not re-rendered by then, so the scene read ZERO options and four
+      // assertions failed against a picker that was merely late — "REPOINT opens a target picker —
+      // 0 options" is the same shape of lie as the act-2 gate timing out. This is a UI wait, not a
+      // sim wait, so a bounded wall poll is the right instrument.
+      {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 8000) {
+          const n = await ctx.eval(() => document.querySelectorAll("[data-net=repoint-pick]").length);
+          if (n > 0) break;
+          await ctx.wait(100);
+        }
+      }
+      await ctx.settle(200);
       const picker = await ctx.eval(() =>
         [...document.querySelectorAll("[data-net=repoint-pick]")].map((b) => ({
           region: b.getAttribute("data-region"),
@@ -519,7 +557,16 @@ export default {
           const b = [...document.querySelectorAll("[data-net=repoint-pick]")].find((x) => x.getAttribute("data-region") === r);
           b?.click();
         }, target?.region ?? "");
-        await ctx.settle(400);
+        // …and wait for it to CLOSE the same way, rather than trusting another fixed settle.
+        {
+          const t0 = Date.now();
+          while (Date.now() - t0 < 8000) {
+            const n = await ctx.eval(() => document.querySelectorAll("[data-net=repoint-pick]").length);
+            if (n === 0) break;
+            await ctx.wait(100);
+          }
+        }
+        await ctx.settle(200);
         const after = await ctx.eval((n) => {
           const msgs = [...document.querySelectorAll(".log-line .msg")].map((e) => e.textContent ?? "");
           return {
