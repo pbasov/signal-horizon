@@ -95,7 +95,7 @@ export function clearVault(slot?: VaultSlot): void {
 export interface StoredPrefs {
   mono: boolean;
   muted: boolean;
-  /** SD-58 — the player asked never to see the intro console again. Defaults false. */
+  /** SD-60 — the player asked never to see the intro console again. Defaults false. */
   skipIntro: boolean;
 }
 
@@ -108,7 +108,7 @@ export function loadPrefs(): StoredPrefs {
     const raw = store.getItem(PREFS_KEY);
     if (raw === null) return { mono: false, muted: false, skipIntro: false };
     const p = JSON.parse(raw) as Partial<StoredPrefs>;
-    // Absent key reads false, so a v1 prefs blob written before SD-58 stays valid.
+    // Absent key reads false, so a v1 prefs blob written before SD-60 stays valid.
     return { mono: p.mono === true, muted: p.muted === true, skipIntro: p.skipIntro === true };
   } catch {
     return { mono: false, muted: false, skipIntro: false };

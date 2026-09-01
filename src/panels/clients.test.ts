@@ -1,5 +1,5 @@
 /**
- * SD-58 — THE CAST. Pins the rules the setting/beats docs set for the narrative layer, so the
+ * SD-60 — THE CAST. Pins the rules the setting/beats docs set for the narrative layer, so the
  * story cannot quietly grow teeth it is not allowed to have.
  *
  * The load-bearing claim under test: **the fiction is inert.** Every scenario tender carries a
@@ -19,7 +19,7 @@ import { offerNetContract, renewalOffer } from "../sim/net/contract";
 import { NET_ACT1_REGION } from "../sim/net/endpoint";
 import { DT } from "../sim/clock";
 
-describe("SD-58 — the cast resolves", () => {
+describe("SD-60 — the cast resolves", () => {
   it("every client has a name and a reason", () => {
     for (const [id, v] of Object.entries(CLIENTS)) {
       expect(v.name, id).toBeTruthy();
@@ -41,7 +41,7 @@ describe("SD-58 — the cast resolves", () => {
   });
 });
 
-describe("SD-58 — the reason lines obey the beats rules", () => {
+describe("SD-60 — the reason lines obey the beats rules", () => {
   const lines = Object.entries(CLIENTS);
 
   it("never state the number (the card already does)", () => {
@@ -62,7 +62,7 @@ describe("SD-58 — the reason lines obey the beats rules", () => {
   });
 });
 
-describe("SD-58 — the scenario tenders are cast", () => {
+describe("SD-60 — the scenario tenders are cast", () => {
   it("the Act-1 opener names its customer", () => {
     const s = new NetSession();
     s.step(Ephemeris.build({}), DT, DT); // the act1 beat emits at t≈0
@@ -85,6 +85,11 @@ describe("SD-58 — the scenario tenders are cast", () => {
     for (const id of used) {
       expect(CLIENTS[id], `scenario.ts uses clientId "${id}" with no entry in CLIENTS`).toBeDefined();
     }
+    // And the other direction: EVERY authored tender must be cast. Without this, a new tender
+    // added by unrelated work renders anonymous and nothing complains — the exact gap a rebase
+    // over main's board-becomes-a-map work could have opened.
+    const offers = [...src.matchAll(/offerNetContract\(/g)].length;
+    expect(used.length, `${offers} authored tenders but only ${used.length} carry a client`).toBe(offers);
   });
 
   it("a renewal keeps the same customer (recurrence does the worldbuilding)", () => {

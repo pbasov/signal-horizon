@@ -161,7 +161,7 @@ export interface Contract {
   id: string;
   /** Glanceable label (the region the contract sits over). */
   label: string;
-  /** WHO IS BUYING (SD-58) — a stable key into `panels/clients.ts`, never player-facing text.
+  /** WHO IS BUYING (SD-60) — a stable key into `panels/clients.ts`, never player-facing text.
    * The sim stays headless: it folds this id, and the panel looks up the name + reason line.
    * "" = no client of record (tests, ad-hoc offers); the UI then shows the region label alone. */
   clientId: string;
@@ -434,7 +434,7 @@ export function offerNetContract(
   region: Region,
   opts?: {
     label?: string;
-    /** SD-58 — the buying institution's key (see `panels/clients.ts`). Defaults to none. */
+    /** SD-60 — the buying institution's key (see `panels/clients.ts`). Defaults to none. */
     clientId?: string;
     activeAxes?: ReadonlySet<SlaAxis>;
     payPerSecond?: number;
@@ -519,7 +519,7 @@ export const NET_RENEWAL_OFFER_WINDOW_S = 1800;
 export function renewalOffer(completed: Contract, generation: number, nowS: number): Contract {
   const offer = offerNetContract(`${completed.id.split("+R")[0]}+R${generation}`, completed.region, {
     label: completed.label,
-    // SD-58: a renewal is the SAME customer on the SAME region — it keeps its client, so the
+    // SD-60: a renewal is the SAME customer on the SAME region — it keeps its client, so the
     // recurrence that does the worldbuilding (setting §8) survives across generations.
     clientId: completed.clientId,
     activeAxes: new Set(completed.activeAxes),

@@ -975,7 +975,7 @@ function netContractRows(t: number): NetContractRow[] {
     return {
       id: c.id,
       label: c.label,
-      // SD-58 — the cast. Looked up panel-side; the sim folds only the stable clientId.
+      // SD-60 — the cast. Looked up panel-side; the sim folds only the stable clientId.
       client: clientName(c.clientId),
       reason: clientReason(c.clientId),
       state: c.state,
@@ -2484,7 +2484,7 @@ function r1Circularize(satId: string): void {
 const wireSeen = new Set<string>();
 let wireWelcomed = false;
 const wireServedOnce = new Set<string>();
-/** SD-58 — the licence-level Registry edges (B1 / B4). Once per game, render-only. */
+/** SD-60 — the licence-level Registry edges (B1 / B4). Once per game, render-only. */
 let registryFirstService = false;
 let registryFirstBreach = false;
 function drainMissionWire(): void {
@@ -2517,7 +2517,7 @@ function drainMissionWire(): void {
     const satId = netSession.lastSolveFor(c.id)?.path?.[1] ?? "the network";
     log.append({ tSim: t, sev: "info", entity: "LINK", value: c.id, msg: WIRE_FIRST_SIGNAL(satId, c.label) });
     netAudio.play("serve_locked");
-    // SD-58 / B1 FIRST LIGHT — the LICENCE-level record, once per game. Distinct from the
+    // SD-60 / B1 FIRST LIGHT — the LICENCE-level record, once per game. Distinct from the
     // per-contract first signal above: this is the first service ever recorded against the
     // licence, so the licence stops being a premise and becomes a record. No cue, no
     // celebration — the Registry does not praise.
@@ -2526,7 +2526,7 @@ function drainMissionWire(): void {
       log.append({ tSim: t, sev: "info", entity: "REGISTRY", value: "NOTICE", msg: REGISTRY_FIRST_SERVICE });
     }
   }
-  // SD-58 / B4 THE FIRST BREACH — a signed contract fell past the shared grace. The Registry
+  // SD-60 / B4 THE FIRST BREACH — a signed contract fell past the shared grace. The Registry
   // is indifferent, and that indifference IS the beat: nobody is disappointed in you, it is
   // simply written down. Once per game; the per-contract failure already has its own surface.
   if (!registryFirstBreach && netSession.contracts.some((c) => c.state === "failed")) {
@@ -4435,7 +4435,7 @@ if (netMode && shell.visibleHosts().includes("orrery")) {
   if (prefs.mono) document.documentElement.classList.add("cvd-mono");
   netAudio.setMuted(prefs.muted);
 }
-// SD-58 — the intro console is OPT-OUT and the opt-out sticks. Three ways past it: any key or
+// SD-60 — the intro console is OPT-OUT and the opt-out sticks. Three ways past it: any key or
 // click (visible affordance in the box), "never show this again" (persists to prefs), and
 // ?intro=0 for tooling and for anyone who wants it gone from the URL. Debug views never see it.
 {
@@ -4546,7 +4546,7 @@ window.addEventListener("keydown", (e) => {
       const el = document.documentElement;
       el.classList.toggle("cvd-mono");
       // SPREAD the stored prefs, never rebuild them: a literal here silently WIPES every
-      // pref this call site does not know about (SD-58's skipIntro was the first casualty).
+      // pref this call site does not know about (SD-60's skipIntro was the first casualty).
       storePrefs({ ...loadPrefs(), mono: el.classList.contains("cvd-mono"), muted: netAudio.isMuted });
       log.append({
         tSim: clock.seconds,

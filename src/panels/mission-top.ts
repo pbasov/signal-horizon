@@ -594,7 +594,7 @@ export class MissionTop implements PanelHandle {
         const state = el("span", "mission-tender-state", t.state.toUpperCase());
         head.appendChild(state);
         row.appendChild(head);
-        // SD-58 — THE REASON LINE. The primary narrative channel (beats §8): one line, in the
+        // SD-60 — THE REASON LINE. The primary narrative channel (beats §8): one line, in the
         // customer's voice, saying why the number matters. It never states the number, never
         // advises, and a player who ignores it loses nothing mechanical.
         if (t.reason) {

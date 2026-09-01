@@ -74,9 +74,9 @@ export interface NetObjective {
 export interface NetContractRow {
   id: string;
   label: string;
-  /** SD-58 — the buying institution's display name ("" when the contract has no client). */
+  /** SD-60 — the buying institution's display name ("" when the contract has no client). */
   client: string;
-  /** SD-58 — the customer's one-line reason ("" when none). Presentation only; never a rule. */
+  /** SD-60 — the customer's one-line reason ("" when none). Presentation only; never a rule. */
   reason: string;
   state: "offered" | "active" | "completed" | "failed";
   /** The enforced SLA terms, human-readable + colour-redundant on the words (e.g. "connectivity",

@@ -93,14 +93,14 @@ export default {
       state.wire.some((w) => w.includes("polar metro")),
       state.wire.join(" | "),
     );
-    // SD-58 / B1 FIRST LIGHT — the one beat guaranteed to fire. The licence stops being a
+    // SD-60 / B1 FIRST LIGHT — the one beat guaranteed to fire. The licence stops being a
     // premise and becomes a record, in the Registry's own flat voice.
     ctx.ok(
       "the REGISTRY records first service (B1)",
       state.wire.some((w) => w.includes("FIRST SERVICE RECORDED")),
       state.wire.filter((w) => w.includes("LICENCE")).join(" | "),
     );
-    // SD-58 — the tender names WHO is buying and WHY: the primary narrative channel.
+    // SD-60 — the tender names WHO is buying and WHY: the primary narrative channel.
     const cast = await ctx.eval(() => {
       const row = document.querySelector(".mission-tender");
       return {

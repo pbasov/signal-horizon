@@ -100,7 +100,7 @@ new-game screen:
 >
 > Somewhere out there a customer needs to know something right now, and light is not going to help.
 
-### AS BUILT (SD-58) — the premise compressed to the medium
+### AS BUILT (SD-60) — the premise compressed to the medium
 
 **There is no new-game screen to put 84 words on.** The build opens on a typed boot console
 (`panels/boot.ts`) that auto-fades and is dismissed by any input, and the only other

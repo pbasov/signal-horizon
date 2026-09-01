@@ -43,7 +43,7 @@ export const MISSION_OBJECTIVES: readonly { title: string; detail: string }[] = 
 ];
 
 /**
- * The Act-1 cold-open (SD-58: now carries the PREMISE, not just the mechanic).
+ * The Act-1 cold-open (SD-60: now carries the PREMISE, not just the mechanic).
  *
  * `docs/signal-horizon-beats.md` §3 asks for one ~84-word framing block, stated once. The
  * build has no new-game screen to put it on: the boot console (panels/boot.ts) auto-fades in
@@ -71,7 +71,7 @@ export const WIRE_VEHICLE_LOST = (id: string): string => `${id} VEHICLE LOST —
 export const WIRE_FIRST_SIGNAL = (satId: string, regionLabel: string): string =>
   `${satId} first signal — ${regionLabel} lit`;
 
-// ── SD-58 — THE REGISTRY (beats B1 / B4) ────────────────────────────────────────
+// ── SD-60 — THE REGISTRY (beats B1 / B4) ────────────────────────────────────────
 /**
  * The Orbital Allocation Registry is the only formal voice in the game: passive, numbered,
  * and entirely without opinion. It never praises and it never threatens. It records.

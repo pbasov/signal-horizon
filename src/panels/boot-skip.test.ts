@@ -1,5 +1,5 @@
 /**
- * SD-58 — THE INTRO IS SKIPPABLE, AND THE OPT-OUT STICKS.
+ * SD-60 — THE INTRO IS SKIPPABLE, AND THE OPT-OUT STICKS.
  *
  * The intro console carries the premise now, and it holds ~2.4 s so ~40 words can be read.
  * That is exactly the change that makes skipping matter: a player who does not want it must
@@ -26,7 +26,7 @@ function installStore(): Map<string, string> {
   return m;
 }
 
-describe("SD-58 — the intro skip preference", () => {
+describe("SD-60 — the intro skip preference", () => {
   let store: Map<string, string>;
   beforeEach(() => {
     store = installStore();
@@ -41,7 +41,7 @@ describe("SD-58 — the intro skip preference", () => {
     expect(loadPrefs().skipIntro).toBe(true);
   });
 
-  it("a pre-SD-58 prefs blob still loads, with the intro on", () => {
+  it("a pre-SD-60 prefs blob still loads, with the intro on", () => {
     // The field did not exist when this was written; absent must read false, not crash.
     store.set(PREFS_KEY, JSON.stringify({ mono: true, muted: true }));
     const p = loadPrefs();

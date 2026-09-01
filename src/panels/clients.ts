@@ -1,5 +1,5 @@
 /**
- * THE CAST (SD-58) — who is buying, and why they care.
+ * THE CAST (SD-60) — who is buying, and why they care.
  *
  * `docs/signal-horizon-beats.md` §2 + §8: the tender reason line is the PRIMARY narrative
  * channel. One line, in the customer's voice, saying why the number matters. It NEVER states
