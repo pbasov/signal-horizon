@@ -791,3 +791,73 @@ went) and reads unavailable on two channels: a dashed border and the stated reas
 fleet strip and the routing screen are the same verb with different affordances and one recorded
 `net_assign_beam` behind both. Seven scene assertions, including that committing lands exactly one
 beam line on the WIRE and closes the picker.
+
+### SD-54 — GDD v0.9: simple-English rewrite + review merge + docs cleanup (14 → 11 .md files)
+
+**Status: ACCEPTED (user: "let's merge the proposal into GDD itself, also GDD is quite difficult to read right now, i would like to rewrite it in simpler english and less wordy structure" + "we also produced quite a lot of fluff in docs/ i want to clean it up and merge into GDD where possible" + "be careful, some of the docs/ content might be outdated").**
+
+What changed:
+
+1. **GDD rewritten v0.8.1 → v0.9** in simple English: short sentences, active voice, ~25% shorter
+   than v0.8.1 despite absorbing two other documents. **Section numbers are preserved** (§0–§11,
+   §3a/§3b, §4.1–§4.12) — every other doc cites these numbers, so the citation graph survives intact.
+   A new §11 (Market Notes) was appended; nothing else was renumbered.
+2. **`gdd-proposal.md` v0.2 merged into the GDD:** gate measurement protocol (§9, one pre-registered
+   endpoint + stopping rule), motion and alarm rules + freshness-ramp lightness fix (§8), motion
+   budget rules (§5), defeat ladder + mainline victory constraints (§4.9), narrative generator
+   rules (§3), escalation relief-decay test (§3b), session-shape rules incl. timed premium tenders
+   (§3), return screen "your last session" (§5), market notes (§11). The CS2 claim in §5 was
+   reworded to match the press record (performance-first criticism; "lifeless" was player
+   discourse). The QF survey numbers in §4.6 now carry the verified detail (N=1,799, Dec 2025,
+   63% most-negative, opt-in caveat).
+3. **`signal-horizon-player-attack.md` core merged into GDD §9:** the six falsifiable claims with
+   their measures, and the revise-by-subtraction rule (after the gate, remove refuted claims —
+   never reframe them). This supersedes SD-42's *artifact* (the file); SD-42's decision record
+   stands as history. Git history keeps the full 336-line text.
+4. **`signal-horizon-gdd-simple.md` deleted** — the main GDD is now the simple version, so the
+   STE rewrite duplicate had no remaining purpose.
+5. **Stale content handled, not merged:** the GDD's §9 now describes M1 as FIRST LIGHT (SD-45),
+   superseding the v0.8.1 "RemoteTech / Cisco-Packet-Tracer" framing as the *current* authority
+   (the fantasy-anchor line survives). The dead pointer to the nonexistent
+   `signal-horizon-m1-mechanics.md` is fixed (now: m1 doc Part I + m1-redesign + routing-screen).
+   `README.md` "Current state" was stale (2026-06-17, pre-SD-45) and is refreshed. Build-track docs
+   (m1-redesign, first-light-integrated-plan, routing-screen) were **not** merged: they are
+   mechanics/build authority, not GDD material. Known staleness left in place deliberately:
+   first-light-integrated-plan §3 skeletons are consumed (SD-46..53 recorded) — retire that file
+   when the remaining FL tickets close; signal-horizon-m1.md Parts II–IV are superseded by
+   m1-redesign (its own header says so); DD-7's "30-min light-delay fun-test" wording predates the
+   v0.8.1 one-hour connectivity gate (append-only log, historical record).
+
+**Consequences:** `docs/` is now 11 .md files. The GDD is the single design authority in simple
+English; the proposal and critique survive only as git history and as merged GDD content.
+`AGENTS.md` needed no changes (it references only surviving files).
+
+**Fix pass (2026-09-01, adversarial review: "pass, with conditions").** All conditions applied:
+
+1. **Gate protocol defects fixed (GDD §9):** the instrument is now two pre-registered bits — layer 1
+   replay (unprompted ask, or acceptance of a scripted neutral offer with a fixed offer script) and
+   layer 2 continue (the cliffhanger response; this also gives layer 2 its missing measure, and
+   "continue" no longer contaminates layer 1 with peak-end noise). Bands: 4/5 layer 1, 3/5 layer 2.
+   The middle verdict is pre-registered: persistent-middle = fail-for-sharpness — the claim under
+   test is a compulsion, and compulsions do not poll at 60%. The six-claims block now states that
+   the two bits alone gate, that the claims drive revision via the subtraction rule, that claim 4
+   is reworded to live cues, and that claims 5–6 belong to the M4/M6 gates.
+2. **Four rulings filed** (they existed only in chat, so the v0.9 merge dropped them — recorded
+   here so they survive the next one): §4.11 — the tool exists from the start; discovery is
+   promotion, never instantiation. §4.12 — the parse's bar is labeled (physics bounds as bounds:
+   propagation floor, min-cut ceiling; self-relative default; population histograms contingent on
+   the runs question); "proven optimum" deleted. §5/§9 — the first health-soundscape is slotted at
+   M2 beside the heatmap. §3b — load variance must be forecastable in principle (breach-as-dice
+   is banned).
+3. **Rejection ledger carried** (was lost with `gdd-proposal.md`; an LLM-heavy pipeline relitigates
+   anything not ledgered): R-1 rival sabotage/buyout — deferred (solo-v1 scope, honest-info tone;
+   if ever built, attacks obey light-delay, observed minutes late). R-2 finite runs — NOT
+   rejected; downgraded to decide-with-gate-data (GDD §9). R-3 score-threshold victory — rejected
+   (the Stellaris anticlimax). R-4 community-wiki onboarding — rejected for a paid game (watch
+   wiki-escape at the gate instead). R-5 generative-AI content — the cut stands (QF verified, 85%
+   negative).
+4. **Version freeze:** GDD §0 now requires v0.10's version-log entry to cite gate data.
+5. **`signal-horizon-m1.md` pruned to Part I.** Parts II–IV were superseded by SD-45 and are kept
+   only in git history.
+6. Minor GDD fixes from the same review: motion rules 1 and 4 are stated as a pair (rule 1 sets
+   the budget, rule 4 spends it), and deadlines vs age stamps never share iconography (§8).
