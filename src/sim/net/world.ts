@@ -463,12 +463,37 @@ export function horizonReachRad(altM: number): number {
  * reads horizon-capped (its reach is sat-to-sat, drawn elsewhere). Pure. */
 export function footprintRadiusRad(loadout: readonly AntennaSpec[], altM: number): number {
   const horizon = horizonReachRad(altM);
-  if (loadout.some((a) => a.type === "BROADCAST")) return horizon;
-  const cones = loadout
-    .filter((a) => a.type === "ACCESS" || a.type === "GATEWAY")
-    .map((a) => a.coneHalfAngleRad);
+  const cones = loadout.filter((a) => isBeamType(a.type)).map((a) => a.coneHalfAngleRad);
   if (cones.length === 0) return horizon;
-  return Math.min(horizon, Math.max(...cones));
+  return Math.min(horizon, coneReachRad(Math.max(...cones), altM));
+}
+
+/**
+ * The SURFACE central angle (radians) a beam of half-angle `coneHalfAngleRad` paints from
+ * `altM`, nadir-pointed — the antenna's spot size on the ball.
+ *
+ * A cone half-angle is an angle at the SATELLITE; a footprint is an angle at the BODY
+ * CENTRE, and the two are not the same number. In the triangle (centre, sat, rim point)
+ * with r = R + alt: the angle at the rim point is 180° − ε, so sin-rule gives
+ * cos ε = (r/R)·sin γ and the central angle is λ = asin((r/R)·sin γ) − γ. When
+ * (r/R)·sin γ ≥ 1 the cone reaches past the limb and the horizon is the real limit, so the
+ * caller mins this against {@link horizonReachRad}.
+ *
+ * This is what makes ALTITUDE a lever again: the same antenna paints ~2° of ground from a
+ * low pass and ~20° from a parked GEO. Pure.
+ */
+export function coneReachRad(coneHalfAngleRad: number, altM: number): number {
+  const g = Math.max(0, coneHalfAngleRad);
+  if (g <= 0) return 0;
+  const rM = A1_BODY_RADIUS_M + Math.max(0, altM);
+  const s = (rM / A1_BODY_RADIUS_M) * Math.sin(g);
+  if (s >= 1) return Math.PI / 2; // reaches past the limb — the horizon cap binds instead.
+  return Math.asin(s) - g;
+}
+
+/** Whether an antenna type paints a ground spot at all (CROSSLINK is sat-to-sat). */
+function isBeamType(type: string): boolean {
+  return type === "BROADCAST" || type === "ACCESS" || type === "GATEWAY";
 }
 
 /**

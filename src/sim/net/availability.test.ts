@@ -58,6 +58,11 @@ const REGION: Region = {
 };
 const centre = { latRad: REGION.latRad, lonRad: REGION.lonRad };
 
+/** The measured zero-gap constellation minimum for REGION-1 from the polar LEO family — the
+ * same empirical pin phasing.test.ts derives from `suggestPhasing`. Named once here so the
+ * hand-off assertions move together when the physics is re-tuned. */
+const ZERO_GAP_N = 4;
+
 /** A train of `count` LEO_SWEEP sats evenly phased in mean anomaly (m0 += 2π·i/count). */
 function leoTrain(count: number, t0 = 0): NetSat[] {
   const out: NetSat[] = [];
@@ -108,7 +113,7 @@ describe("B1 windowAvailability — the rolling hand-off held-fraction", () => {
   });
 
   it("a phased N=4 holds rolling availability = 1.0 at EVERY phase, including a t < window boundary", () => {
-    const sats = leoTrain(4);
+    const sats = leoTrain(ZERO_GAP_N);
     const c = availContract();
     // Several phases across a period, including a trailing-window boundary t < W (negative
     // sample times) — determinism holds (periodic orbit, pure isPointServed at negative t).
@@ -168,7 +173,7 @@ describe("B1 the SHARED grace enforces availability — empirical N pinned (N=4 
   });
 
   it("N=4 NEVER breaches and accrues term — the measured zero-gap minimum", () => {
-    const c = driveContract(leoTrain(4), STEPS, DT);
+    const c = driveContract(leoTrain(ZERO_GAP_N), STEPS, DT);
     expect(c.state).not.toBe("failed");
     expect(c.breachSecondsAccum).toBe(0); // held continuously across every hand-off
     expect(c.servedSecondsAccum).toBeGreaterThan(0); // term accrues
@@ -178,7 +183,7 @@ describe("B1 the SHARED grace enforces availability — empirical N pinned (N=4 
 
 describe("B1 the strongest-margin hand-off router (signature stable, order-independent)", () => {
   it("picks the SAME bridge regardless of roster order (tie-break by satId) — order-independent", () => {
-    const sats = leoTrain(4);
+    const sats = leoTrain(ZERO_GAP_N);
     // Find a t where >=2 sats bridge (a hand-off overlap) by checking margins differ.
     const dt = A1_LEO_PERIOD_S / 400;
     let checked = 0;
@@ -194,7 +199,7 @@ describe("B1 the strongest-margin hand-off router (signature stable, order-indep
   });
 
   it("served NEVER flips across a hand-off for N=4 (one rises as another sets)", () => {
-    const sats = leoTrain(4);
+    const sats = leoTrain(ZERO_GAP_N);
     const dt = A1_LEO_PERIOD_S / 400;
     for (let i = 0; i < 400 * 4; i++) {
       const t = i * dt;

@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { standardLoadout, resolveLoadout, antennaCardById, suggestLoadout, validateLoadout } from "./sat";
-import { horizonReachRad, footprintRadiusRad, previewLaunch, draftToSat, timeToServiceS, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
+import { horizonReachRad, coneReachRad, footprintRadiusRad, previewLaunch, draftToSat, timeToServiceS, GEO_PARK, LEO_SWEEP, A1_GEO_SEMI_MAJOR_M, A1_BODY_RADIUS_M } from "./world";
 import { NET_ACT1_REGION, NET_ACT1_GROUND } from "./endpoint";
 import { Ephemeris } from "../ephemeris";
 import { solve } from "./router";
@@ -21,7 +21,8 @@ const geoAlt = A1_GEO_SEMI_MAJOR_M - A1_BODY_RADIUS_M;
 const leoAlt = LEO_SWEEP.semiMajorM - A1_BODY_RADIUS_M;
 const BROADCAST = standardLoadout(NET_REF_LINK_DISTANCE_M);
 const ACCESS_S = resolveLoadout(["ACCESS_S"], NET_REF_LINK_DISTANCE_M);
-const CONE_30 = antennaCardById("ACCESS_S")!.coneHalfAngleRad;
+const CONE_ACCESS_S = antennaCardById("ACCESS_S")!.coneHalfAngleRad;
+const CONE_30 = antennaCardById("BROADCAST")!.coneHalfAngleRad;
 
 describe("FL-05 — horizonReachRad / footprintRadiusRad", () => {
   it("the horizon cap grows monotonically with altitude (GEO reaches more sky than LEO)", () => {
@@ -35,19 +36,39 @@ describe("FL-05 — horizonReachRad / footprintRadiusRad", () => {
     }
   });
 
-  it("BROADCAST reads the horizon cap; a spot beam reads its cone clipped by the horizon", () => {
-    expect(footprintRadiusRad(BROADCAST, geoAlt)).toBeCloseTo(horizonReachRad(geoAlt), 12);
-    // GEO: the 30° cone is INSIDE the GEO horizon cap ⇒ the cone is the footprint.
-    expect(footprintRadiusRad(ACCESS_S, geoAlt)).toBeCloseTo(CONE_30, 12);
-    // LEO: the horizon cap is tighter than the cone ⇒ the horizon clips it.
-    if (horizonReachRad(leoAlt) < CONE_30) {
-      expect(footprintRadiusRad(ACCESS_S, leoAlt)).toBeCloseTo(horizonReachRad(leoAlt), 12);
-    } else {
-      expect(footprintRadiusRad(ACCESS_S, leoAlt)).toBeCloseTo(CONE_30, 12);
-    }
+  it("a beam's footprint is its cone PROJECTED to the surface, clipped by the horizon", () => {
+    // A cone half-angle is an angle at the SATELLITE; a footprint is a central angle at the
+    // BODY. The two are different numbers, and conflating them is what made a "spot beam"
+    // paint a third of the planet. coneReachRad does the projection; the horizon still caps.
+    const wide = footprintRadiusRad(BROADCAST, geoAlt);
+    expect(wide).toBeCloseTo(horizonReachRad(geoAlt), 12); // a 30° flood reaches past the limb.
+
+    // A narrow spot beam is cone-limited well inside the horizon, and its footprint is the
+    // PROJECTED angle — strictly larger than the raw cone, and nothing like the horizon cap.
+    expect(footprintRadiusRad(ACCESS_S, geoAlt)).toBeCloseTo(coneReachRad(CONE_ACCESS_S, geoAlt), 12);
+    expect(footprintRadiusRad(ACCESS_S, geoAlt)).toBeLessThan(horizonReachRad(geoAlt));
+    expect(footprintRadiusRad(ACCESS_S, leoAlt)).toBeCloseTo(coneReachRad(CONE_ACCESS_S, leoAlt), 12);
+
+    // THE ALTITUDE LEVER: the same antenna paints more ground from higher up.
+    expect(footprintRadiusRad(ACCESS_S, geoAlt)).toBeGreaterThan(footprintRadiusRad(ACCESS_S, leoAlt));
+
     // an ACCESS fit NEVER out-promises a BROADCAST fit at the same altitude.
     expect(footprintRadiusRad(ACCESS_S, geoAlt)).toBeLessThanOrEqual(footprintRadiusRad(BROADCAST, geoAlt));
     expect(footprintRadiusRad(ACCESS_S, leoAlt)).toBeLessThanOrEqual(footprintRadiusRad(BROADCAST, leoAlt));
+  });
+
+  it("coneReachRad projects the cone onto the ball and saturates past the limb", () => {
+    // Monotone in altitude, and a cone that over-reaches the limb reports the 90° saturation
+    // the caller mins against the horizon (never a NaN from asin out of domain).
+    let prev = -Infinity;
+    for (let alt = 20_000; alt <= geoAlt; alt += 25_000) {
+      const r = coneReachRad(CONE_ACCESS_S, alt);
+      expect(Number.isFinite(r)).toBe(true);
+      expect(r).toBeGreaterThan(prev);
+      prev = r;
+    }
+    expect(coneReachRad(CONE_30, geoAlt)).toBe(Math.PI / 2); // over-reaches ⇒ horizon binds.
+    expect(coneReachRad(0, geoAlt)).toBe(0);
   });
 
   it("an S-only relay fit has no surface footprint promise (horizon-capped, drawn elsewhere)", () => {

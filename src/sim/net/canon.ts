@@ -58,16 +58,27 @@ export const TICK_LAUNCH = 600; // t = 10 sim-seconds.
 /** ACCEPT the Act-1 contract AFTER the launch event deploys (~18 s pipeline). */
 export const TICK_ACCEPT = 1440; // t = 24 sim-seconds.
 
-/** ACT 2: LAUNCH the N=4 LEO_SWEEP constellation as ONE BATCH right as act2 opens. */
+/** ACT 2: LAUNCH the zero-gap LEO_SWEEP constellation as ONE BATCH right as act2 opens. */
 export const TICK_BATCH = 1441;
 /** ACT 2: ACCEPT REGION-1 + CIRCULARIZE the underburned NET-SAT-4. */
 export const TICK_ACCEPT2 = 3032;
-/** ACT 2: the FILL batch — 4 more polar sats interleaved (+π/4) to close the attrition holes. */
+/** ACT 2: the FILL batch — more polar sats INTERLEAVED between the first batch's slots to
+ * close the attrition holes. The interleave offset is HALF a slot (π/N, not a fixed π/4): it
+ * has to follow the constellation's actual spacing, and the spacing changed with the beam
+ * geometry. A fixed offset lands the fill sats on top of the survivors instead of between
+ * them, which is why the arc read 87% held — close, and never closing. */
 export const TICK_FILL = 20642;
+export const FILL_COUNT = 4;
 export const FILL_SUBLON_RAD =
-  LEO_SWEEP.subLonRad + Math.PI / 4 - (TAU2 / 240) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
+  LEO_SWEEP.subLonRad +
+  Math.PI / ACT2_ZERO_GAP_N -
+  (TAU2 / 240) * (TICK_FILL - TICK_BATCH) * GOLDEN_DT;
 
-/** The even in-plane mean-anomaly spread for the N=4 batch (= 2π / count). */
+/** What the canonical player buys for act 2 — the measured zero-gap minimum. The arc's
+ * attrition hole is closed by the FILL batch below, not by over-buying up front. */
+export const ACT2_BATCH_COUNT = ACT2_ZERO_GAP_N;
+
+/** The even in-plane mean-anomaly spread for the zero-gap batch (= 2π / N). */
 export const ACT2_PHASE_SPREAD_RAD = TAU2 / ACT2_ZERO_GAP_N;
 
 /** R3 (balance): with the term at 480 sim-s, renewals CYCLE inside the hour — sign REGION-0's
@@ -76,7 +87,7 @@ export const ACT2_PHASE_SPREAD_RAD = TAU2 / ACT2_ZERO_GAP_N;
 export const TICK_ACCEPT_R0_R1 = 31200; // t = 520 s.
 
 /** The recorded ACT-1 + ACT-2 action sequence. */
-export function actLog(batchCount = ACT2_ZERO_GAP_N): SaveGame {
+export function actLog(batchCount = ACT2_BATCH_COUNT): SaveGame {
   const sg = saveGame(NET_RNG_SEED, GOLDEN_DT, { game: "net", act: "act2" });
   addAction(
     sg,
@@ -120,8 +131,8 @@ export function actLog(batchCount = ACT2_ZERO_GAP_N): SaveGame {
         semiMajorM: LEO_SWEEP.semiMajorM,
         incRad: LEO_SWEEP.incRad,
         subLonRad: FILL_SUBLON_RAD,
-        count: 4,
-        phaseSpreadRad: ACT2_PHASE_SPREAD_RAD,
+        count: FILL_COUNT,
+        phaseSpreadRad: TAU2 / FILL_COUNT,
       },
       TICK_FILL,
     ),
@@ -131,7 +142,7 @@ export function actLog(batchCount = ACT2_ZERO_GAP_N): SaveGame {
 
 /** The pinned golden log: the full act1→act2 arc with the attrition response. */
 export function act2Log(): SaveGame {
-  return actLog(ACT2_ZERO_GAP_N);
+  return actLog(ACT2_BATCH_COUNT);
 }
 
 // ── ACT 3a (C1b): escalation → the shared-BROADCAST-pipe squeeze → re-tame ──────────
