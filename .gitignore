@@ -18,3 +18,6 @@ dist/
 
 # agent-eval run bundles (artifacts, not source)
 tools/agent-eval/runs/
+
+# other sessions' worktrees live here — never the parent repo's business
+.claude/worktrees/

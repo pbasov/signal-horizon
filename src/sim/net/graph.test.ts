@@ -170,19 +170,29 @@ describe("M1-SLV-1 — the router routes over the spine", () => {
   };
   const REGION: Region = NET_ACT1_REGION;
 
-  /** Serve at lon 0, cross the spine, land at lon 180 through a GATEWAY. */
+  /** Serve at lon 0, cross the spine, land at lon 180 through a GATEWAY.
+   *
+   * The serving card is ACCESS-S (10° cone) ON PURPOSE. From this GEO the whole visible
+   * limb subtends only asin(300/835) ≈ 21°, so ACCESS-L's 24° cone could never gate
+   * anything here and a cone assertion built on it would pass vacuously. ACCESS-S is
+   * narrow enough that where the beam LOOKS actually decides what it reaches. */
   function spineFleet(): NetSat[] {
     return [
-      geoSat("SAT-A", 0, ["ACCESS_L", "CROSSLINK"]),
+      geoSat("SAT-A", 0, ["ACCESS_S", "CROSSLINK"]),
       geoSat("SAT-B", 90, ["CROSSLINK"]),
       geoSat("SAT-C", 180, ["GATEWAY", "CROSSLINK"]),
     ];
   }
 
-  const ctxFor = (sats: NetSat[]): PipeContext => ({
+  /** The contract-true context: the serving beam is ASSIGNED to the region AND AIMED at it,
+   * so the SD-56 cone gate is genuinely exercised on the relay path (an omitted aim reads as
+   * unpointed and would skip the gate entirely — passing for the wrong reason). */
+  const ctxFor = (sats: NetSat[], aim: { latRad: number; lonRad: number } = REGION): PipeContext => ({
     regionId: REGION.id,
     latencyActive: false,
     beams: new Map([[pipeKey(sats[0].id, 0), REGION.id]]),
+    aimLatRad: aim.latRad,
+    aimLonRad: aim.lonRad,
   });
 
   it("WITHOUT the spine the region is UNREACHABLE — the bent pipe cannot span the body", () => {
@@ -229,6 +239,27 @@ describe("M1-SLV-1 — the router routes over the spine", () => {
     expect(r.path).toEqual(["REGION-0", "SAT-A", "SAT-B", "SAT-C", "GROUND-FAR"]);
     expect(r.pipe).toBe(pipeKey("SAT-A", 0));
     expect(r.latencyS).toBeGreaterThan(0);
+  });
+
+  it("the SPINE cannot widen the SPOT — a region outside the beam stays dark (SD-56 × SD-57)", () => {
+    const sats = spineFleet();
+    // The beam is aimed 60° away: the region is well outside ACCESS-L's 24° cone. A perfect
+    // relay spine behind the serving sat must not rescue it — relaying extends where traffic
+    // can be LANDED, never where the antenna paints.
+    const b = bridgeForPoint(
+      eph,
+      REGION,
+      [FAR_GROUND],
+      sats,
+      0,
+      undefined,
+      undefined,
+      ctxFor(sats, { latRad: 0, lonRad: Math.PI / 3 }),
+      buildRelayClosure(eph, sats, 0),
+    );
+    expect(b.satId).toBeNull();
+    if (b.satId !== null) throw new Error("unreachable");
+    expect(b.cause).toBe("outside_beam");
   });
 
   it("a landing sat with NO GATEWAY cannot land trunk traffic (BROADCAST is not a landing)", () => {

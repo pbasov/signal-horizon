@@ -12,6 +12,7 @@ import {
   LEO_SWEEP,
   GEO_PARK_PRESET,
   resolveOrbit,
+  A1_LEO_PERIOD_S,
   type LaunchDraft,
 } from "./world";
 import {
@@ -46,8 +47,13 @@ const TAU = Math.PI * 2;
 // GROUND-1 (the equatorial ground is ~70° away — wider than a LEO can bridge).
 const grounds = [NET_ACT1_GROUND, NET_ACT2_GROUND];
 
-// The Act-2 region is HIGH LATITUDE (lat 70°, beyond the GEO's ~64° edge): a single inclined LEO
-// sawtooths; an N=4 polar constellation is the measured zero-gap minimum (via the high-lat ground).
+// The Act-2 region is HIGH LATITUDE (lat 70°, beyond the parked GEO's reach): a single inclined
+// LEO sawtooths; an N=9 polar constellation is the measured zero-gap minimum (via the high-lat
+// ground). The minimum ROSE from 4 when antenna cones became real physics — a beam now paints a
+// spot instead of a hemisphere, so holding a region continuously takes a genuine constellation.
+// NOTE: this N is measured against the BROADCAST floodlight the batch flies. A constellation of
+// POINTED beams needs more members — a spot beam paints far less ground than a floodlight — which
+// is the coverage re-scale's business, not this file's.
 const REGION: Region = {
   id: "REGION-1",
   label: "polar metro",
@@ -82,7 +88,7 @@ function leoTrain(count: number, t0 = 0): NetSat[] {
 function worstPhaseAvail(sats: NetSat[], t = 0): number {
   let worst = Infinity;
   for (let k = 0; k < 16; k++) {
-    const tt = t + (150 * k) / 16;
+    const tt = t + (A1_LEO_PERIOD_S * k) / 16;
     const a = windowAvailability(eph, availContract, sats, grounds, tt);
     if (a < worst) worst = a;
   }
@@ -90,15 +96,15 @@ function worstPhaseAvail(sats: NetSat[], t = 0): number {
 }
 
 describe("B2 suggestPhasing — empirically derives the zero-gap N + a viable-but-imperfect assist", () => {
-  it("derives zeroGapN === 4 for LEO_SWEEP / REGION-1 (the EMPIRICAL pin — fails loudly if the physics shifts)", () => {
+  it("derives zeroGapN === 9 for LEO_SWEEP / REGION-1 (the EMPIRICAL pin — fails loudly if the physics shifts)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
-    expect(s.zeroGapN).toBe(4);
+    expect(s.zeroGapN).toBe(9);
   });
 
-  it("suggests count === 3 (= zeroGapN − shortfall), always ≥ a real constellation (≥ 2)", () => {
+  it("suggests count === 8 (= zeroGapN − shortfall), always ≥ a real constellation (≥ 2)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
     expect(s.count).toBe(s.zeroGapN - NET_PHASING_ASSIST_SHORTFALL);
-    expect(s.count).toBe(3);
+    expect(s.count).toBe(8);
     expect(s.count).toBeGreaterThanOrEqual(NET_PHASING_MIN_CONSTELLATION);
     expect(s.basePresetId).toBe("LEO_SWEEP");
   });
@@ -108,8 +114,8 @@ describe("B2 suggestPhasing — empirically derives the zero-gap N + a viable-bu
     const lone = worstPhaseAvail(leoTrain(1));
     expect(s.estCoveredFraction).toBeLessThan(SLA_AVAIL); // a real, closable gap (not optimal).
     expect(s.estCoveredFraction).toBeGreaterThan(lone + 0.3); // markedly above a single sat.
-    // The closable gap matches the measured N=3 worst-phase rolling availability (~0.69).
-    expect(s.estCoveredFraction).toBeCloseTo(worstPhaseAvail(leoTrain(3)), 12);
+    // The closable gap matches the measured worst-phase rolling availability of the assist set.
+    expect(s.estCoveredFraction).toBeCloseTo(worstPhaseAvail(leoTrain(s.count)), 12);
   });
 
   it("returns `count` drafts evenly m0-spread by 2π/count into ONE plane (a constellation that hands off)", () => {
@@ -134,21 +140,22 @@ describe("B2 suggestPhasing — empirically derives the zero-gap N + a viable-bu
 });
 
 describe("B2 the assist set is near-continuous-but-imperfect; ONE more sat reaches continuous", () => {
-  it("the suggested N=3 set raises availability far above a lone LEO but stays < slaAvail (the gap to close)", () => {
+  it("the suggested assist set raises availability far above a lone LEO but stays < slaAvail (the gap to close)", () => {
+    const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
     const lone = worstPhaseAvail(leoTrain(1));
-    const assist = worstPhaseAvail(leoTrain(3));
+    const assist = worstPhaseAvail(leoTrain(s.count));
     expect(assist).toBeGreaterThan(lone + 0.3);
     expect(assist).toBeLessThan(SLA_AVAIL);
     // The assist set is a REAL constellation: at least one sat covers most of the cycle (not ~0).
     expect(assist).toBeGreaterThan(0.5);
   });
 
-  it("adding exactly ONE more sat (→ zeroGapN = 4) crosses slaAvail and holds continuous SERVED", () => {
+  it("adding exactly ONE more sat (→ zeroGapN) crosses slaAvail and holds continuous SERVED", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
-    const closed = leoTrain(s.zeroGapN); // = N=4, the player's closing act.
+    const closed = leoTrain(s.zeroGapN); // the player's closing act.
     expect(worstPhaseAvail(closed)).toBeGreaterThanOrEqual(SLA_AVAIL);
     // Continuous SERVED across a full hand-off cycle (no instant gap once the gap is closed).
-    const dt = 150 / 200;
+    const dt = A1_LEO_PERIOD_S / 200;
     for (let i = 0; i < 200 * 2; i++) {
       expect(isPointServed(eph, centre, grounds, closed, i * dt)).toBe(true);
     }
@@ -167,7 +174,7 @@ describe("B2 phasingLadder — the coverage-vs-capex curve the player dials the 
 
   it("the FIRST holding rung is exactly zeroGapN (the ladder + suggestPhasing agree on the knee)", () => {
     const s = suggestPhasing(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds);
-    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 8);
+    const ladder = phasingLadder(eph, REGION, LEO_SWEEP, SLA_AVAIL, 0, grounds, 2, 11);
     const firstHold = ladder.find((r) => r.holds);
     expect(firstHold?.n).toBe(s.zeroGapN);
     // Below the knee every rung is a real gap; at/above the knee every rung holds (monotone bar-cross).

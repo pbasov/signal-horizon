@@ -40,8 +40,8 @@ describe("R3 — the canonical-hour economy (measurement + pins)", () => {
   const [act1T, act2T, act3aT, act3bT] = gateT;
 
   it("the golden is UNTOUCHED by the canon extraction (the pin bites both ways)", () => {
-    expect(netStateHash(r.session)).toBe(12755391225096450261n);
-    expect(r.hash).toBe(12755391225096450261n);
+    expect(netStateHash(r.session)).toBe(16791777382910013853n);
+    expect(r.hash).toBe(16791777382910013853n);
   });
 
   it("the four act gates fire in order at sane times", () => {

@@ -121,7 +121,33 @@ export interface AntennaCard {
   eirp: number;
 }
 
-const CONE_30_DEG = 30 * (Math.PI / 180);
+const DEG = Math.PI / 180;
+
+/**
+ * BEAM WIDTHS — the antenna half-angles, and with them the whole coverage economy.
+ *
+ * These used to all be 30° and purely decorative (the router never looked at them), which
+ * made every antenna a floodlight over its whole visible hemisphere. Now the cone is
+ * enforced in the link budget, so this table IS the footprint table: the spot a card paints
+ * is `coneReachRad(cone, altitude)` clipped by the horizon, which means the CARD chooses how
+ * much ground you cover and the ALTITUDE chooses how much that card is worth.
+ *
+ * The spread is deliberate. ACCESS-S is a true spot — cheap, narrow, and from a low pass it
+ * covers less than a metro, so it wants height or company. ACCESS-L trades price for a spot
+ * wide enough to hold a metro from low orbit. GATEWAY sits between them carrying far more
+ * capacity, so its scarcity is the pipe, not the paint. BROADCAST is the widest and the
+ * dumbest: down-only, latency-incapable, shared capacity — cheap ground per euro, but you
+ * cannot aim it and everyone under it shares one pipe. TUNABLE.
+ */
+const CONE_BROADCAST = 18 * DEG;
+const CONE_ACCESS_S = 10 * DEG;
+const CONE_ACCESS_L = 24 * DEG;
+const CONE_GATEWAY = 14 * DEG;
+/** CROSSLINK never paints ground, so this width never gates anything: a relay terminal is
+ * STEERED at its peer satellite, which puts the peer on the boresight by construction. The
+ * edge predicate ({@link import("./link-budget").evaluateInterSatLink}) therefore applies no
+ * cone gate at all, and this value exists only so the card has one. */
+const CONE_CROSSLINK = 30 * DEG;
 
 /** The M1 card catalog. Capacities are on the contract offeredLoad scale (an Act-1
  * contract offers ~1.0 at baseline, swinging ±45% diurnally; escalation grows the
@@ -136,7 +162,7 @@ export const ANTENNA_CARDS: readonly AntennaCard[] = [
     slot: "G",
     capacityUnits: 1.5,
     priceEur: 2500,
-    coneHalfAngleRad: CONE_30_DEG,
+    coneHalfAngleRad: CONE_BROADCAST,
     eirp: NET_STANDARD_EIRP,
   },
   {
@@ -146,7 +172,7 @@ export const ANTENNA_CARDS: readonly AntennaCard[] = [
     slot: "G",
     capacityUnits: 1.2,
     priceEur: 1200,
-    coneHalfAngleRad: CONE_30_DEG,
+    coneHalfAngleRad: CONE_ACCESS_S,
     eirp: NET_STANDARD_EIRP,
   },
   {
@@ -156,7 +182,7 @@ export const ANTENNA_CARDS: readonly AntennaCard[] = [
     slot: "G",
     capacityUnits: 2.4,
     priceEur: 2800,
-    coneHalfAngleRad: CONE_30_DEG,
+    coneHalfAngleRad: CONE_ACCESS_L,
     eirp: NET_STANDARD_EIRP,
   },
   {
@@ -166,7 +192,7 @@ export const ANTENNA_CARDS: readonly AntennaCard[] = [
     slot: "G",
     capacityUnits: 4.0,
     priceEur: 4500,
-    coneHalfAngleRad: CONE_30_DEG,
+    coneHalfAngleRad: CONE_GATEWAY,
     eirp: NET_STANDARD_EIRP,
   },
   {
@@ -176,7 +202,7 @@ export const ANTENNA_CARDS: readonly AntennaCard[] = [
     slot: "S",
     capacityUnits: 1.6,
     priceEur: 1800,
-    coneHalfAngleRad: CONE_30_DEG,
+    coneHalfAngleRad: CONE_CROSSLINK,
     eirp: NET_STANDARD_EIRP,
   },
 ];

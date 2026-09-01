@@ -1384,3 +1384,84 @@ html.cvd-mono .orrery-host canvas { filter: grayscale(1) contrast(1.06); }
 .pipe-pick.blind { color: var(--grey); border-style: dashed; }
 .pipe-pick.active { border-color: var(--cyan); }
 .pipe-repoint.active { color: var(--cyan); border-color: var(--cyan); }
+
+/* ── THE LAUNCH INSTRUMENTS (pad-instruments.ts) ─────────────────────────────────────
+   The pad's pictures. Chrome stays monochrome; colour is reserved for signal (§8) — the
+   cyan is the draft you are designing, amber is the tender's demand, red is a hole. */
+
+/* WHO THIS LAUNCH IS FOR — pinned at the top of the pad while you aim. */
+.pad-target { border-bottom: 1px solid var(--line-dim); }
+.pad-target-head { color: var(--cyan); font-size: 11px; letter-spacing: 0.06em; font-weight: 700; }
+.pad-target-terms { color: var(--fg-dim); font-size: 10px; margin-top: 2px; }
+.pad-target-bet { color: var(--fg-dim); font-size: 10px; margin: 2px 0 4px; }
+
+/* THE COMPARISON — your number, a shared bar, their number. */
+.pad-compare { margin-top: 4px; }
+.pad-compare-head {
+  display: flex; justify-content: space-between;
+  color: var(--fg-dim); font-size: 9px; letter-spacing: 0.1em; margin-bottom: 2px;
+}
+.pad-compare-row {
+  display: grid; grid-template-columns: 52px 58px minmax(40px, 1fr) 62px;
+  align-items: center; gap: 6px; margin: 3px 0;
+}
+.pad-compare-label { color: var(--fg-dim); font-size: 10px; letter-spacing: 0.06em; }
+.pad-compare-yours { color: var(--fg); font-size: 11px; text-align: right; }
+.pad-compare-needs { color: var(--amber); font-size: 10px; }
+.pad-compare-bar { position: relative; height: 8px; background: var(--bg); border: 1px solid var(--line-dim); }
+.pad-compare-fill { position: absolute; inset: 0 auto 0 0; background: var(--cyan); opacity: 0.75; }
+/* The tender's bar, drawn ON the same scale — the player does the comparing, not the game. */
+.pad-compare-tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--amber); }
+
+/* DRAG-SCRUB NUMBERS — no browser spinner arrows. */
+.pad-scrub { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 3px 0; }
+.pad-scrub-label { color: var(--fg-dim); font-size: 10px; letter-spacing: 0.08em; flex: 1 1 auto; }
+.pad-scrub-value {
+  width: 76px; background: var(--bg); color: var(--cyan);
+  border: 1px solid var(--line-dim); font: inherit; font-size: 11px;
+  padding: 2px 4px; text-align: right; cursor: ew-resize;
+}
+.pad-scrub-value:focus { outline: 1px solid var(--cyan); cursor: text; }
+.pad-scrub-unit { color: var(--fg-dim); font-size: 10px; width: 18px; }
+/* A control that cannot do anything with the current design says so instead of looking
+   like a number you got wrong. */
+.pad-scrub.inert { opacity: 0.38; }
+.pad-scrub.inert .pad-scrub-value { color: var(--grey); cursor: help; }
+
+.pad-instrument { padding-bottom: 2px; }
+/* FIXED HEIGHT, not `height:auto`. With a viewBox and a percentage width the drawing scales
+   to the column, which blows the 9px readouts up to headline size in a wide panel. Pinning
+   the height makes the uniform scale height-limited, so the type stays the size it was
+   authored at and the picture centres in whatever width it is given. */
+.pad-profile, .pad-dial, .pad-ring {
+  display: block; width: 100%; height: 132px; touch-action: none; cursor: ns-resize;
+}
+.pad-dial { cursor: grab; }
+.pad-ring { cursor: default; }
+
+/* The side-on altitude profile. */
+/* The horizon has to READ — a --bg-2 fill on a --bg panel is invisible, and the whole point
+   of the picture is the beam meeting the ground. */
+.pad-profile-body { fill: var(--bg-2); stroke: var(--fg-dim); stroke-width: 1.4; }
+.pad-profile-park { fill: none; stroke: var(--line-dim); stroke-width: 1; stroke-dasharray: 2 4; }
+.pad-profile-orbit { fill: none; stroke: var(--cyan); stroke-width: 1.2; }
+.pad-profile-sat { fill: var(--cyan); }
+.pad-profile-beam { fill: var(--cyan); opacity: 0.16; }
+.pad-profile-arc { fill: none; stroke: var(--cyan); stroke-width: 2.5; }
+.pad-profile-readout, .pad-dial-readout, .pad-ring-readout { fill: var(--fg); font-size: 9px; letter-spacing: 0.04em; }
+.pad-profile-caption, .pad-dial-caption { fill: var(--fg-dim); font-size: 8px; letter-spacing: 0.06em; }
+
+/* The inclination dial. */
+.pad-dial-body { fill: var(--bg-2); stroke: var(--fg-dim); stroke-width: 1.4; }
+.pad-dial-equator { stroke: var(--line-dim); stroke-width: 1; stroke-dasharray: 2 3; }
+.pad-dial-band { fill: var(--cyan); opacity: 0.14; }
+.pad-dial-track { stroke: var(--cyan); stroke-width: 1.6; }
+.pad-dial-target { fill: var(--amber); }
+.pad-dial-targettext { fill: var(--amber); font-size: 9px; }
+
+/* The phase ring. */
+.pad-ring-body { fill: var(--bg-2); stroke: var(--fg-dim); stroke-width: 1.2; }
+.pad-ring-track { fill: none; stroke: var(--fg-dim); stroke-width: 1; stroke-dasharray: 3 3; }
+.pad-ring-gap { fill: var(--red); opacity: 0.13; }
+.pad-ring-dot { fill: var(--fg-dim); }
+.pad-ring-dot.draft { fill: var(--cyan); }

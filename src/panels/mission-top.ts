@@ -19,6 +19,15 @@
  */
 
 import type { PanelHandle } from "../wm/shell";
+import {
+  ScrubNumber,
+  AltitudeProfile,
+  InclinationDial,
+  PhaseRing,
+  CompareTable,
+  type CompareRow,
+  type PhaseRingState,
+} from "./pad-instruments";
 import type { NetContractRow } from "./net-planner";
 import { ANTENNA_CARDS, BUS_SPECS, type BusTier } from "../sim/net/sat";
 import { MISSION_OBJECTIVES, TENDER_BET, TENDER_SIGNON_BONUS, TENDER_PAY_DECAY, TENDER_BREACH_GRACE, STACK_BATCH_DISCOUNT, SLOT_G_LABEL, SLOT_S_LABEL } from "./copy";
@@ -67,6 +76,28 @@ export interface MissionTopState {
    * the current beat while the player is stuck (null = nothing to assist). Lives on the BOOK
    * face, right under the objective — the formerly homeless assist strings. */
   shortfall: string | null;
+
+  // ── the launch-interface rewrite ────────────────────────────────────────────────
+  /** WHO THIS LAUNCH IS FOR — pinned across the top of the pad the whole time you aim.
+   * Opening the pad used to REPLACE the tender board, so the thing you were aiming at was
+   * the one thing you could not see. Null when no demand is on the board yet. */
+  padTarget: {
+    label: string;
+    state: string;
+    terms: string;
+    payPerHr: number;
+    penaltyPerHr: number;
+    /** The region's latitude (deg) — the inclination dial marks it. */
+    latDeg: number | null;
+  } | null;
+  /** Draft-versus-requirement rows: your number beside the tender's, on a shared bar. */
+  compare: CompareRow[];
+  /** Surface half-angle (deg) the drafted loadout paints from the drafted altitude. */
+  footprintDeg: number;
+  /** The altitude band the pad allows + the parking altitude, for the profile instrument. */
+  band: { minKm: number; maxKm: number; parkKm: number };
+  /** The ring this launch joins — what you already fly, what this adds, where the hole is. */
+  ring: PhaseRingState;
 }
 
 export interface MissionTopActions {
@@ -182,7 +213,16 @@ export class MissionTop implements PanelHandle {
   /** UI-only: which slot the chooser is open for (−1 = closed). */
   private selectedSlot = -1;
   private readonly vCount: HTMLElement;
-  private paramInputs = new Map<string, HTMLInputElement>();
+  // The launch instruments (pad-instruments.ts) — the pictures that replaced the five
+  // spinner boxes of raw orbital elements.
+  private readonly vTargetHead: HTMLElement;
+  private readonly vTargetTerms: HTMLElement;
+  private readonly vTargetBet: HTMLElement;
+  private readonly compare = new CompareTable();
+  private readonly profile: AltitudeProfile;
+  private readonly incDial: InclinationDial;
+  private readonly phaseRing: PhaseRing;
+  private readonly scrubs = new Map<keyof PadDraftReadout, ScrubNumber>();
   private readonly combCanvas: HTMLCanvasElement;
   private readonly vCombLabel: HTMLElement;
   private readonly vFacts: HTMLElement;
@@ -227,6 +267,16 @@ export class MissionTop implements PanelHandle {
     // --- PAD face ---
     this.padFace = el("div", "mission-pad");
 
+    // WHO THIS IS FOR — pinned at the top of the pad for the whole aim. The pad used to
+    // swap the tender board away, hiding the requirement while you designed against it.
+    const targetGroup = el("div", "group pad-target");
+    this.vTargetHead = el("div", "pad-target-head", "");
+    this.vTargetTerms = el("div", "pad-target-terms", "");
+    this.vTargetBet = el("div", "pad-target-bet", "");
+    targetGroup.append(this.vTargetHead, this.vTargetTerms, this.vTargetBet);
+    targetGroup.appendChild(this.compare.root);
+    this.padFace.appendChild(targetGroup);
+
     const busGroup = el("div", "group");
     busGroup.appendChild(el("div", "legend", "BUS"));
     const busRow = el("div", "mission-row");
@@ -269,28 +319,87 @@ export class MissionTop implements PanelHandle {
     busGroup.appendChild(this.slotChooser);
     this.padFace.appendChild(busGroup);
 
-    const orbitGroup = el("div", "group");
-    orbitGroup.appendChild(el("div", "legend", "ORBIT · TYPED"));
-    const mkParam = (label: string, name: keyof PadDraftReadout, step: number) => {
-      const row = el("div", "mission-param");
-      row.appendChild(el("span", "mission-param-label", label));
-      const input = document.createElement("input");
-      input.type = "number";
-      input.title = PARAM_TIPS[name] ?? "";
-      row.title = PARAM_TIPS[name] ?? "";
-      input.step = String(step);
-      input.className = "mission-input";
-      input.setAttribute("data-net", `param-${name}`);
-      input.addEventListener("change", () => this.actions.onParam(name, Number(input.value)));
-      this.paramInputs.set(name, input);
-      row.appendChild(input);
-      orbitGroup.appendChild(row);
-    };
-    mkParam("ALTITUDE km", "altKm", 5);
-    mkParam("INCLINATION °", "incDeg", 5);
-    mkParam("SUB-LON °", "subLonDeg", 5);
-    mkParam("RAAN °", "raanDeg", 5);
-    mkParam("PHASE SPREAD °", "phaseSpreadDeg", 15);
+    // ── HOW HIGH — the altitude profile: a side-on cut with the beam drawn onto the
+    // surface, so the footprint visibly opens out as the orbit climbs.
+    const altGroup = el("div", "group pad-instrument");
+    altGroup.appendChild(el("div", "legend", "ALTITUDE"));
+    this.profile = new AltitudeProfile((km) => this.actions.onParam("altKm", km));
+    altGroup.appendChild(this.profile.root as unknown as HTMLElement);
+    const altScrub = new ScrubNumber({
+      label: "",
+      unit: "km",
+      min: 10,
+      max: 535,
+      perPx: 1.5,
+      step: 1,
+      title: PARAM_TIPS.altKm,
+      dataNet: "param-altKm",
+      onChange: (v) => this.actions.onParam("altKm", v),
+    });
+    this.scrubs.set("altKm", altScrub);
+    altGroup.appendChild(altScrub.root);
+    this.padFace.appendChild(altGroup);
+
+    // ── HOW FAR NORTH — the inclination dial, marked with the customer's latitude.
+    const incGroup = el("div", "group pad-instrument");
+    incGroup.appendChild(el("div", "legend", "INCLINATION"));
+    this.incDial = new InclinationDial((deg) => this.actions.onParam("incDeg", deg));
+    incGroup.appendChild(this.incDial.root as unknown as HTMLElement);
+    const incScrub = new ScrubNumber({
+      label: "",
+      unit: "°",
+      min: 0,
+      max: 90,
+      perPx: 0.5,
+      step: 1,
+      title: PARAM_TIPS.incDeg,
+      dataNet: "param-incDeg",
+      onChange: (v) => this.actions.onParam("incDeg", v),
+    });
+    this.scrubs.set("incDeg", incScrub);
+    incGroup.appendChild(incScrub.root);
+    this.padFace.appendChild(incGroup);
+
+    // ── WHERE — the aim. The globe is the primary control (click a place); the number is
+    // the exact readout you can also scrub.
+    const whereGroup = el("div", "group pad-instrument");
+    whereGroup.appendChild(el("div", "legend", "WHERE IT SITS"));
+    const aimHint = el("div", "mission-hint", "click anywhere on the globe to aim this launch there");
+    whereGroup.appendChild(aimHint);
+    const lonScrub = new ScrubNumber({
+      label: "SUB-LON",
+      unit: "°",
+      min: -180,
+      max: 180,
+      perPx: 0.5,
+      step: 1,
+      title: PARAM_TIPS.subLonDeg,
+      dataNet: "param-subLonDeg",
+      onChange: (v) => this.actions.onParam("subLonDeg", v),
+    });
+    this.scrubs.set("subLonDeg", lonScrub);
+    whereGroup.appendChild(lonScrub.root);
+    const raanScrub = new ScrubNumber({
+      label: "RAAN",
+      unit: "°",
+      min: 0,
+      max: 360,
+      perPx: 0.5,
+      step: 1,
+      title: PARAM_TIPS.raanDeg,
+      dataNet: "param-raanDeg",
+      onChange: (v) => this.actions.onParam("raanDeg", v),
+    });
+    this.scrubs.set("raanDeg", raanScrub);
+    whereGroup.appendChild(raanScrub.root);
+    this.padFace.appendChild(whereGroup);
+
+    // ── THE RING — what you already fly on this orbit, what this launch adds, and the hole
+    // between them. This is the answer to "one of my three died, where does the new one go".
+    const ringGroup = el("div", "group pad-instrument");
+    ringGroup.appendChild(el("div", "legend", "THE RING"));
+    this.phaseRing = new PhaseRing();
+    ringGroup.appendChild(this.phaseRing.root as unknown as HTMLElement);
     const countRow = el("div", "mission-param");
     countRow.appendChild(el("span", "mission-param-label", "BATCH"));
     const minus = btn("−", "net-btn mission-step", () => this.actions.onCount(-1));
@@ -299,8 +408,21 @@ export class MissionTop implements PanelHandle {
     const plus = btn("+", "net-btn mission-step", () => this.actions.onCount(1));
     plus.setAttribute("data-net", "count-plus");
     countRow.append(minus, this.vCount, plus);
-    orbitGroup.appendChild(countRow);
-    this.padFace.appendChild(orbitGroup);
+    ringGroup.appendChild(countRow);
+    const spreadScrub = new ScrubNumber({
+      label: "PHASE SPREAD",
+      unit: "°",
+      min: 0,
+      max: 360,
+      perPx: 1,
+      step: 5,
+      title: PARAM_TIPS.phaseSpreadDeg,
+      dataNet: "param-phaseSpreadDeg",
+      onChange: (v) => this.actions.onParam("phaseSpreadDeg", v),
+    });
+    this.scrubs.set("phaseSpreadDeg", spreadScrub);
+    ringGroup.appendChild(spreadScrub.root);
+    this.padFace.appendChild(ringGroup);
 
     const combGroup = el("div", "group");
     this.vCombLabel = el("div", "legend", "COVERAGE COMB");
@@ -534,18 +656,63 @@ export class MissionTop implements PanelHandle {
 
     this.vCount.textContent = String(s.count);
     const d = s.draft;
-    const set = (name: string, v: number) => {
-      const input = this.paramInputs.get(name)!;
-      if (document.activeElement !== input) input.value = String(Math.round(v * 10) / 10);
-    };
-    set("altKm", d.altKm);
-    set("incDeg", d.incDeg);
-    set("subLonDeg", d.subLonDeg);
-    set("raanDeg", d.raanDeg);
-    set("phaseSpreadDeg", d.phaseSpreadDeg);
+
+    // WHO THIS LAUNCH IS FOR.
+    if (s.padTarget === null) {
+      this.vTargetHead.textContent = "NO DEMAND ON THE BOARD YET";
+      this.vTargetTerms.textContent = "";
+      this.vTargetBet.textContent = "";
+    } else {
+      this.vTargetHead.textContent = `SERVING · ${s.padTarget.label.toUpperCase()}  ·  ${s.padTarget.state.toUpperCase()}`;
+      this.vTargetTerms.textContent = s.padTarget.terms;
+      this.vTargetBet.textContent = TENDER_BET(
+        `€${Math.round(s.padTarget.payPerHr).toLocaleString("en-US")}/hr`,
+        `€${Math.round(s.padTarget.penaltyPerHr).toLocaleString("en-US")}/hr`,
+      );
+    }
+    this.compare.render(s.compare);
+
+    // THE INSTRUMENTS.
+    this.profile.render({
+      altKm: d.altKm,
+      minKm: s.band.minKm,
+      maxKm: s.band.maxKm,
+      parkKm: s.band.parkKm,
+      footprintDeg: s.footprintDeg,
+      latencyMs: s.facts.latencyMs,
+    });
+    this.incDial.render({
+      incDeg: d.incDeg,
+      targetLatDeg: s.padTarget?.latDeg ?? null,
+      targetLabel: s.padTarget?.label ?? "",
+      footprintDeg: s.footprintDeg,
+    });
+    this.phaseRing.render(s.ring);
+
+    this.scrubs.get("altKm")?.render(d.altKm);
+    this.scrubs.get("incDeg")?.render(d.incDeg);
+    this.scrubs.get("subLonDeg")?.render(d.subLonDeg);
+    this.scrubs.get("raanDeg")?.render(d.raanDeg);
+    this.scrubs.get("phaseSpreadDeg")?.render(d.phaseSpreadDeg);
+
+    // A control that cannot do anything RIGHT NOW says so, instead of sitting there looking
+    // like a number you got wrong. (On a single equatorial satellite — the very first launch
+    // — RAAN and phase spread are both inert, which is a third of the old pad's controls.)
+    this.scrubs
+      .get("raanDeg")
+      ?.setInert(
+        d.incDeg < 0.5
+          ? "RAAN turns the orbital plane around the pole. An orbit with no tilt has no plane to turn — give it some inclination first."
+          : null,
+      );
+    this.scrubs
+      .get("phaseSpreadDeg")
+      ?.setInert(
+        s.count < 2 ? "How far apart the members of a BATCH ride. This launch carries one satellite." : null,
+      );
 
     // The comb strip: solid = the region sees this draft; dark = it does not.
-    this.vCombLabel.textContent = `COVERAGE COMB · ${s.combRegionLabel}`;
+    this.vCombLabel.textContent = `ONE ORBIT OVER ${s.combRegionLabel.toUpperCase()}`;
     const ctx = this.combCanvas.getContext("2d");
     if (ctx && s.comb) {
       const w = this.combCanvas.width;

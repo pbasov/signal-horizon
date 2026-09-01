@@ -20,7 +20,11 @@
 decision surface, not a world mutation). Opening the pad, summoning a panel, selecting a sat and
 reading an instrument are **inspection**, never decisions, and never counted as such.
 
-**A decision surface** is one of the fourteen enumerated in `m1-redesign.md` §2.7. A surface counts
+**A decision surface** is one of the fourteen enumerated in `m1-redesign.md` §2.7. The table below
+has fifteen rows for those fourteen surfaces: §2.7 counts "beam assignment + re-beaming" as one, and
+the harness scores them apart, because pointing a beam for the first time and *re*-pointing one that
+was already serving somebody are different decisions — the second is the free continuous lever the
+whole mid-game rests on. `m2_decision_surfaces.of` is therefore 15. A surface counts
 as *touched* only when the committed action's payload differs from the value the game seeded, so
 accepting every default is provably not a decision. The mapping, fixed here:
 
@@ -36,7 +40,7 @@ accepting every default is provably not a decision. The mapping, fixed here:
 | prefer weights | any `net_set_prefer` |
 | overclock | any overclock action (not yet a shipped verb — records as `unavailable`, never as untouched) |
 | circularize | any `net_circularize` |
-| tempo | any `set_time_scale` |
+| tempo | the **agent** pressed a tempo key, or spread its dwells over ≥2 distinct lengths (see the §7 amendment — the action log's `set_time_scale` entries are harness noise under PDQ) |
 
 `unavailable` is a distinct third state from touched/untouched. A surface that does not exist in the
 build must never depress a decision count as though the agent declined it.
@@ -158,4 +162,12 @@ The judge is built only when one of these blocks a real decision. See `agent-eva
 
 ## 7. Amendments
 
-*(none — v1.0 as pre-registered 2026-09-01)*
+**A-1 · 2026-09-01 · tempo is read from the agent's turns, not from the action log.** Found while
+building the PDQ loop, before the first run. `main.ts:recordScale()` logs a `set_time_scale` action
+every time the clock pauses or resumes — and PDQ pauses and resumes on **every turn**, so the action
+log's tempo entries are overwhelmingly the harness's own, not the player's. Scoring tempo from them
+would have reported the surface as touched in every run regardless of what the agent did. The
+extraction is therefore: tempo counts the agent's own tempo keypresses, plus a deliberate spread of
+dwell lengths (≥2 distinct `wait` durations) — because under PDQ the agent's real tempo lever *is*
+how long it chooses to let the world run. The harness's injected entries are ignored, and PDQ's
+distortion of this particular surface is named in `agent-eval.md` §3.

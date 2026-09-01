@@ -131,6 +131,7 @@ import {
   TRACE_PICK_STOW_CARRYING, TRACE_PICK_STOW_IDLE,
 } from "./panels/copy";
 import { combWindows, draftMembers } from "./sim/net/comb";
+import type { CompareRow } from "./panels/pad-instruments";
 import { BUS_SPECS, validateLoadout, hardwarePriceEur, DEFAULT_LOADOUT_CARD_IDS, resolveLoadout, suggestLoadout, type BusTier, type NetSat } from "./sim/net/sat";
 import { fromCards, cardsOf, setSlot, withBus, type LoadoutState } from "./panels/loadout-state";
 import { NET_REF_LINK_DISTANCE_M } from "./sim/net/link-budget";
@@ -3633,6 +3634,147 @@ const TRACE_EMPTY_STATE: TraceState = {
   handRouteNote: null,
 };
 
+
+/**
+ * THE PAD'S TARGET + INSTRUMENT FEED (the launch-interface rewrite).
+ *
+ * Everything the rewritten pad needs that the old one never computed: WHO the launch is for
+ * and what they demand (so the requirement sits beside your draft instead of on a screen you
+ * had to leave), the footprint the drafted loadout actually paints from the drafted altitude,
+ * and the RING this launch would join — the satellites already flying that orbit, the ones
+ * this launch adds, and the widest hole between them.
+ *
+ * Pure read of the live session + the draft. No sim mutation, no cached strings (LAW 1: the
+ * numbers are recomputed from the snapshot every frame).
+ */
+function padInstrumentState(
+  t: number,
+  effCards: readonly string[],
+  combDuty: number | null,
+  latencyMs: number | null,
+): Pick<MissionTopState, "padTarget" | "compare" | "footprintDeg" | "band" | "ring"> {
+  const DEG = 180 / Math.PI;
+  const altM = Math.max(0, netDraft.semiMajorM - A1_BODY_RADIUS_M);
+  const loadout = resolveLoadout([...effCards], NET_REF_LINK_DISTANCE_M);
+  const footprintDeg = footprintRadiusRad(loadout, altM) * DEG;
+  const parkKm = (A1_GEO_SEMI_MAJOR_M - A1_BODY_RADIUS_M) / 1000;
+  const band = { minKm: 10, maxKm: parkKm, parkKm };
+
+  // ── THE RING: who is already on this orbit, and where the hole is ────────────────
+  // "Same ring" = same orbital plane and altitude, within a tolerance wide enough to survive
+  // an underburn that has been circularised back but narrow enough not to sweep in a GEO.
+  const planeMatches = (o: { aM: number; incRad: number }): boolean =>
+    Math.abs(o.aM - netDraft.semiMajorM) / Math.max(1, netDraft.semiMajorM) < 0.08 &&
+    Math.abs(o.incRad - netDraft.incRad) < 8 / DEG;
+  const phaseOf = (o: { aM: number; m0Rad: number; epochS: number }): number => {
+    const per = orbitPeriodSeconds(o as never);
+    const n = per > 0 ? (2 * Math.PI) / per : 0;
+    const m = o.m0Rad + n * (t - o.epochS);
+    return (((m * DEG) % 360) + 360) % 360;
+  };
+  const members: { id: string; phaseDeg: number; draft: boolean }[] = [];
+  for (const sat of netSession.sats) {
+    if (planeMatches(sat.orbit)) members.push({ id: sat.id, phaseDeg: phaseOf(sat.orbit), draft: false });
+  }
+  const fleetOnRing = members.length;
+  for (const m of draftMembers(netDraft, t, netDraft.count, netDraft.count > 1 ? r1PhaseSpreadRad : 0)) {
+    members.push({ id: m.id, phaseDeg: phaseOf(m.orbit), draft: true });
+  }
+  // The widest gap on the ring — the hole a replacement wants. Measured over the FLEET only:
+  // it is the hole you are aiming into, not the hole after you have aimed.
+  let gapDeg = 360;
+  let gapCentreDeg = 0;
+  const flying = members.filter((m) => !m.draft).map((m) => m.phaseDeg).sort((a, b) => a - b);
+  if (flying.length === 1) {
+    gapDeg = 360;
+    gapCentreDeg = (flying[0] + 180) % 360;
+  } else if (flying.length > 1) {
+    gapDeg = 0;
+    for (let i = 0; i < flying.length; i++) {
+      const a = flying[i];
+      const b = i === flying.length - 1 ? flying[0] + 360 : flying[i + 1];
+      if (b - a > gapDeg) {
+        gapDeg = b - a;
+        gapCentreDeg = ((a + (b - a) / 2) % 360 + 360) % 360;
+      }
+    }
+  }
+  const ring = { members, gapDeg, gapCentreDeg, count: netDraft.count, empty: fleetOnRing === 0 };
+
+  // ── THE TARGET + THE COMPARISON ──────────────────────────────────────────────────
+  const c =
+    netSession.contracts.find((x) => x.state === "offered" && x.region.bodyId === "earth") ??
+    netSession.contracts.find((x) => x.state === "active" && x.region.bodyId === "earth") ??
+    null;
+  if (c === null) {
+    return { padTarget: null, compare: [], footprintDeg, band, ring };
+  }
+
+  const compare: CompareRow[] = [];
+  // COVERAGE — how much of one orbit the target sees this network. Always meaningful, and
+  // the number the availability bar is judged on.
+  const dutyNow = combDuty;
+  if (dutyNow !== null) {
+    // A connectivity-only tender still asks for something: reach it AT ALL. Printing "—"
+    // against the one row the pad always shows made the opener look like it had no
+    // requirement to design against, which is the confusion this table exists to end.
+    const needsAvail = c.activeAxes.has("availability");
+    compare.push({
+      label: "held",
+      yours: `${Math.round(dutyNow * 100)}%`,
+      needs: needsAvail ? `≥ ${Math.round(c.slaAvail * 100)}%` : "reach it",
+      fill: dutyNow,
+      threshold: needsAvail ? c.slaAvail : 0.02,
+      title:
+        "How much of one orbit this region can see your network, counting the fleet you already fly PLUS this launch. The tender's bar is the tick.",
+    });
+  }
+  // LATENCY — lower is better, so the bar is drawn against a scale that makes the tick a
+  // ceiling you stay under.
+  if (c.activeAxes.has("latency") && latencyMs !== null) {
+    const needMs = c.slaLatencyS * 1000;
+    const scale = Math.max(latencyMs, needMs) * 1.4;
+    compare.push({
+      label: "one-way",
+      yours: `${latencyMs.toFixed(1)} ms`,
+      needs: `≤ ${needMs.toFixed(1)} ms`,
+      fill: scale > 0 ? latencyMs / scale : null,
+      threshold: scale > 0 ? needMs / scale : null,
+      title: "Light time from the region to your satellite and down to the ground. Shorter is better — stay left of the tick.",
+    });
+  }
+  // BANDWIDTH — the pipe this design flies, against the floor the tender committed to.
+  if (c.activeAxes.has("bandwidth")) {
+    const units = loadout
+      .filter((a) => a.type === "BROADCAST" || a.type === "ACCESS" || a.type === "GATEWAY")
+      .reduce((acc, a) => acc + a.capacityUnits, 0);
+    const scale = Math.max(units, c.slaBandwidth) * 1.4;
+    compare.push({
+      label: "pipe",
+      yours: `${units.toFixed(1)}u`,
+      needs: `≥ ${c.slaBandwidth.toFixed(1)}u`,
+      fill: scale > 0 ? units / scale : null,
+      threshold: scale > 0 ? c.slaBandwidth / scale : null,
+      title: "The capacity of the antennas on ONE of these satellites. Shared by every contract riding the same pipe.",
+    });
+  }
+
+  return {
+    padTarget: {
+      label: c.label,
+      state: c.state,
+      terms: netContractTerms(c),
+      payPerHr: c.payPerSecond * 3600,
+      penaltyPerHr: c.penaltyPerSecond * 3600,
+      latDeg: c.region.latRad * DEG,
+    },
+    compare,
+    footprintDeg,
+    band,
+    ring,
+  };
+}
+
 function missionTopState(): MissionTopState {
   const t = clock.seconds;
   const target = r1TargetRegion();
@@ -3682,6 +3824,7 @@ function missionTopState(): MissionTopState {
   const vehicleEur = launchVehicleCost(r1Bus, netDraft.semiMajorM);
   const hardwareEur = hardwarePriceEur(r1Bus, effCards);
   return {
+    ...padInstrumentState(t, effCards, combDuty, latencyMs),
     mode: r1Mode,
     act: netSession.cursor,
     tenders: netContractRows(t),

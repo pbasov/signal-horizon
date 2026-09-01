@@ -74,6 +74,8 @@ export function windowAvailability(
     regionId: contract.region.id,
     latencyActive: contract.activeAxes?.has("latency") ?? false,
     beams: beams ?? new Map(),
+    aimLatRad: contract.region.latRad,
+    aimLonRad: contract.region.lonRad,
   };
   const W = NET_AVAIL_WINDOW_S;
   const denom = NET_AVAIL_SAMPLES - 1;

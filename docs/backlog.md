@@ -117,6 +117,8 @@
 - [x] **FL-13** ring-grab orbit drag: `onNetDragOrbit`, ring hit-test, pointer priority (ring → globe aim → camera), 15 Hz solve throttle, `__dragOrbitProbe` + scripted pointer test. HIGH risk. (P4-C4)
 - [x] **FL-14** ring-pinned live readout + pooled multi-arc launches + per-member deploy pops. (P4-C5)
 - [x] **FL-15** style overhaul (post-verbs): a) palette→tokens; b) bundled fonts + cap9/ui11/body13/head16; c) gutter/rail/min-size consolidation + kill fake controls; d) visible dither + redundant focus + preset-tab CSS; e) pixel cursor + boot. (P5)
+- [x] **SD-56 — THE COVERAGE RE-SCALE + the launch interface as instruments** (2026-09-01). Beam cones become enforced physics (`BeamAim` in the link budget, `outside_beam` cause, `coneReachRad` projecting a cone half-angle at the SAT into a central angle at the BODY); horizon mask forks to a net-local 10°; the LEO family moves 310 → 400 km. Coverage stops being free: the measured zero-gap minimum for REGION-1 goes 4 → 9 sats and altitude becomes a real lever (~11° of ground painted from a low pass, ~19° from a parked GEO). The canonical hour is re-choreographed around it — sign REGION-1 only once the rolling availability window has filled, circularise the underburned bird BEFORE measuring, aim the fill batch with the `(ω − n)·Δt` co-phasing correction (the old formula undid the body's spin only), and derive the act-3 corridor ids from launch order instead of hard-coding them. Manifest discount 15% → 45% so the constellation the geometry now demands is affordable. Arc ends +€4,376, floor €3,488, four gates in order. ONE golden re-pin → `16791777382910013853n`. The pad is rebuilt as INSTRUMENTS (`src/panels/pad-instruments.ts`): the tender pinned above the aim with a draft-vs-requirement comparison, a side-on altitude horizon drawing the beam onto the ground, an inclination dial marking the customer's latitude, and THE RING showing what you already fly plus the hole a replacement wants; inert controls (RAAN at zero tilt, phase spread on a batch of one) grey out and say why; drag-scrub numbers replace the spinner boxes. 900 tests green.
+- [ ] **OWED from SD-56** — the full-screen LAUNCH view (deferred by the user, "maybe skip the launch screen for now"); globe click-to-aim is wired but its FEEL is unverified by hand; M1's gate criterion still claims an hour the build does not have (measured: ~18 min, 20 actions) — restate it or build the sustain loop.
 - [ ] FL follow-ups (out of plan scope): retire legacy `launchSat()`/flat `NET_LAUNCH_FAILURE_CHANCE`; power-model decision (SD-50, DEFERRED to M2 per user 2026-08-08 — massKg is the anchor, not dead code); WM minimize/collapse op.
 > - **Verification method:** every phase gated by the Playwright playtest loop (see memory `playwright-playtest-loop`) + 725 tests / tsc / build / boot smoke. NOTE: the MCP-driven Chromium pins its viewport at 1920×1080 — "GUI doesn't fill the window" while looking at THAT window is the pinned viewport, not the app (resolved 2026-07-02).
 
@@ -180,9 +182,9 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 > **M1 SCOPE (§7.5 `▸ LOCKED`): reactive only — `w_stab = 0` (latency + congestion); the cost-blend + per-contract weight present but the stability term DORMANT; the three control tiers at least floor (auto-solve) + basic ceiling (the per-contract prefer-latency↔bandwidth↔stability slider — the FIRST tunable, §7.3); the self-diagnosing trace view (M1 NECESSITY, §7.4); and the PREDICTABILITY SEED planted (the trace stamps every link loss with its geometric cause + time, §7.5).** Act 1's `a1/reachability.ts` bent-pipe stub is the seam the solver subsumes (same `(eph, region, ground, sats, t) → {reachable, latency}` shape). Acts 2–3 *need* this epic (a real dependency, no longer user-owned).
 > **Deferred to M2+ (§7.5/§7.6, recorded so the M1 seeds know where they lead):** the stability term `w_stab > 0`, predictive routing as a *discovered* capability, the efficiency-vs-resilience / fragility-cascade tension, the routing↔fault coupling (§5), BGP-style peering/policy across other operators, and the full visual-constructor depth.
 
-- [x] **M1-SLV-1** Deterministic time-varying-graph solver core (reactive) — *L* · **DONE (SD-56, 2026-09-01)** — `src/sim/net/graph.ts` (edges + all-pairs Floyd–Warshall relay closure, two regimes) + the PASS-2 path search in `router.ts`; `SolveResult.path` is now `[region, ...satChain, ground]`. Both replay goldens UNTOUCHED (a BROADCAST-only fleet takes the identical direct-only path). · `▸ LOCKED (§7.1)`: sats = nodes, LoS links = edges; Dijkstra/A\* over the current adjacency; re-solve on **topology-change events** (link in/out of view, fault, demand change), not per tick; pure + replay-safe (folds into the session golden). · Dep: M1-SAT-3 (the CROSSLINK/LASER sat-to-sat links are the edges), the A1 reachability single-hop stub it generalises. · Reuse: the A1 elevation+budget gate per edge; the event-driven re-solve fits the fixed-tick clock.
+- [x] **M1-SLV-1** Deterministic time-varying-graph solver core (reactive) — *L* · **DONE (SD-57, 2026-09-01)** — `src/sim/net/graph.ts` (edges + all-pairs Floyd–Warshall relay closure, two regimes) + the PASS-2 path search in `router.ts`; `SolveResult.path` is now `[region, ...satChain, ground]`. Both replay goldens UNTOUCHED (a BROADCAST-only fleet takes the identical direct-only path). · `▸ LOCKED (§7.1)`: sats = nodes, LoS links = edges; Dijkstra/A\* over the current adjacency; re-solve on **topology-change events** (link in/out of view, fault, demand change), not per tick; pure + replay-safe (folds into the session golden). · Dep: M1-SAT-3 (the CROSSLINK/LASER sat-to-sat links are the edges), the A1 reachability single-hop stub it generalises. · Reuse: the A1 elevation+budget gate per edge; the event-driven re-solve fits the fixed-tick clock.
 - [ ] **M1-SLV-2** Physics-blend link cost + per-contract weight (`w_stab` dormant) — *M* · `▸ LOCKED (§7.2): cost = w_lat·latency + w_bw·congestion + w_stab·instability; the *_term are physics-truth; weights per traffic-class. M1: w_stab=0`. The first player tunable is the per-contract prefer-latency↔bandwidth↔stability weight (§7.3; the `w_stab` control is present but dormant). · Dep: M1-SLV-1, M1-CON-1 (traffic class on the contract). · Reuse: A1 bent-pipe latency as the `latency_term` seed.
-- [~] **M1-SLV-3** Three control tiers — floor + basic ceiling (+ terminal) — *M* · **HALF DONE.** SD-53 shipped the prefer control (and cut it to two stops); the §7.3 CEILING's other half — the **visual constructor**, "the Cisco-Packet-Tracer reference for the fun" that lets the player see the graph and drag priorities on it — was never built and is now the largest open piece of the §7 epic (SD-56). · `▸ LOCKED (§7.3)`: floor = auto-solve (the whole early game plays here); ceiling = the per-contract weight slider that *visibly moves the path* (the Cisco-Packet-Tracer reference for fun); power-user = FRR-style terminal mapping onto our params (e.g. `set latency-weight 100 on contract-7`). M1 ships at least floor + basic ceiling. · Dep: M1-SLV-2. · Reuse: the panel + slider chrome.
+- [~] **M1-SLV-3** Three control tiers — floor + basic ceiling (+ terminal) — *M* · **HALF DONE.** SD-53 shipped the prefer control (and cut it to two stops); the §7.3 CEILING's other half — the **visual constructor**, "the Cisco-Packet-Tracer reference for the fun" that lets the player see the graph and drag priorities on it — was never built and is now the largest open piece of the §7 epic (SD-57). · `▸ LOCKED (§7.3)`: floor = auto-solve (the whole early game plays here); ceiling = the per-contract weight slider that *visibly moves the path* (the Cisco-Packet-Tracer reference for fun); power-user = FRR-style terminal mapping onto our params (e.g. `set latency-weight 100 on contract-7`). M1 ships at least floor + basic ceiling. · Dep: M1-SLV-2. · Reuse: the panel + slider chrome.
 - [ ] **M1-SLV-4** Self-diagnosing trace / shortfall view (M1 NECESSITY) — *L* · `▸ LOCKED (§7.4)`: when the solver can't meet a contract, surface the **binding constraint + the kind of fix** ("availability breaks 8min/orbit: need ≥1 more sat in this plane"; "latency floor 340ms via 4 LEO hops: a GEO relay at X → 180ms"; "trunk saturated: add a parallel path"). Turns "solver says no" into "I launch THAT"; also shows fault state (§5.3 — one legibility system). · Dep: M1-SLV-1. · Reuse: the M1 PARSE panel pattern (`src/panels/parse.ts`) as the review/diagnose template.
 - [ ] **M1-SLV-5** The predictability SEED (REQUIRED in M1; §7.5) — *S* · `▸ LOCKED`: the trace stamps every link loss with its **geometric cause + time** ("link SAT-7↔SAT-12 lost: SAT-12 set below horizon at 14:32") — a time, a cause: geometry not gremlins. Cheap (the sim knows the geometry) and the prerequisite for the POST-M1 predictive-routing a-ha. **Act 1 plants the first grain:** the LEO-set / region-dark log stamps the geometric cause + time. · Dep: A1 serve/breach logging (the first grain), M1-SLV-1 (the general case). · Reuse: SYSTEM.LOG + the event-log plumbing.
 
@@ -252,7 +254,7 @@ The new M1 reclassifies the codebase more than it invalidates it. Directly reuse
 **The satellite atom (spec §1):**
 - [ ] **M1-SAT-1** 4 bus tiers with fixed G/S slot counts — *M* · `▸ LOCKED SHAPE (access→distribution→backbone, laser scarce + high-tier-only); numbers TUNABLE`: Smallsat / Comsat / Trunk-sat / Backbone as data (slot counts, mass guesses, identity); M1 uses mostly tiers 1–2, tiers 3–4 stub the LASER slot. · Dep: A1-1 (the `smallsat` minimal atom). · Reuse: the A1 `BusTier` enum + `loadout` shape.
 - [ ] **M1-SAT-2** 2 slot classes (G ground / S sat-link) + validation — *S* · `▸ LOCKED`: G holds BROADCAST/ACCESS/GATEWAY; S holds CROSSLINK or (if unlocked + tier permits) LASER. Pure validation, fits the purity discipline. · Dep: M1-SAT-1. · Reuse: none (small pure rule set).
-- [x] **M1-SAT-3** 5 antenna types incl. BROADCAST asymmetry + sat-to-sat links — *L* · **DONE (SD-56, 2026-09-01)** — `evaluateInterSatLink` (budget + occlusion, no elevation gate) + `interSatEdges`; CROSSLINK is a live graph edge and GATEWAY is the only trunk-LANDING pipe. Auto-meshed for now; `allowedPairs` is the hand-pairing seam. · `▸ LOCKED: the five types, their roles, and BROADCAST's down-only asymmetry (what makes GEO a broadcaster); numbers TUNABLE`. BROADCAST/ACCESS/GATEWAY (G), CROSSLINK/LASER (S). **The sat-to-sat CROSSLINK/LASER relay links are wholly new — the substrate the routing solver consumes.** · Dep: M1-SAT-1/2; feeds M1-SLV-1. · Reuse: the A1 BROADCAST/ACCESS specs as the seed; the field.ts inverse-square formula for the new inter-sat link.
+- [x] **M1-SAT-3** 5 antenna types incl. BROADCAST asymmetry + sat-to-sat links — *L* · **DONE (SD-57, 2026-09-01)** — `evaluateInterSatLink` (budget + occlusion, no elevation gate) + `interSatEdges`; CROSSLINK is a live graph edge and GATEWAY is the only trunk-LANDING pipe. Auto-meshed for now; `allowedPairs` is the hand-pairing seam. · `▸ LOCKED: the five types, their roles, and BROADCAST's down-only asymmetry (what makes GEO a broadcaster); numbers TUNABLE`. BROADCAST/ACCESS/GATEWAY (G), CROSSLINK/LASER (S). **The sat-to-sat CROSSLINK/LASER relay links are wholly new — the substrate the routing solver consumes.** · Dep: M1-SAT-1/2; feeds M1-SLV-1. · Reuse: the A1 BROADCAST/ACCESS specs as the seed; the field.ts inverse-square formula for the new inter-sat link.
 - [ ] **M1-SAT-4** 3 orbit-regime tradeoffs bound into evaluation — *M* · `▸ LOCKED: GEO ~240ms round-trip is a HARD floor; numbers TUNABLE`: bind LEO/MEO/GEO → latency-floor / per-user-bandwidth / motion into the contract-evaluation path (the geometry already exists; the gameplay-meaningful tradeoffs do not). · Dep: M1-SAT-3, M1-A3-2. · Reuse: `ephemeris.ts`/`m2/orbit.ts` propagation + the orrery rings (geometry reuse).
 
 **The standing 3-axis SLA contract (spec §4):**
@@ -369,40 +371,54 @@ All 7 findings fixed:
 - [x] **AE-01** Pre-registration — *S* · the four docs above, committed **before** the first run so no
       metric can be defined after seeing a result. Amendments need a dated entry + a decisions note.
       · Verify: SD-55 recorded; every metric in §2 has an extraction rule and a rationale.
-- [ ] **AE-02** The substrate: `__actionLog()` probe + `tools/ctx.mjs` — *S* · dev-only probe exposing
+- [x] **AE-02** The substrate: `__actionLog()` probe + `tools/ctx.mjs` — *S* · dev-only probe exposing
       the recorded `SimAction` log (`applyAndRecordNetAction` already writes it; nothing could read
       it), plus the `ctx` helper factory extracted from `playtest.mjs` **unchanged in behaviour** so
       scripted scenes and the agent share one action vocabulary. Widen vitest's include to
       `tools/**/*.test.mjs`. · Verify: full `node tools/playtest.mjs` green after the extraction;
       `__actionLog()` returns the launch/accept payloads a scene just committed.
-- [ ] **AE-03** The design-free observation builder — *M* · visible-DOM text (visibility-filtered:
+- [x] **AE-03** The design-free observation builder — *M* · visible-DOM text (visibility-filtered:
       the pad's DOM exists while the book face shows, and an agent must not read hidden UI) +
       affordance list (`[data-net=…]` keys, labels, enabled state) + the player-visible probe facts.
       Persona capability restriction applied **here** (withheld panels never rendered, their summon
       verbs absent). Emits `observations.jsonl` — the only file the judge will ever be given.
       · Verify: a boot observation contains the tender, the wallet and the pad-closed state, and
       contains **no** hidden-panel text; `novice-floor` observations contain no TRACE/parse text.
-- [ ] **AE-04** The deterministic metrics extractor + Wilson intervals — *M* · pure functions over
+- [x] **AE-04** The deterministic metrics extractor + Wilson intervals — *M* · pure functions over
       `actions.jsonl` + `probes.jsonl` implementing M1–M13, the fourteen-surface mapping (with
       `unavailable` as a third state), and Wilson 95% (never Wald). Vitest-tested like a sim module.
       · Verify: hand-built fixtures pin each metric; Wilson at 5/5 gives lower bound ≈0.57.
-- [ ] **AE-05** The brain seat — *M* · tool-less `claude -p` subprocess, `--session-id`/`--resume`
+- [x] **AE-05** The brain seat — *M* · tool-less `claude -p` subprocess, `--session-id`/`--resume`
       for memory + cache warmth, strict-JSON action extraction with a schema-repair retry, per-turn
       usage/cost/latency recorded from the CLI's own JSON. · Verify: a two-turn scripted exchange
       proves memory carries; recorded cost matches the CLI's `total_cost_usd`.
-- [ ] **AE-06** The driver — *L* · the PDQ loop (pause → observe → think → act → fast-forward the
+- [x] **AE-06** The driver — *L* · the PDQ loop (pause → observe → think → act → fast-forward the
       chosen dwell), budgets (turns/wall/USD), stall escalation through *distinct* strategies, clean
       landings with a named termination reason, and the full artifact bundle. · Verify: a real run
       reaches a served contract or terminates with a reason; bundle validates against the schema.
-- [ ] **AE-07** The five personas — *S* · optimizer / satisficer / literalist / impatient /
+- [x] **AE-07** The five personas — *S* · optimizer / satisficer / literalist / impatient /
       novice-floor as prompt files, hashed into `prompt_version`. · Verify: the `literalist` run's
       transcript shows it acting only on on-screen imperatives (and M4 catches any it found).
-- [ ] **AE-08** Baselines in the scoreboard — *S* · random floor from the `fuzz` scene, scripted
+- [x] **AE-08** Baselines in the scoreboard — *S* · random floor from the `fuzz` scene, scripted
       ceiling from the authored scenes, human ceiling printed `not measured` until the gate hour runs;
       normalised score beside the raw value. · Verify: the report prints all three on every row.
-- [ ] **AE-09** `report.md` renderer — *S* · metrics table with baselines + intervals, the
+- [x] **AE-09** `report.md` renderer — *S* · metrics table with baselines + intervals, the
       turn-by-turn intent trail, the findings list, and the standing caveats (PDQ artifact, n=5 limits,
       leads-not-verdicts). · Verify: a report from a real run reads without the reader needing the code.
+  > **SHIPPED with findings (2026-09-01).** Two live runs found four defects in the HARNESS before it
+  > found anything in the game, which is the right order: (1) the "blind by construction" claim was
+  > false — `--tools ""` stops the seat reading files, but Claude Code tells it the cwd and project
+  > context, so the first run's debrief named this harness's own files; the seat now runs in an empty
+  > temp dir (reproduced both ways). (2) PDQ leaked into the fiction: the game's own "time PAUSE"
+  > readout, caused by the harness, read as a broken game and the agent spent 17 of 22 turns hunting
+  > for a play button — the observation now states every turn that the seat holds the clock and `wait`
+  > releases it. (3) M10 read a hand-aimed launch as un-aimed: with the clock stopped every turn
+  > shares one tick, so the commit turn is now matched by its LAUNCH click. (4) A concurrent
+  > session's worktree made vite force-reload the shared dev server mid-run and the app re-booted at
+  > turn 10 — each run now serves the tree it measures on its own port, and a tick or action-log
+  > count going backwards terminates the run as `reboot` (unscorable) instead of being scored.
+  > Baselines pinned: random floor and scripted ceiling both measured through the same loop.
+
 - [ ] **AE-10** Replay mode — *S* · feed recorded brain responses back so a failed run is
       re-inspectable for free; the sim's LIVE==REPLAY discipline extended to the agent.
       · Verify: replaying a bundle reproduces its `metrics.json` byte-identically.

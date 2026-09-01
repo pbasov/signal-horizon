@@ -77,7 +77,7 @@ export function interBodyOneWayLatencyS(eph: Ephemeris, a: string, b: string, t:
 
 /** Why a link does NOT close (the geometric cause stamped into the predictability
  * seed). `ok` carries the successful case so the trace can read a single enum. */
-export type LinkCause = "ok" | "set_below_horizon" | "out_of_budget" | "occluded";
+export type LinkCause = "ok" | "set_below_horizon" | "outside_beam" | "out_of_budget" | "occluded";
 
 /** The raw geometry + verdict of one candidate edge between two world points, where
  * `from` is the point whose LOCAL HORIZON the elevation gate is measured against (the
@@ -130,12 +130,32 @@ export function surfaceNormalRelative(latRad: number, lonRad: number, t: number)
  *   - else LoS occluded  ⇒ "occluded" (defensive; the elevation gate already covers a
  *     surface→space link, but the explicit test future-proofs sat↔sat / surface↔surface)
  */
+/**
+ * The BEAM a link is measured through: where the antenna is pointed (`axis`, a unit vector
+ * from the satellite) and how wide it is. A surface point outside the cone is not in the
+ * beam and the link does not close, however good the budget is.
+ *
+ * This is what turns "spot beam" from a label into physics. Before it existed the router
+ * gated on elevation and inverse-square alone, both of which are near-free in the toy
+ * frame, so EVERY antenna floodlit its whole visible hemisphere: a 300 km-radius body
+ * meant any orbit painted a 43°–64° cap, coverage was almost independent of altitude, and
+ * a handful of sats blanketed the world. With the cone enforced, the antenna you fit and
+ * the altitude you choose decide the spot — and coverage has to be earned again.
+ */
+export interface BeamAim {
+  /** Unit vector from the satellite along the antenna boresight. */
+  axis: Vec3;
+  /** Beam half-angle (radians) measured from the boresight. */
+  coneHalfAngleRad: number;
+}
+
 export function evaluateLink(
   from: Vec3,
   normal: Vec3,
   to: Vec3,
   eirp: number,
   rangeRefM: number,
+  beam?: BeamAim,
 ): LinkBudget {
   const dx = to[0] - from[0];
   const dy = to[1] - from[1];
@@ -160,10 +180,27 @@ export function evaluateLink(
 
   let cause: LinkCause = "ok";
   if (sinEl < NET_SIN_MIN_ELEVATION) cause = "set_below_horizon";
+  else if (beam !== undefined && !insideBeam(beam, dx, dy, dz, distanceM)) cause = "outside_beam";
   else if (received < 1) cause = "out_of_budget";
   else if (segmentOccludedByBody(from, to)) cause = "occluded";
   const closes = cause === "ok";
   return { distanceM, elevationRad, received, latencyS, closes, cause };
+}
+
+/**
+ * Is the surface point inside the beam? The edge vector runs surface→sat, so the ray the
+ * antenna would have to fire down is its negation; the beam holds when the angle between
+ * that ray and the boresight is within the half-angle. Compared as a cosine (no acos on
+ * the hot path). A zero-length or degenerate axis is treated as UNPOINTED (always inside),
+ * so a caller that cannot say where a beam looks never silently loses coverage.
+ */
+function insideBeam(beam: BeamAim, dx: number, dy: number, dz: number, distanceM: number): boolean {
+  const [ax, ay, az] = beam.axis;
+  const axisLen = Math.sqrt(ax * ax + ay * ay + az * az);
+  if (axisLen <= 0 || distanceM <= 0) return true;
+  // cos of the angle between the boresight and the sat→surface ray (= −edge).
+  const cos = -(ax * dx + ay * dy + az * dz) / (axisLen * distanceM);
+  return cos >= Math.cos(Math.max(0, beam.coneHalfAngleRad));
 }
 
 /**
@@ -194,11 +231,18 @@ export function segmentOccludedByBody(from: Vec3, to: Vec3): boolean {
 
 /**
  * M1-SAT-3 — the SAT↔SAT edge predicate (the CROSSLINK relay substrate the §7 routing
- * solver consumes). Identical physics to {@link evaluateLink} MINUS the elevation gate:
- * there is no local horizon in orbit, so an inter-sat edge closes iff the inverse-square
- * budget closes AND the toy body does not occlude the segment. Both points are
- * earth-relative. This is the "sat→sat edge reuses the SAME predicate without a special
- * case" this module's header promised.
+ * solver consumes). Identical physics to {@link evaluateLink} minus TWO gates, each for a
+ * reason:
+ *
+ *   - NO ELEVATION GATE — there is no local horizon in orbit.
+ *   - NO BEAM CONE — a relay terminal is STEERED at its peer, so the peer is on the
+ *     boresight by construction and a cone test could only ever pass. This is the one
+ *     antenna class the beam-cone physics does not constrain, and it is why CROSSLINK's
+ *     `coneHalfAngleRad` is inert rather than meaningful.
+ *
+ * So an inter-sat edge closes iff the inverse-square budget closes AND the toy body does
+ * not occlude the segment. Both points are earth-relative. This is the "sat→sat edge
+ * reuses the SAME predicate without a special case" this module's header promised.
  *
  * `elevationRad` reports π/2 (the gate is not applicable) so one {@link LinkBudget} shape
  * covers every edge class in the graph.

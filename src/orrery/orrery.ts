@@ -499,6 +499,9 @@ const NET_GRATICULE_SAMPLES = 64;
  * drawn as a triangle fan of this many segments, oriented to lie ON the sphere surface (not a
  * camera-facing billboard) so the region / footprint / gap paint flat against the globe. */
 const NET_SURFACE_DISC_SEGMENTS = 40;
+/** Concentric rings per surface cap. The hug is a per-vertex displacement, so the ring count
+ * sets how smoothly a WIDE cap (a GEO footprint reaches tens of degrees) follows the ball. */
+const NET_SURFACE_DISC_RINGS = 8;
 /** Click-to-focus pick tolerance (px): a click within this of a billboard's projected
  * centre selects + focuses it. Generous, since billboards are constant-screen-size. */
 const PICK_TOLERANCE_PX = 26;
@@ -537,14 +540,34 @@ const VERT_BENT = /* glsl */ `
   uniform float uRadiusRad; // the cap's surface angular radius (radians)
   uniform float uBend;      // 0 = flat plate, 1 = hug
   out vec2 vUv;
+  out float vFacing;
   void main() {
     vUv = uv;
     vec3 pos = position;
-    float d = length(position.xy);
+    float d = clamp(length(position.xy), 0.0, 1.0);
     float rho = d * uRadiusRad;
-    float sag = (1.0 - cos(rho)) / max(1e-5, sin(uRadiusRad));
+    float sinL = max(1e-5, sin(uRadiusRad));
+    // A TRUE SPHERICAL CAP, not a sagging plate. orientSurfaceDisc scales this mesh's unit
+    // radius to bodySceneR·sin(λ), so ONE local unit == bodySceneR·sin(λ) and the body's
+    // radius in local units is exactly 1/sin(λ). A surface point at central angle ρ from
+    // the cap centre therefore sits at local lateral sin(ρ)/sin(λ) and local depth
+    // (1−cos ρ)/sin(λ) below the tangent plane — put both on the vertex and every vertex
+    // lands ON the sphere instead of on a chord through it. (The old shader carried the
+    // depth term only and left lateral chord-linear, so the patch cut into the ball and
+    // spilled past the limb — the "clipping through the earth" report.)
+    if (d > 1e-6) pos.xy *= mix(1.0, (sin(rho) / sinL) / d, uBend);
+    float sag = (1.0 - cos(rho)) / sinL;
     pos.z -= uBend * sag;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    // The cap point's OUTWARD normal in local space: the body centre sits at local
+    // z = −1/sin(λ), so normalize(P − centre) = (sin ρ · dir, cos ρ). Used by the fragment
+    // to drop the far-side half of a wide cap: with depthTest off (the flicker fix) nothing
+    // else stops a 60° footprint painting straight over the globe's silhouette.
+    vec2 dir = d > 1e-6 ? normalize(position.xy) : vec2(0.0);
+    vec3 nLocal = mix(vec3(0.0, 0.0, 1.0), vec3(sin(rho) * dir, cos(rho)), uBend);
+    vec3 nView = normalize(normalMatrix * nLocal);
+    vec4 pView = modelViewMatrix * vec4(pos, 1.0);
+    vFacing = dot(nView, normalize(-pView.xyz));
+    gl_Position = projectionMatrix * pView;
   }
 `;
 
@@ -669,6 +692,7 @@ const SURFACE_DISC_FRAG = /* glsl */ `
   uniform float uCell;
   uniform float uAlpha;
   in vec2 vUv;
+  in float vFacing;
   out vec4 fragColor;
   const float BAYER[16] = float[16](
     0.0, 8.0, 2.0, 10.0,
@@ -680,8 +704,14 @@ const SURFACE_DISC_FRAG = /* glsl */ `
     vec2 p = vUv * 2.0 - 1.0;
     float r = length(p);
     if (r > 1.0) discard;
+    // HORIZON CULL — a cap point whose outward normal faces away from the camera is on the
+    // far side of the ball and must not paint (depthTest is off by the flicker fix, so this
+    // is the only thing standing between a wide footprint and the globe's silhouette). The
+    // narrow smoothstep keeps the terminator from aliasing into a stair-stepped edge.
+    if (vFacing <= 0.0) discard;
+    float horizon = smoothstep(0.0, 0.06, vFacing);
     // Bright interior with a soft dithered rim so the patch reads as a crisp coverage spot.
-    float bright = mix(1.0, 0.35, smoothstep(0.65, 1.0, r)) * uAlpha;
+    float bright = mix(1.0, 0.35, smoothstep(0.65, 1.0, r)) * uAlpha * horizon;
     // SD-45 FLICKER FIX — SOFT screen-locked dither. The old binary discard popped whole
     // cells under sub-pixel motion (the "region keeps flickering" report). Screen-locked
     // cells keep the dots stationary while the patch slides beneath; the soft one-step
@@ -1505,16 +1535,36 @@ export class Orrery {
    */
   private buildSurfaceDisc(color: [number, number, number]): THREE.Mesh {
     const n = NET_SURFACE_DISC_SEGMENTS;
-    // A unit disc: a centre vertex + a rim ring, as a triangle fan. UVs map the disc into [0,1]² so
-    // the radial Bayer fill works (centre = (0.5,0.5), rim = unit circle).
+    const rings = NET_SURFACE_DISC_RINGS;
+    // A unit disc as CONCENTRIC RINGS (centre vertex + `rings` rings of `n` segments), not a
+    // single centre→rim fan. The surface-hug in VERT_BENT is a per-VERTEX displacement, so a
+    // one-ring fan could only bend at the rim and drew a wide footprint as a flat cone cutting
+    // through the ball. With interior rings the cap curves smoothly and every vertex lands on
+    // the sphere. UVs map the disc into [0,1]² so the radial Bayer fill still works.
     const verts: number[] = [0, 0, 0];
     const uvs: number[] = [0.5, 0.5];
     const idx: number[] = [];
-    for (let i = 0; i <= n; i++) {
-      const a = (2 * Math.PI * i) / n;
-      verts.push(Math.cos(a), Math.sin(a), 0);
-      uvs.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
-      if (i > 0) idx.push(0, i, i + 1);
+    for (let j = 1; j <= rings; j++) {
+      const d = j / rings;
+      for (let i = 0; i < n; i++) {
+        const a = (2 * Math.PI * i) / n;
+        verts.push(d * Math.cos(a), d * Math.sin(a), 0);
+        uvs.push(0.5 + 0.5 * d * Math.cos(a), 0.5 + 0.5 * d * Math.sin(a));
+      }
+    }
+    // Ring j's vertices start at 1 + (j−1)·n. Ring 1 fans off the centre; each later ring
+    // quads onto the one below it.
+    for (let i = 0; i < n; i++) {
+      idx.push(0, 1 + i, 1 + ((i + 1) % n));
+    }
+    for (let j = 2; j <= rings; j++) {
+      const inner = 1 + (j - 2) * n;
+      const outer = 1 + (j - 1) * n;
+      for (let i = 0; i < n; i++) {
+        const i2 = (i + 1) % n;
+        idx.push(inner + i, outer + i, outer + i2);
+        idx.push(inner + i, outer + i2, inner + i2);
+      }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(verts), 3));

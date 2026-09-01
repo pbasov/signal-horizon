@@ -45,6 +45,7 @@ import {
   ACT4_MARS_CONTRACT_ID,
   type Region,
 } from "./endpoint";
+import { A1_LEO_PERIOD_S } from "./world";
 import { offerNetContract, type SlaAxis } from "./contract";
 import type { FaultScript, TraceShortfall } from "./fault-types";
 
@@ -130,16 +131,16 @@ export const ACT1B_PAY_HALVING_S = 1200;
  * full hand-off cycle is proven to fit, and 300 s ≪ termSeconds (6 h), so the hand-off gate
  * fires BEFORE completion-by-term (the gate is the driver, not the clock). Imported as a fresh
  * constant; the period itself lives in world.ts. */
-export const NET_HANDOFF_CYCLE_S = 2 * 150.0; // = 2 · A1_LEO_PERIOD_S (150 s); = 300 s.
+export const NET_HANDOFF_CYCLE_S = 2 * A1_LEO_PERIOD_S; // two full hand-off cycles.
 
 /** The EMPIRICALLY MEASURED zero-gap minimum for the polar LEO_SWEEP family at ACT2_SLA_AVAIL
  * over the high-lat REGION-1 (terminating at the co-located high-lat GROUND-1): the smallest
  * evenly-phased constellation whose worst-phase rolling availability holds the bar. Pinned here
- * (= 4 at lat 70°, inc 90°) so the over-build waste log is a pure `(session, t)` predicate (no
+ * (= 9 at lat 70°, inc 90°) so the over-build waste log is a pure `(session, t)` predicate (no
  * eph in the gate signature). The phasing assist DERIVES the same N empirically (phasing.ts);
  * this constant must equal that derivation for REGION-1 (pinned in net-replay + phasing tests).
  * If the physics ever shifts N, BOTH this constant and the golden re-pin together. */
-export const ACT2_ZERO_GAP_N = 4;
+export const ACT2_ZERO_GAP_N = 9;
 
 /** REGION-1 — HIGH LATITUDE (lat 70°), BEYOND the parked equatorial GEO's ~64° footprint edge,
  * so the GEO physically CANNOT reach it at any longitude (Act-2 variant (a): the only Act-2

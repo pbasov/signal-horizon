@@ -937,10 +937,200 @@ so the recorded `SimAction` log — already written by `applyAndRecordNetAction`
 unreachable from the page — becomes the metric substrate. `tools/ctx.mjs` is extracted from
 `playtest.mjs` unchanged in behaviour. Vitest's include widens to cover `tools/**/*.test.mjs` so the
 pure metric extractor is tested like any sim module.
+**Addendum (2026-09-01) — what the first two live runs found, and where it landed.**
 
-### SD-56 — THE ROUTING GRAPH IS BUILT: CROSSLINK edges + the multi-hop solver (M1-SAT-3 + M1-SLV-1, 2026-09-01)
+The harness works: run 2 opened the pad cold, read the parked draft's 0 % coverage, dragged sub-lon
+from −90° to 0°, armed, launched, waited for the bird, signed only once it was up, reached the act-1
+gate, then found the availability wall on its own ("2 satellites with 180° phase spread give 83 % —
+still short of 99 %"). No instructions, no design docs, $0.23 for 22 turns.
 
-**Status: ACCEPTED (built; 18 new tests in `net/graph.test.ts`; BOTH replay goldens byte-for-byte
+**Four defects in the harness, found before it found anything in the game — the right order.** All
+four are fixed and each has its own guard:
+
+1. **"Blind by construction" was false.** The first run's debrief named `protocol.mjs`, `brain.mjs`,
+   `personas` and concluded it was in an eval harness. `--tools ""` does stop the seat from *reading*
+   anything, but Claude Code puts the working directory and project context in its dynamic prompt
+   sections. Reproduced both ways: asked its own cwd, a seat in the repo answered
+   "/home/basov/Games/signal-horizon — a … signal-horizon project (…M1 mechanics, orbit sim game)";
+   the identical seat in an empty tmpdir said it could not tell. The seat now runs in a fresh empty
+   temp dir. *A blindness claim has to be tested, not asserted from a flag.*
+2. **PDQ leaked into the fiction.** The harness holds the clock while the policy thinks, so the game
+   truthfully renders "time PAUSE" — and the agent read that as a broken game, spending 17 of 22
+   turns guessing control ids like `play` and `time-toggle` for a button that does not exist. The
+   observation now restates, every turn, that the seat holds the clock and `wait` is the only way
+   time passes, plus a nudge after three frozen turns. That is a statement about the harness, not a
+   hint about the game, so it costs the measurement nothing.
+3. **M10 mis-scored the exact thing the milestone exists to prove.** It reported a hand-aimed launch
+   as un-aimed, because with the clock stopped every turn shares one tick and tick-matching picked a
+   later pad-open whose draft equalled its seed. The commit turn is now identified by its LAUNCH
+   click. Regression test pinned.
+4. **A shared dev server is a shared fate.** A concurrent session's worktree under
+   `.claude/worktrees/` dropped a second `index.html` + `tsconfig.json` into this root; vite answered
+   "changed tsconfig file detected … forcing full-reload" and re-booted the page mid-run, so the
+   second half of run 2 played a fresh world with the first half's history discarded. Two fixes, and
+   the first one protects humans too: `vite.config.ts` now excludes `.claude/worktrees/**` (and
+   harness/screenshot artifacts) from the dev watcher, and every run serves the tree it measures on
+   its own port. Belt and braces: a tick or action-log count going backwards ends the run as
+   `reboot` — **unscorable**, reported as such, never scored through.
+
+**Three leads for the game, two of them verified by hand outside the agent run** (leads, not
+verdicts — §1 of `agent-eval.md`):
+
+- **FIT is inert on the opening state.** Both live runs flagged it independently ("FIT didn't change
+  anything visibly"). Verified: slots and the draft chip are byte-identical before and after. The
+  §3.3 assist is supposed to offer a viable-but-imperfect starting fit.
+- **The typed altitude ceiling is silent.** Any value above 900 km snaps back to 900 with no message
+  (verified at 35 786 / 10 000 / 2 000 km). A player reaching for the real-world GEO number lands at
+  900 km — above this body's parked altitude, so the comb drops to ~29 % duty — and the agent
+  concluded the bus had an orbital-range limit that does not exist. LAW 1 says the instrument shows
+  facts; silently overriding the player's number is the instrument telling a different story.
+- **Preview versus post-launch diagnosis (unverified).** Run 2 turn 8: with the bird parked and the
+  pad's chip reading "serving NOW", the signed region read DARK and the shortfall line said a LEO
+  "only visits". Worth a look, but the run was already inside the reboot window, so it is a
+  transcript quote and nothing more until someone reproduces it.
+
+**Addendum 2 (2026-09-01) — the clean run, two more leads, and the build key.**
+
+Run 3, on its own dev server with the four harness defects fixed: hand-aim scored correctly (M10
+YES — sub-lon dragged −90° → 0° before commit), first serve at 03:51 mission time on turn 23, act 1
+reached, 4/15 decision surfaces, 4 % invalid, 13 % no-op, $0.71 for 24 turns, zero errors. The floor
+and ceiling are pinned by playing the same loop: the random policy never serves and touches 1
+surface at 21 % no-op; the scripted golden path serves at 07:41 with 3 surfaces at 0 % no-op. An
+agent number is now readable between two measured ends.
+
+**Two more leads, both verified by hand (leads, not verdicts):**
+
+- **The SLA pips carry no information at boot.** The Act-1 tender renders LAT / AVL / BW as three
+  labels that are byte-identical in the text layer *and* pixel-identical in style — same
+  `mission-pip` class, same dim `rgb(90,90,99)`, same border, no active/enforced variant. Their only
+  explanation is a `title` tooltip on the parent row, i.e. hover-only. GDD §5 asks for a glanceable
+  summary before hover detail; here the glanceable layer is three grey stubs, and a first-time player
+  has no lit example to read "dim = not enforced" against. Also fails a colour-off / text-only read
+  (X-03).
+- **The pad's "100 % · serving NOW" reads as a status claim when it is a capability claim.** A cold
+  player said it best, unprompted: *"I'd treat the pad's '100 % coverage / serving NOW' as a
+  capability claim, not a status claim… nothing in the pad's language warned me that footprint math ≠
+  live traffic."* It cost that run nine turns hunting for a route/pipe/payload to "bind" after
+  signing, when the answer was that the router needed sim-time. Two independent runs hit it. This is
+  the LAW-1 boundary in practice: the draft chip is honest about the draft and silent about the gap
+  between a draft and a flying network.
+
+**One design fix inside the harness: the build key is a content hash of the GAME's sources**
+(`src/`, `data/`, `index.html`, `vite.config.ts`), not git HEAD and not the working tree. Keying on
+HEAD had just invalidated the pinned floor and ceiling for a build whose game code had not changed by
+one byte — the baseline must track the thing being measured, not the commit that happened to be
+checked out. The git sha rides along in `run.json` as provenance.
+
+---
+
+### SD-56 — THE COVERAGE RE-SCALE + the launch interface as instruments (2026-09-01)
+
+**Status: ACCEPTED, built.** User-driven, in this order: *"i want to rewrite the launch interface,
+right now it's really confusing"*, then five sharpened points (failure recovery, ugly spinner
+boxes, "the whole UX needs to be way more visual", "imagine the user understands nothing about
+orbital mechanics", and *"i think right now the coverage is way overexxagerated — i can launch like
+10 sats and cover the whole globe easily, trivializing the game"*), then the ordering call:
+**re-scale first, interface second, so the UX is designed against the real world.**
+
+#### 1. Coverage was trivial because the beam cone was decorative
+
+Measured, not guessed. The router gated a link on ELEVATION and INVERSE-SQUARE only;
+`coneHalfAngleRad` existed on every antenna and was read by nobody. On a 300 km toy body both
+gates are nearly free, so every antenna floodlit its whole visible hemisphere:
+
+| | footprint half-angle | share of globe | sats to blanket |
+|---|---|---|---|
+| toy GEO (535 km) | 64.0° | 28% | 4 |
+| toy "LEO SWEEP" (600 km) | 65.6° | 29% | 4 |
+| toy low orbit (150 km) | 43.4° | 14% | 8 |
+| *real GEO* | *76.3°* | *38%* | — |
+| *real LEO (550 km)* | *18.5°* | *2.6%* | *~40* |
+
+Across the ENTIRE usable altitude band the footprint moved only 43° → 64°. Altitude barely
+changed what you covered, so *where* you put a satellite hardly mattered — which is also why
+aiming felt inconsequential and the pad's numbers felt arbitrary.
+
+**The fix:** the cone becomes physics. `evaluateLink` takes a `BeamAim` (axis + half-angle) and
+reports a new `outside_beam` cause; BROADCAST points nadir, ACCESS/GATEWAY steer at the region
+their beam is assigned to. `coneReachRad` projects a cone half-angle (an angle at the SATELLITE)
+into a central angle (an angle at the BODY) — conflating those two is what let a "spot beam" cover
+a third of a planet. Card cones: ACCESS-S 10°, GATEWAY 14°, BROADCAST 18°, ACCESS-L 24°. The
+horizon mask forks from field.ts's 5° to a net-local 10°. The LEO family moves 310 → 400 km so the
+tighter spots still make a buildable constellation while keeping act 2's latency wall intact
+(~2.7 ms two-hop against a 3 ms SLA; the parked GEO sits above it at ~3.6 ms).
+
+**Consequence:** the measured zero-gap minimum for REGION-1 goes **4 → 9 satellites**. Holding a
+moving region is now a real constellation, and altitude is a real lever (the same antenna paints
+~11° of ground from a low pass and ~19° from a parked GEO).
+
+#### 2. Four bugs the re-scale exposed in the canonical hour
+
+The old arc did not survive first contact, and each failure was worth naming:
+
+1. **It signed REGION-1 the moment the batch separated.** Availability is a ROLLING window, so it
+   still remembered the empty sky before the constellation existed — an instant breach for a
+   network that was already holding.
+2. **It never circularised the underburned bird before measuring.** Until that burn NET-SAT-4
+   flies a lower, faster orbit: not a ring member, a drifting hole.
+3. **Its fill batch compensated for the body's rotation alone.** Co-phasing a later launch with an
+   existing ring must undo BOTH clocks — the spin ω AND the ring's own mean motion n — over the
+   gap between launches: `subLon_fill = subLon_ring + offset − (ω − n)·Δt`. Under the old wide
+   floodlights the error was invisible; with real cones every replacement landed in the wrong
+   place and the ring read 87% held forever.
+4. **Act 3 pointed its corridor beams at hard-coded satellite ids** (`NET-SAT-9/10/11`), which
+   silently became act-2 polar birds when the batch size changed. REGION-2 went dark and bled
+   €16k. Ids now derive from launch order, and `escalation.test` imports the canon constants
+   instead of keeping its own drifting copy.
+
+Point 3 is also the design argument for the new pad: **no player should ever be asked to do that
+arithmetic in their head.**
+
+**Economy:** manifest discount 15% → 45%. Constellations went from a nicety to the only way to
+hold a region; pricing the tenth identical mass-produced unit like a bespoke first one made the
+only viable play unaffordable. The arc ends solvent (€4,376), never dips below €3,488, and all
+four act gates fire in order (24s / 670s / 938s / 968s). ONE deliberate golden re-pin →
+`16791777382910013853n`.
+
+#### 3. The launch interface
+
+Kept from the old pad: the real vocabulary. ALTITUDE / INCLINATION / RAAN keep their names — the
+terms are part of the fantasy and worth learning (user's call: *"real terms with tooltips"*). What
+changed is that you can now SEE what each one does.
+
+- **The tender is pinned to the pad.** Opening the pad used to REPLACE the tender board, hiding the
+  requirement while you designed against it. It now sits across the top for the whole aim, with a
+  comparison table under it: your number, a shared bar, their number, and a threshold tick. Still
+  no verdict printed — the player does the comparing (LAW 1 holds).
+- **Three instruments** (`src/panels/pad-instruments.ts`): a side-on ALTITUDE horizon with the beam
+  drawn as a wedge onto the ground; an INCLINATION dial showing the latitude belt against the
+  customer's latitude; and THE RING, drawing the satellites already on this orbit, the ones this
+  launch adds, and the widest hole between them — the answer to *"1 fails, how do i phase the new
+  launch to fill in the gap?"*
+- **Controls that cannot do anything say so.** On a single equatorial satellite — everyone's first
+  launch — RAAN and PHASE SPREAD are both inert. That was a third of the old pad's controls
+  sitting there looking like numbers you had got wrong. They grey out and explain why.
+- **Drag-scrub numbers** replace `<input type=number>`; the spinner arrows are gone and typing an
+  exact value still works, so the keyboard/bot path stays first-class.
+
+**Deferred, deliberately:** the full-screen launch view (user: *"maybe skip the launch screen for
+now"*). The pad stays in the MISSION rail.
+
+#### 4. M1 is not an hour — measured
+
+Asked directly (*"how is M1 an HOUR? it's two missions solveable in 3 minutes tops"*), the
+canonical arc answers: **~18 minutes of sim time and 20 recorded player actions**, with the act-1
+gate at t=24s. The hour was a design target, never built content. The design's answer for "what do
+you do afterwards" is the sustain loop — renewals at grown demand, escalation congesting what
+success built, faults aimed at the busiest satellite — which largely runs in the sim but barely
+exists in the interface. **Decision (user): move on rather than pad the clock.** The acts are an
+on-ramp; M1's gate criterion should stop claiming the hour, and the treadmill is what the player
+moves on TO. Not rebuilt here; recorded so the gate is not run against a number the build never
+had.
+
+### SD-57 — THE ROUTING GRAPH IS BUILT: CROSSLINK edges + the multi-hop solver (M1-SAT-3 + M1-SLV-1, 2026-09-01)
+
+**Status: ACCEPTED (built; landed after the SD-56 coverage re-scale and reconciled with it —
+see the reconciliation note at the end; 18 new tests in `net/graph.test.ts`; BOTH replay goldens byte-for-byte
 UNTOUCHED; `net/` stays pure).** User-directed after an audit of why the game has no routing.
 
 **The finding that prompted it.** The user's complaint — "we still not have any fun routing things

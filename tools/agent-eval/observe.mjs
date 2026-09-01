@@ -128,6 +128,9 @@ export function digest(obs, probes) {
     affordances: obs.affordances.map((a) => `${a.target}:${a.enabled ? 1 : 0}`).sort(),
     padOpen: obs.padOpen,
     pad: obs.pad,
+    // The silhouette is state too. Without it, clicking FIT (which rewrites the slots and nothing
+    // else) was scored as a no-op in the first live run — a false illegibility reading.
+    slots: obs.slots ?? [],
     cursor: ns?.cursor ?? null,
     sats: (ns?.sats ?? []).map((s) => `${s.id}@${s.aKm}`).sort(),
     contracts: (ns?.contracts ?? []).map((c) => `${c.id}:${c.state}:${c.servedFrac > 0 ? "served" : "dark"}`).sort(),
@@ -136,9 +139,22 @@ export function digest(obs, probes) {
   });
 }
 
-/** The observation as the agent reads it. Compact: this text is paid for once per turn. */
+/**
+ * The observation as the agent reads it. Compact: this text is paid for once per turn.
+ *
+ * The TIME line is a HARNESS fact, restated every turn, and it has to be. The first live run read
+ * the game's own "time PAUSE" readout — which the harness itself caused by holding the clock — as a
+ * broken game, and spent seventeen of twenty-two turns hunting for a play button that does not
+ * exist, guessing control ids like "play" and "time-toggle". The PDQ artifact leaked into the
+ * fiction. Saying "the seat holds the clock, `wait` releases it" is a statement about the harness,
+ * not a hint about the game, so it costs the measurement nothing and saves the run.
+ */
 export function render(obs, turn) {
-  const head = `=== TURN ${turn} · mission clock ${fmt(obs.missionElapsedS)} · time ${obs.clock?.label ?? "?"} ===`;
+  const head =
+    `=== TURN ${turn} · mission clock ${fmt(obs.missionElapsedS)} · time ${obs.clock?.label ?? "?"} ===\n` +
+    `TIME: your seat holds the program's clock stopped while you think — that is why it reads PAUSE.\n` +
+    `      Nothing happens, and nothing finishes, until you spend {"do":"wait","simMinutes":N}.\n` +
+    `      There is no play control to find; the wait action is the only way time passes.`;
   const panels = obs.panels.map((p) => `[${p.title}]\n${p.text}`).join("\n\n");
   const buttons = obs.affordances
     .filter((a) => a.kind === "button")

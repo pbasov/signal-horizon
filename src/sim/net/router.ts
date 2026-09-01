@@ -29,6 +29,7 @@ import type { NetSat, AntennaSpec } from "./sat";
 import type { Region, GroundNet, RegionPoint } from "./endpoint";
 import {
   type LinkCause,
+  type BeamAim,
   evaluateLink,
   surfacePointRelative,
   surfaceNormalRelative,
@@ -96,6 +97,14 @@ export interface PipeContext {
   regionId: string;
   latencyActive: boolean;
   beams: BeamMap;
+  /** WHERE A POINTED BEAM LOOKS: the body-fixed centre of the region this pipe is serving.
+   * A steerable ACCESS/GATEWAY antenna is aimed here, and its cone is measured from that
+   * boresight — so a spot smaller than the region covers only part of the disc and the
+   * contract reads a partial `servedFraction`. Omitted ⇒ the beam is treated as unpointed
+   * and only the horizon gates it, which is the permissive "could ANY pipe here serve if it
+   * were pointed?" question the coverage preview asks. */
+  aimLatRad?: number;
+  aimLonRad?: number;
 }
 
 const EMPTY_BEAMS: BeamMap = new Map();
@@ -122,6 +131,15 @@ function candidatePipes(
   }
   return eligiblePipes(sat, ctx.regionId, ctx.latencyActive, ctx.beams ?? EMPTY_BEAMS);
 }
+
+/** How far along the gate chain each failure cause sits — the ordering the reported cause is
+ * maximised over, so the diagnosis never depends on roster order. */
+const CAUSE_DEPTH: Record<Exclude<LinkCause, "ok">, number> = {
+  set_below_horizon: 0,
+  outside_beam: 1,
+  out_of_budget: 2,
+  occluded: 3,
+};
 
 /** The chosen bridge: which sat, which PIPE on it, which ground, at what latency.
  *
@@ -185,7 +203,16 @@ export function bridgeForPoint(
   const w = prefer ?? NET_ROUTER_DEFAULT_PREFER;
   const blendEngaged = blendIsEngaged(prefer, loadByPipe);
 
+  // THE REPORTED CAUSE, order-independently. Candidates are visited in roster order, so
+  // "whichever gate the last candidate hit" would make the diagnosis depend on the order the
+  // satellites happen to sit in the array — two identical rosters could explain the same
+  // failure differently. Instead keep the FURTHEST gate any candidate reached: a pipe that
+  // cleared the horizon and missed the beam is a more informative answer than "everything was
+  // below the horizon", and the maximum over a set has no order.
   let worstCause: Exclude<LinkCause, "ok"> = "set_below_horizon";
+  const noteCause = (c: Exclude<LinkCause, "ok">): void => {
+    if (CAUSE_DEPTH[c] > CAUSE_DEPTH[worstCause]) worstCause = c;
+  };
   let best: Bridge | null = null;
   let bestMargin = -Infinity;
   let bestCost = Infinity;
@@ -211,9 +238,8 @@ export function bridgeForPoint(
     return cand.satPath.join(",") < best.satPath.join(",");
   };
 
-  // ── PASS 1 — the DIRECT bridge (one antenna serves AND lands). Byte-identical to the
-  // pre-M1-SLV-1 search, including its iteration order, so `worstCause` reports exactly
-  // the cause it always did when nothing closes. ─────────────────────────────────────
+  // ── PASS 1 — the DIRECT bridge (one antenna serves AND lands): the one-hop case, and
+  // the only shape that existed before M1-SLV-1. Unchanged by the relay work. ────────
   for (const groundNet of groundNets) {
     const groundR = groundRadiusM(groundNet);
     const gd = surfaceNormalRelative(groundNet.latRad, groundNet.lonRad, t);
@@ -223,14 +249,20 @@ export function bridgeForPoint(
       if (pipes.length === 0) continue;
       const satPos = satPositionRelative(eph, sat, t);
       for (const { slotIdx, antenna } of pipes) {
-        const up = evaluateLink(from, normal, satPos, antenna.eirp, antenna.rangeRefM);
+        // THE BEAM GATE, on the USER side only. The up-link is the one that has to arrive
+        // inside the antenna's spot; the sat→ground feeder is a separate dish pointed at
+        // the ground station, so cone-gating it too would demand the station sit inside the
+        // user beam — which no real bent-pipe requires and which would strand every region
+        // that is not co-located with a ground site.
+        const beam = beamAimFor(antenna, satPos, t, ctx);
+        const up = evaluateLink(from, normal, satPos, antenna.eirp, antenna.rangeRefM, beam);
         if (!up.closes) {
-          if (up.cause !== "ok") worstCause = up.cause;
+          if (up.cause !== "ok") noteCause(up.cause);
           continue;
         }
         const down = evaluateLink(gto, gd, satPos, antenna.eirp, antenna.rangeRefM);
         if (!down.closes) {
-          if (down.cause !== "ok") worstCause = down.cause;
+          if (down.cause !== "ok") noteCause(down.cause);
           continue;
         }
         const latencyS = up.latencyS + down.latencyS;
@@ -274,7 +306,12 @@ export function bridgeForPoint(
       if (pipes.length === 0) continue;
       const satPos = satPositionRelative(eph, sat, t);
       for (const { slotIdx, antenna } of pipes) {
-        const up = evaluateLink(from, normal, satPos, antenna.eirp, antenna.rangeRefM);
+        // THE BEAM GATE, exactly as PASS 1 applies it: the user side is cone-gated, the
+        // feeder is not. Relaying extends where traffic can be LANDED; it never widens the
+        // spot the serving antenna paints, so a region outside the beam stays dark no
+        // matter how good the spine behind it is.
+        const beam = beamAimFor(antenna, satPos, t, ctx);
+        const up = evaluateLink(from, normal, satPos, antenna.eirp, antenna.rangeRefM, beam);
         if (!up.closes) continue;
         const servingPipe = pipeKey(sat.id, slotIdx);
         const servingCongestion =
@@ -392,6 +429,42 @@ export function buildRelayClosure(
   );
 }
 
+/**
+ * Where this antenna is pointed at sim-time `t`, or `undefined` for "unpointed — horizon
+ * only". Two kinds of pointing, matching the two kinds of antenna:
+ *
+ *   - BROADCAST floodlights straight DOWN. Its boresight is nadir (sat → body centre), so
+ *     its spot is the cap under the satellite and it serves whatever happens to sit there.
+ *   - ACCESS / GATEWAY are STEERED. They look at the region their beam is assigned to, so
+ *     the spot follows the target — the assignment decides where the capacity lands, which
+ *     is the whole point of the pointing verb.
+ *
+ * Without an aim point a steerable beam is left unpointed (the coverage-preview read).
+ */
+function beamAimFor(
+  antenna: AntennaSpec,
+  satPos: Vec3,
+  t: number,
+  ctx: PipeContext | undefined,
+): BeamAim | undefined {
+  const m = Math.sqrt(satPos[0] * satPos[0] + satPos[1] * satPos[1] + satPos[2] * satPos[2]);
+  if (m <= 0) return undefined;
+  if (antenna.type === "BROADCAST") {
+    return {
+      axis: [-satPos[0] / m, -satPos[1] / m, -satPos[2] / m],
+      coneHalfAngleRad: antenna.coneHalfAngleRad,
+    };
+  }
+  if (ctx === undefined || ctx.aimLatRad === undefined || ctx.aimLonRad === undefined) return undefined;
+  const target = surfacePointRelative(ctx.aimLatRad, ctx.aimLonRad, t);
+  const ax = target[0] - satPos[0];
+  const ay = target[1] - satPos[1];
+  const az = target[2] - satPos[2];
+  const am = Math.sqrt(ax * ax + ay * ay + az * az);
+  if (am <= 0) return undefined;
+  return { axis: [ax / am, ay / am, az / am], coneHalfAngleRad: antenna.coneHalfAngleRad };
+}
+
 /** Ground-net world radius (toy body radius + antenna altitude), earth-relative. */
 function groundRadiusM(groundNet: GroundNet): number {
   return A1_BODY_RADIUS_M + groundNet.altitudeM;
@@ -445,6 +518,9 @@ export function solve(
     regionId: contract.region.id,
     latencyActive: contract.activeAxes?.has("latency") ?? false,
     beams: beams ?? EMPTY_BEAMS,
+    // A steered beam looks at the region it serves — its cone is measured from here.
+    aimLatRad: contract.region.latRad,
+    aimLonRad: contract.region.lonRad,
   };
   const centre: RegionPoint = { latRad: contract.region.latRad, lonRad: contract.region.lonRad };
   // M1-SLV-1: the CROSSLINK spine, built once per solve (undefined for a fleet that flies
@@ -674,6 +750,9 @@ function isRegionServed(
     regionId: contract.region.id,
     latencyActive: contract.activeAxes?.has("latency") ?? false,
     beams: beams ?? EMPTY_BEAMS,
+    // A steered beam looks at the region it serves — its cone is measured from here.
+    aimLatRad: contract.region.latRad,
+    aimLonRad: contract.region.lonRad,
   };
   const centre: RegionPoint = { latRad: contract.region.latRad, lonRad: contract.region.lonRad };
   return isPointServed(eph, centre, groundNets, sats, t, faults, ctx);
