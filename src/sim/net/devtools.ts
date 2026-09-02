@@ -28,13 +28,33 @@ import { M1_SCENARIO } from "./scenario";
 import type { Contract } from "./contract";
 import type { PendingLaunch } from "./session";
 
-/** The scenario beat ids, by cursor index (mirrors `M1_SCENARIO`'s order). */
-export const DEV_ACT_IDS = ["act1", "act2", "act3a", "act3b", "act4"] as const;
+/** The scenario beat ids, by cursor index — DERIVED from `M1_SCENARIO`, never hand-listed.
+ *
+ * This list used to be a literal, and that is exactly the defect RC-01 catalogued: SD-62
+ * APPENDED `act3c`, so act4 moved 4 → 5 and every hand-written copy of the beat order went
+ * stale in place. A literal here strands the console on the second-to-last act and makes its
+ * own catalogue claim a mission the scenario no longer emits at that index. Reading the
+ * scenario means the NEXT inserted beat cannot stale it either. */
+export const DEV_ACT_IDS: readonly string[] = M1_SCENARIO.map((b) => b.id);
+
+/** Short console labels for the jump buttons, keyed by BEAT ID rather than by index — an
+ * index-keyed list is the same trap as above. A beat with no authored label falls back to
+ * its own id, so an inserted beat still gets a working button. */
+const DEV_ACT_LABEL_BY_ID: Readonly<Record<string, string>> = {
+  act1: "1 SERVE",
+  act2: "2 COVER",
+  act3a: "3a STRAIN",
+  act3b: "3b FAULTS",
+  act3c: "3c LUNA",
+  act4: "4 MARS",
+};
 
 /** Short console labels for the jump buttons, by cursor index. */
-export const DEV_ACT_LABELS = ["1 SERVE", "2 COVER", "3a STRAIN", "3b FAULTS", "4 MARS"] as const;
+export const DEV_ACT_LABELS: readonly string[] = DEV_ACT_IDS.map(
+  (id) => DEV_ACT_LABEL_BY_ID[id] ?? id.toUpperCase(),
+);
 
-/** The last cursor index (act4 — the frontier read the cursor stops on). */
+/** The last cursor index (the frontier read the cursor stops on). */
 export const DEV_LAST_CURSOR = DEV_ACT_IDS.length - 1;
 
 /** € formatting for the console's WIRE notes — space-grouped and locale-independent, so

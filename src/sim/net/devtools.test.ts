@@ -108,7 +108,7 @@ describe("SD-70 cheat engine — SKIP ACTS (the headline verb)", () => {
     // Each skipped beat's AUTHORED ARRIVAL actually fired — the acts' demands are on the
     // board, which is the whole reason to step between advances rather than jump the cursor.
     const ids = s.contracts.map((c) => c.id);
-    for (const id of ["REGION-0", "REGION-1", "REGION-2", "BACKHAUL-3", "MARS-1"]) {
+    for (const id of ["REGION-0", "REGION-1", "REGION-2", "BACKHAUL-3", "LUNA-1", "MARS-1"]) {
       expect(ids, `act arrival ${id} should be on the board`).toContain(id);
     }
     // act3b's emit ran, so the fault generator is armed (not merely flagged skipped).
@@ -397,13 +397,16 @@ describe("SD-70 sandbox — the standing 'just let me look at it' mode", () => {
 describe("SD-70 mission catalogue — derived from the beats, never hand-listed", () => {
   it("names every authored demand and which beat emits it", () => {
     const beats = describeBeats();
-    expect(beats.map((b) => b.actId)).toEqual(["act1", "act2", "act3a", "act3b", "act4"]);
+    // SD-62 APPENDED act3c (the cislunar on-ramp) at index 4, so act4 is index 5. Pinned in
+    // full rather than by length: the point of this assertion is to CATCH a reordering.
+    expect(beats.map((b) => b.actId)).toEqual(["act1", "act2", "act3a", "act3b", "act3c", "act4"]);
 
     const byAct = Object.fromEntries(beats.map((b) => [b.actId, b]));
     expect(byAct.act1.contractIds).toEqual(["REGION-0"]);
     expect(byAct.act2.contractIds).toEqual(["REGION-1"]);
     expect(byAct.act3a.contractIds).toEqual(["REGION-2", "BACKHAUL-3"]);
     expect(byAct.act3b.contractIds).toEqual([]); // faults, no demand.
+    expect(byAct.act3c.contractIds).toEqual(["LUNA-1"]);
     expect(byAct.act4.contractIds).toEqual(["MARS-1"]);
 
     // Labels come from the contracts themselves, so the browser reads like the board does.
@@ -416,7 +419,7 @@ describe("SD-70 mission catalogue — derived from the beats, never hand-listed"
     const ids = describeBeats().flatMap((b) => b.contractIds);
     expect(new Set(ids).size).toBe(ids.length);
     // The full authored demand set the console's browser can put on the board.
-    expect(ids.sort()).toEqual(["BACKHAUL-3", "MARS-1", "REGION-0", "REGION-1", "REGION-2"]);
+    expect(ids.sort()).toEqual(["BACKHAUL-3", "LUNA-1", "MARS-1", "REGION-0", "REGION-1", "REGION-2"]);
   });
 
   it("is pure: describing the beats twice gives the same answer and touches no shared state", () => {

@@ -2303,6 +2303,64 @@ than deleted.
 
 ---
 
+### SD-72 — LANDING THE DEV CONSOLE (SD-70) AND THE OVERLAY LAYER (SD-71) ON MAIN (2026-09-02)
+
+**Status: ACCEPTED (user-directed: "merge it together with worktree-overlay-modals-pad").**
+
+**Context.** Two worktree branches had been sitting unmerged: `worktree-devtools-cheats` (2 commits,
+the dev console + the sandbox switch) and `worktree-overlay-modals-pad` (1 commit, the overlay modal
+layer + the full-column pad). Both were cut before SD-62 and were 22 commits behind `origin/main`,
+which had since moved through SD-58…SD-69. The user's entry point was a bug report — *"there is
+supposed to be a debug console on shift + \ but it doesn't seem to work?"* — which was true of
+`main` and false of the branch: the console was real, it had just never landed.
+
+`git branch -r --merged origin/main` was actively misleading here. It listed only two of the five
+remote branches, because a REBASED merge leaves no ancestry edge. `git cherry -v` (patch-id
+equivalence) is the right instrument: it showed `story-into-game` fully applied on main under
+different SHAs, and these two genuinely absent.
+
+**The decisions:**
+
+1. **Cherry-pick onto `origin/main`, never merge.** Three commits replayed in order onto a branch
+   cut from `origin/main`, keeping history linear per the repo's merge-train convention.
+
+2. **Renumber on landing (LD-01).** Both branches had claimed SD numbers main had since spent —
+   SD-56 (the dev console) is main's COVERAGE RE-SCALE, SD-58 (the overlay layer) is main's BOARD IS
+   A MAP. Renumbered to SD-70 and SD-71 in the docs and in all 21 code comments. This is the third
+   time a long-lived branch has collided on its own number; the cause is claiming the number when
+   the work STARTS rather than when it LANDS.
+
+3. **The hand-listed beat order was the one real defect (LD-02).** `DEV_ACT_IDS` was a literal
+   five-entry array. SD-62 appended `act3c`, making it six, so `DEV_LAST_CURSOR` was one short and
+   three separate console verbs silently under-ran. This is the EIGHTH stale reader from that single
+   insertion (RC-01 catalogued seven) and the first inside `src/sim/`. Fixed the way RC-01 fixed the
+   others — derived from `M1_SCENARIO` — so the next inserted beat cannot stale it. The three test
+   failures were the tests being RIGHT: they pinned the catalogue against the scenario and the
+   scenario had moved.
+
+4. **The pad conflict was composed, not chosen (LD-03).** SD-68's scroller/footer split and SD-71's
+   two-column pairing both rewrote the same four `appendChild` calls. Either side taken whole loses
+   something real, so the pairs were nested INSIDE the scroller. Measured afterwards: the pad's
+   content now fits its viewport without scrolling at all (878 px of content in 878 px of scroller),
+   because the two-column layout halves the height the footer fix was working around — the two
+   changes reinforce each other.
+
+**Consequences.** No `src/sim/` behaviour moves: the cheat engine reaches the session only through
+`snapshot()`/`restore()` and is never recorded to the action log, so **all three goldens are
+untouched** — verified as a zero-byte diff against `origin/main` on every golden-bearing file
+(`canon.ts`, `net-replay.test.ts`, `m1-session-replay.test.ts`, `m2-build-replay.test.ts`,
+`save-replay.test.ts`, `ephemeris.test.ts`). The dev console stays fenced behind
+`import.meta.env.DEV || ?dev=1`, so a production build binds neither `\` nor `|`.
+
+**Verified.** 1142/1142 vitest green (95 files); `tsc --noEmit` exit 0; `vite build` clean; the
+dev-server smoke green on this checkout's port with no console/page errors; and played by hand at
+1920×1080 — `\` opens the console (reading "act1 · 1 of 6" with a 3c LUNA row), `|` unlocks the
+cursor to act4 with all six tenders on the board and the wallet topped, `T` and `G` raise the TRACE
+and PARSE overlays with Escape returning the workspace, and the pad renders two-column with ARM and
+LAUNCH reachable. Screenshots: `docs/screenshots/sd70-dev-console.png`,
+`docs/screenshots/sd71-pad-two-column.png`. **The full `npm run playtest` was NOT run** — the user
+called the merge before it, so the scene suite is unmeasured on this tip.
+
 ### SD-70 — THE DEV CONSOLE: an in-game cheats/debug tile that collapses the slow parts of a playtest (2026-09-01, landed on main 2026-09-02)
 
 **Status: ACCEPTED (user-directed build).**
@@ -2411,7 +2469,7 @@ sightseeing, not driving, and it wants one switch, not six clicks.
 live set at five contracts. Wiring or deleting it is a design call, not a debug-tool one.
 =======
 
-### SD-58 — THE OVERLAY LAYER + the open pad takes its whole column (2026-09-01)
+### SD-71 — THE OVERLAY LAYER + the open pad takes its whole column (2026-09-01, landed on main 2026-09-02)
 
 **Status: ACCEPTED (user, after live play: "tiling WM is cool, but cumbersome sometimes, i think we
 have to add overlay modals for important pieces of gameplay to pop up on top of the main screen,

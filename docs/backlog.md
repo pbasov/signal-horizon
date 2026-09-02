@@ -412,12 +412,13 @@ All 7 findings fixed:
 
 ---
 
-### EPIC — SD-58 · THE OVERLAY LAYER + the open pad takes its whole column · **SHIPPED 2026-09-01**
+### EPIC — SD-71 · THE OVERLAY LAYER + the open pad takes its whole column · **SHIPPED 2026-09-01, landed on main 2026-09-02**
 
 > Owner, after live play: *"tiling WM is cool, but cumbersome sometimes … add overlay modals for
 > important pieces of gameplay to pop up on top of the main screen, also when using pad it should
 > take the whole right side of the interface, not just top right, so user doesn't have to scroll."*
-> Decision + rationale: `docs/decisions.md` SD-58 (amends DD-10).
+> Decision + rationale: `docs/decisions.md` SD-71 (amends DD-10). *Renumbered SD-58 → SD-71 when it
+> landed on main: SD-58 was already taken by THE BOARD IS A MAP, which landed while this was open.*
 
 - [x] **OV-01** The overlay layer — *M* · `src/wm/modal.ts`: ONE panel at a time raised on top of
       the wall in the same 1-bit chrome; content BORROWED and returned to its exact parent; Esc / ✕ /
@@ -821,6 +822,39 @@ All 7 findings fixed:
       tender stays pinned at the top; which instrument to shrink remains the user's call, and this fix
       does not make it. · Verify: ARM/LAUNCH at y≈577, `clickable: true`, inner scroller 447/1017 px;
       `docs/screenshots/pad-commit-row.png`; act1 20/0, hour 15/0, panels 142/142.
+---
+
+### SD-72 · LANDING SD-70 + SD-71 ON MAIN (the eighth stale act-index reader)
+
+> Decision: `docs/decisions.md` SD-72. Both branches were cut before SD-62 and sat unmerged while
+> main moved through SD-58…SD-69, so landing them is a reconcile, not a fast-forward.
+
+- [x] **LD-01** Renumbering — *S* · both branches claimed numbers main had since spent: the dev
+      console was SD-56 (main's is THE COVERAGE RE-SCALE) and the overlay layer was SD-58 (main's is
+      THE BOARD IS A MAP). Now SD-70 and SD-71, in the docs and in every code comment.
+- [x] **LD-02** `DEV_ACT_IDS` was a HAND-LISTED beat order — **the eighth stale act-index reader
+      from SD-62's one-line insertion**, and the first one inside `src/sim/`. The console shipped
+      `["act1","act2","act3a","act3b","act4"]`, so with `act3c` appended at index 4 `DEV_LAST_CURSOR`
+      was 4 — one short. Consequences, all measured: SKIP ACTS stopped on the CISLUNAR beat and
+      called it the frontier; the SANDBOX key left MARS-1 unoffered; the mission browser had no
+      button for act3c at all; and the catalogue's own "no orphan" assertion could not see LUNA-1.
+      RC-01's fix was to DERIVE the order from `M1_SCENARIO` and that is what this does, so the next
+      inserted beat cannot stale it either. Labels move to an id-keyed map with an id fallback —
+      an index-keyed label list is the same trap. · Verify: 3 red tests go green; played — the
+      console reads "act1 · 1 of 6", the browser lists 3c LUNA, and shift-\ walks the cursor to 5
+      with all six tenders on the board (it stopped at 4 with MARS-1 missing before the fix).
+- [x] **LD-03** The pad's two refactors COMPOSED rather than one winning — *S* · SD-68 (RC-11) split
+      the pad into an inner `.pad-scroll` plus a non-scrolling commit footer so ARM/LAUNCH could
+      never fall below the fold; SD-71 paired the instruments into two columns. Both edited the same
+      four `appendChild` lines. Resolved so the PAIRS live inside the SCROLLER: the two-column layout
+      stands and the commit row stays pinned. Neither alone would have been right — taking main's
+      side would have dropped the columns, taking the branch's side would have re-broken RC-11.
+      · Verify: 2 `.pad-pair` nodes, both inside `.pad-scroll`; ARM/LAUNCH hit-test clickable at
+      y≈1020 in a 1080-tall window; `docs/screenshots/sd71-pad-two-column.png`.
+- [x] **LD-04** The status legend carries BOTH key sets — *S* · main's navigation keys (B body ·
+      S system · E home, SD-63) and the branch's overlay keys (T trace · G record) landed on the
+      same legend line. Unioned; no key collides in the net-mode handler.
+
 ### EPIC — SD-70 · THE DEV CONSOLE (in-game cheats/debug tile) · ships the playtest accelerator
 
 *Rationale + the eight decisions in `docs/decisions.md` SD-70. The whole epic is DEV-side: no sim
